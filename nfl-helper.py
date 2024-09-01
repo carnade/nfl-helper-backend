@@ -12,6 +12,7 @@ app = Flask(__name__)
 # Allowed IP prefix and specific domain
 ALLOWED_IP_PREFIX = "81.235."
 ALLOWED_DOMAIN = "https://nfl-draft-helper.netlify.app"
+ALLOW_LOCAL = "http://localhost:3000"
 
 # Initialize CORS to allow any origin by default
 CORS(app, supports_credentials=True)
@@ -20,6 +21,8 @@ def custom_cors_origin(origin):
     if origin is None:
         return False
     if origin.startswith(f"http://{ALLOWED_IP_PREFIX}") or origin.startswith(f"https://{ALLOWED_IP_PREFIX}"):
+        return True
+    if USE_MOCK_DATA and origin == ALLOW_LOCAL:
         return True
     if origin == ALLOWED_DOMAIN:
         return True
