@@ -53,7 +53,7 @@ MOCK_DATA_FILE = "sleeper_data.json"
 # Toggle to switch between fetching data from the API or reading from the file
 USE_MOCK_DATA = False  # Set to True to use the mock data from the file, False to fetch from the API
 
-DO_THIS_ONCE = True
+DO_THIS_ONCE = False
 
 # Valid fantasy positions to keep
 VALID_FANTASY_POSITIONS = {"QB", "RB", "WR", "TE", "DEF", "K"}
@@ -167,7 +167,7 @@ def get_teams():
     return jsonify(teams_data)
 
 
-@app.route('/health', methods=['GET'])
+@app.route('/', methods=['GET'])
 def health_check():
     return "Health check passed", 200
 
