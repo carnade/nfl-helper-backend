@@ -172,5 +172,11 @@ def health_check():
     return "Health check passed", 200
 
 if __name__ == '__main__':
-    fetch_and_filter_data()  # Initial fetch on startup
-    app.run(debug=True)
+    # Fetch data once on startup
+    fetch_and_filter_data()
+    
+    # Get the PORT environment variable from the platform (like Render)
+    port = int(os.environ.get("PORT", 5000))  # Default to 5000 if PORT is not set
+    
+    # Bind the Flask app to 0.0.0.0 to allow external access, and use the assigned port
+    app.run(host='0.0.0.0', port=port)
