@@ -51,7 +51,7 @@ DATA_URL = "https://api.sleeper.app/v1/players/nfl"
 MOCK_DATA_FILE = "sleeper_data.json"
 
 # Toggle to switch between fetching data from the API or reading from the file
-USE_MOCK_DATA = True  # Set to True to use the mock data from the file, False to fetch from the API
+USE_MOCK_DATA = False  # Set to True to use the mock data from the file, False to fetch from the API
 
 DO_THIS_ONCE = True
 
@@ -165,6 +165,11 @@ def get_players():
 @app.route('/teams', methods=['GET'])
 def get_teams():
     return jsonify(teams_data)
+
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    return "Health check passed", 200
 
 if __name__ == '__main__':
     fetch_and_filter_data()  # Initial fetch on startup
