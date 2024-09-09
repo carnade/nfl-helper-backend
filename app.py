@@ -164,3 +164,8 @@ def get_players():
 def get_teams():
     return jsonify(teams_data)
 
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    return
+
