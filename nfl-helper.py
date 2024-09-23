@@ -120,7 +120,7 @@ def fetch_and_filter_data():
 
 # Schedule the data fetch task once per day
 scheduler = BackgroundScheduler()
-scheduler.add_job(func=fetch_and_filter_data, trigger="interval", days=1)
+scheduler.add_job(func=fetch_and_filter_data, trigger="interval", hours=4)
 scheduler.start()
 
 if DO_THIS_ONCE:
