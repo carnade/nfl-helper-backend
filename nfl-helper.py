@@ -88,7 +88,7 @@ def fetch_and_filter_data():
             fantasy_positions = []
 
         # Check if the player is active and has a valid fantasy position
-        if player_data.get("status") == "Active" and \
+        if not ((player_data.get("status") == "Inactive") and player_data.get("injury_status") is None) and \
            any(pos in VALID_FANTASY_POSITIONS for pos in fantasy_positions):
             filtered_players[player_id] = {
                 "status": player_data.get("status"),
