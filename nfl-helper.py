@@ -134,7 +134,6 @@ def fetch_and_filter_data():
         if (player_data.get("team") is not None):
             try:
                 if(BYE_WEEKS_2024[player_data.get("team")] == get_nfl_gameweek(datetime.date.today())):
-                    print(player_data.get("team") + " week: " + str(get_nfl_gameweek(datetime.date.today())))
                     on_bye = True
             except:
                 print(player_data.get("team"))
@@ -143,7 +142,7 @@ def fetch_and_filter_data():
             fantasy_positions = []
 
         # Check if the player is active and has a valid fantasy position
-        if not ((player_data.get("status") == "Inactive") and player_data.get("injury_status") is None) and \
+        if not ((player_data.get("status") == "Inactive") and (player_data.get("injury_status") is None or on_bye)) and \
            any(pos in VALID_FANTASY_POSITIONS for pos in fantasy_positions):
             filtered_players[player_id] = {
                 "status": player_data.get("status"),
@@ -166,7 +165,7 @@ def fetch_and_filter_data():
             if team_abbr:
                 if team_abbr not in teams_data:
                     teams_data[team_abbr] = []
-                if player_data.get("injury_status"):
+                if player_data.get("injury_status") :
                     teams_data[team_abbr].append({
                         "first_name": player_data.get("first_name"),
                         "last_name": player_data.get("last_name"),
