@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 import atexit
 import json
 import os
@@ -58,6 +59,52 @@ DO_THIS_ONCE = False
 # Valid fantasy positions to keep
 VALID_FANTASY_POSITIONS = {"QB", "RB", "WR", "TE", "DEF", "K"}
 
+BYE_WEEKS_2024 = {
+    "ARI": 11,
+    "ATL": 12,
+    "BAL": 14,
+    "BUF": 12,
+    "CAR": 11,
+    "CHI": 7,
+    "CIN": 12,
+    "CLE": 10,
+    "DAL": 7,
+    "DEN": 14,
+    "DET": 5,
+    "GB": 10,
+    "HOU": 14,
+    "IND": 14,
+    "JAX": 12,
+    "KC": 6,
+    "LAC": 5,
+    "LAR": 6,
+    "LV": 10,
+    "MIA": 6,
+    "MIN": 6,
+    "NE": 14,
+    "NO": 12,
+    "NYG": 11,
+    "NYJ": 12,
+    "PHI": 5,
+    "PIT": 9,
+    "SEA": 10,
+    "SF": 9,
+    "TB": 11,
+    "TEN": 5,
+    "WAS": 14
+}
+def get_nfl_gameweek(date):
+    # Gameweek 1 started on September 5th, 2023 (a Tuesday)
+    gameweek_1_start = datetime.date(2024, 9, 3)
+
+    # Calculate the number of days since the first gameweek
+    days_since_start = (date - gameweek_1_start).days
+
+    # Each gameweek starts on a Tuesday (7-day interval)
+    gameweek = (days_since_start // 7) + 1
+
+    return gameweek
+
 def fetch_data():
     if USE_MOCK_DATA:
         # Read data from the file
@@ -81,8 +128,16 @@ def fetch_and_filter_data():
     teams_data.clear()
 
     for player_id, player_data in data.items():
+        on_bye = False
         fantasy_positions = player_data.get("fantasy_positions")
 
+        if (player_data.get("team") is not None):
+            try:
+                if(BYE_WEEKS_2024[player_data.get("team")] == get_nfl_gameweek(datetime.date.today())):
+                    print(player_data.get("team") + " week: " + str(get_nfl_gameweek(datetime.date.today())))
+                    on_bye = True
+            except:
+                print(player_data.get("team"))
         # Ensure fantasy_positions is a list and not None
         if fantasy_positions is None:
             fantasy_positions = []
@@ -103,7 +158,7 @@ def fetch_and_filter_data():
                 "fantasy_data_id": player_data.get("fantasy_data_id"),
                 "yahoo_id": player_data.get("yahoo_id"),
                 "rotowire_id": player_data.get("rotowire_id"),
-                "injury_status": player_data.get("injury_status")  # Added injury_status
+                "injury_status": player_data.get("injury_status") if player_data.get("injury_status") is not None else "Bye" if on_bye else None    # Added injury_status
             }
             
             # Collect data by teams for the new endpoint
@@ -120,7 +175,15 @@ def fetch_and_filter_data():
 
 # Schedule the data fetch task once per day
 scheduler = BackgroundScheduler()
+
+# Schedule the default job to run every 4 hours
 scheduler.add_job(func=fetch_and_filter_data, trigger="interval", hours=4)
+
+# Schedule the job to run every hour on Sundays and Mondays between 12:00 PM and 11:59 PM
+scheduler.add_job(
+    func=fetch_and_filter_data,
+    trigger=CronTrigger(day_of_week="thu,sun,mon", hour="12-23", minute=0)
+)
 scheduler.start()
 
 if DO_THIS_ONCE:
