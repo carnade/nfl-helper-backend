@@ -39,8 +39,6 @@ def after_request(response):
     if origin and custom_cors_origin(origin):
         response.headers.add('Access-Control-Allow-Origin', origin)
         response.headers.add('Access-Control-Allow-Credentials', 'true')
-    else:
-        response.headers.add('Access-Control-Allow-Origin', 'null')  # Consider removing or logging
     response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
@@ -208,6 +206,23 @@ def get_players():
 
     return jsonify(response_data)
 
+@app.route('/getplayers/bestball', methods=['POST'])
+def get_bestball_players():
+    request_data = request.json
+    player_ids = request_data.get("playerlist", [])
+
+    if not isinstance(player_ids, list):
+        return jsonify({"error": "Invalid player IDs"}), 400
+
+    players_info = {
+        pid: filtered_players.get(pid)
+
+        for pid in player_ids if pid in filtered_players
+    }
+
+    players_data = [{"id": pid, "name": f"{player.get('first_name')} {player.get('last_name')}", "position": player.get("position")} for pid, player in players_info.items()]
+
+    return jsonify({"players": players_data})
 
 @app.route('/teams', methods=['GET'])
 def get_teams():
