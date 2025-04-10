@@ -8,6 +8,8 @@ import json
 import os
 from flask_cors import CORS
 import datetime
+from get_dynasty_ranks import scrape_ktc, scrape_fantasy_calc, tep_adjust
+
 
 app = Flask(__name__)
 
@@ -154,6 +156,42 @@ def fetch_and_filter_data():
                         "last_name": player_data.get("last_name"),
                         "injury_status": player_data.get("injury_status")
                     })
+            
+    tep_level = 1
+    ktc_players = scrape_ktc()
+    ktc_players = scrape_fantasy_calc(ktc_players)
+    adjusted_players = tep_adjust(ktc_players, tep_level)
+
+    for player in adjusted_players:
+        if "Sleeper ID" in player and player["Sleeper ID"] is not None:
+            # Convert 'Sleeper ID' to an integer if necessary
+            sleeper_id = player["Sleeper ID"]
+
+            if sleeper_id in filtered_players:
+                filtered_players[sleeper_id].update({
+                    "KTC Position Rank": player["Position Rank"],
+                    "KTC Value": player["SFValue"],
+                    "FC Position Rank": player["FantasyCalc SF Position Rank"],
+                    "FC Value": player["FantasyCalc SF Value"],
+                })
+            else:
+                print(f"No match found for Sleeper ID: {sleeper_id}")
+        else:
+            # Check by name if 'Sleeper ID' is not found
+            matched = False
+            for filtered_id, filtered_player in filtered_players.items():
+                if (filtered_player.get("first_name") == player.get("Player Name").split()[0] and
+                    filtered_player.get("last_name") == player.get("Player Name").split()[-1]):
+                    filtered_players[filtered_id].update({
+                        "KTC Position Rank": player["Position Rank"],
+                        "KTC Value": player["SFValue"]
+                    })
+                    print(f"Updated player {filtered_player.get('first_name')} {filtered_player.get('last_name')} with KTC and FC data.")
+                    matched = True
+                    break  # Stop searching once a match is found
+
+            if not matched:
+                print(f"No match found for Player Name: {player.get('Player Name')}")
 
 
 # Schedule the data fetch task
@@ -223,6 +261,33 @@ def get_bestball_players():
     players_data = [{"id": pid, "name": f"{player.get('first_name')} {player.get('last_name')}", "position": player.get("position")} for pid, player in players_info.items()]
 
     return jsonify({"players": players_data})
+
+@app.route('/getplayers/data', methods=['POST'])
+def get_all_players():
+    """
+    Endpoint to return filtered players based on a list of Sleeper IDs.
+
+    Request Body:
+        {
+            "player_list": [12345, 67890, ...]
+        }
+
+    Returns:
+        JSON response containing the filtered players matching the Sleeper IDs.
+    """
+    request_data = request.json
+    player_ids = request_data.get("playerlist", [])
+
+    if not isinstance(player_ids, list):
+        return jsonify({"error": "Invalid player_list format. Must be a list of Sleeper IDs."}), 400
+
+    # Filter players based on the provided Sleeper IDs
+    players_info = {
+        pid: filtered_players.get(pid)
+        for pid in player_ids if pid in filtered_players
+    }
+
+    return jsonify(players_info), 200
 
 @app.route('/teams', methods=['GET'])
 def get_teams():
