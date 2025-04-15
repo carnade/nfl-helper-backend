@@ -9,6 +9,7 @@ import os
 from flask_cors import CORS
 import datetime
 from get_dynasty_ranks import scrape_ktc, scrape_fantasy_calc, tep_adjust
+import random  # Import random for generating random deltas
 
 
 app = Flask(__name__)
@@ -48,6 +49,7 @@ def after_request(response):
 
 # Dictionary to store filtered player data
 filtered_players = {}
+scraped_ranks = []
 teams_data = {}
 
 # URL to fetch data from
@@ -102,7 +104,7 @@ def fetch_data():
 
 def fetch_and_filter_data():
     data = fetch_data()
-    global filtered_players, teams_data
+    global filtered_players, scraped_ranks, teams_data
     filtered_players.clear()
     teams_data.clear()
 
@@ -156,42 +158,68 @@ def fetch_and_filter_data():
                         "last_name": player_data.get("last_name"),
                         "injury_status": player_data.get("injury_status")
                     })
-            
-    tep_level = 1
-    ktc_players = scrape_ktc()
-    ktc_players = scrape_fantasy_calc(ktc_players)
-    adjusted_players = tep_adjust(ktc_players, tep_level)
+    if scraped_ranks is not None:
+        print(f"{datetime.datetime.now()} - Updated filtered_players with old scraped data.")
 
+        update_filtered_players_with_scraped_data(scraped_ranks)
+            
+
+def update_filtered_players_with_scraped_data(input_data=None):
+    """
+    Updates the filtered_players dictionary using scraped data or provided input data.
+
+    Args:
+        input_data (list, optional): A list of player dictionaries to update filtered_players.
+                                     If None, data will be scraped from KTC and FantasyCalc.
+    """
+    global filtered_players, scraped_ranks
+
+    print(f"{datetime.datetime.now()} - Starting data scraping and updating filtered_players...")
+
+    # Use input_data if provided, otherwise scrape data
+    if input_data is not None:
+        print("Using provided input data to update filtered_players.")
+        adjusted_players = input_data
+    else:
+        print("Scraping data from KTC and FantasyCalc...")
+        tep_level = 1
+        ktc_players = scrape_ktc()
+        ktc_players = scrape_fantasy_calc(ktc_players)
+        adjusted_players = tep_adjust(ktc_players, tep_level)
+        scraped_ranks = adjusted_players
+
+    # Update filtered_players with the provided or scraped data
     for player in adjusted_players:
         if "Sleeper ID" in player and player["Sleeper ID"] is not None:
-            # Convert 'Sleeper ID' to an integer if necessary
             sleeper_id = player["Sleeper ID"]
 
             if sleeper_id in filtered_players:
+                existing_player = filtered_players[sleeper_id]
+
+                # Ensure KTC Delta and FC Delta are initialized to 0 if not already set
+                if "KTC Delta" not in existing_player:
+                    ktc_delta = 0
+                else:
+                    ktc_delta = player.get("SFValue", 0) - existing_player.get("KTC Value", 0)
+                if "FC Delta" not in existing_player:
+                    fc_delta = 0
+                else:
+                    fc_delta = player.get("FantasyCalc SF Value", 0) - existing_player.get("FC Value", 0)
+
                 filtered_players[sleeper_id].update({
                     "KTC Position Rank": player["Position Rank"],
-                    "KTC Value": player["SFValue"],
+                    "KTC Value": player["SFValue"] if player["SFValue"] != 0 else player["Value"],
+                    "KTC Delta": ktc_delta,
                     "FC Position Rank": player["FantasyCalc SF Position Rank"],
                     "FC Value": player["FantasyCalc SF Value"],
+                    "FC Delta": fc_delta,
                 })
             else:
                 print(f"No match found for Sleeper ID: {sleeper_id}")
         else:
-            # Check by name if 'Sleeper ID' is not found
-            matched = False
-            for filtered_id, filtered_player in filtered_players.items():
-                if (filtered_player.get("first_name") == player.get("Player Name").split()[0] and
-                    filtered_player.get("last_name") == player.get("Player Name").split()[-1]):
-                    filtered_players[filtered_id].update({
-                        "KTC Position Rank": player["Position Rank"],
-                        "KTC Value": player["SFValue"]
-                    })
-                    print(f"Updated player {filtered_player.get('first_name')} {filtered_player.get('last_name')} with KTC and FC data.")
-                    matched = True
-                    break  # Stop searching once a match is found
+            print(f"Missing Sleeper ID for player: {player.get('Player Name')}")
 
-            if not matched:
-                print(f"No match found for Player Name: {player.get('Player Name')}")
+    print(f"{datetime.datetime.now()} - Finished updating filtered_players.")
 
 
 # Schedule the data fetch task
@@ -205,10 +233,18 @@ scheduler.add_job(
     func=fetch_and_filter_data,
     trigger=CronTrigger(day_of_week="thu,sun,mon", hour="12-23", minute=0)
 )
+
+# Schedule the new job to run every Wednesday at 08:00
+scheduler.add_job(
+    func=update_filtered_players_with_scraped_data,
+    trigger=CronTrigger(day_of_week="wed", hour=8, minute=0)
+)
+
 scheduler.start()
 
 if DO_THIS_ONCE:
     fetch_and_filter_data()
+    update_filtered_players_with_scraped_data()
     DO_THIS_ONCE = False
 
 # Ensure the scheduler is shut down when the app exits
@@ -312,6 +348,7 @@ if __name__ == '__main__':
 
     # 3. Fetch data once on startup
     fetch_and_filter_data()
+    update_filtered_players_with_scraped_data()
 
     # 4. Run the Flask app
     port = int(os.environ.get("PORT", 5000))  # Default to port 5000 if not set
