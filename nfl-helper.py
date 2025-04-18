@@ -47,10 +47,30 @@ def after_request(response):
     return response
 
 
+@app.before_request
+def track_request_statistics():
+    """
+    Middleware to track request statistics for each endpoint.
+    """
+    global request_statistics
+
+    # Get the endpoint being accessed
+    endpoint = request.endpoint
+
+    # Increment the request count for the endpoint
+    if endpoint not in request_statistics["endpoints"]:
+        request_statistics["endpoints"][endpoint] = 0
+    request_statistics["endpoints"][endpoint] += 1
+
+
 # Dictionary to store filtered player data
 filtered_players = {}
 scraped_ranks = []
 teams_data = {}
+
+# Global variables to track the last update times
+last_players_update = None
+last_rankings_update = None
 
 # URL to fetch data from
 DATA_URL = "https://api.sleeper.app/v1/players/nfl"
@@ -73,6 +93,14 @@ BYE_WEEKS_2024 = {
     "LV": 10, "MIA": 6, "MIN": 6, "NE": 14, "NO": 12, "NYG": 11,
     "NYJ": 12, "PHI": 5, "PIT": 9, "SEA": 10, "SF": 9, "TB": 11,
     "TEN": 5, "WAS": 14
+}
+
+# Global variable to track the startup time
+startup_time = datetime.datetime.now()
+
+# Global dictionary to track request counts per endpoint
+request_statistics = {
+    "endpoints": {}  # Tracks request counts per endpoint
 }
 
 
@@ -103,8 +131,9 @@ def fetch_data():
 
 
 def fetch_and_filter_data():
+    global filtered_players, scraped_ranks, teams_data, last_players_update
+
     data = fetch_data()
-    global filtered_players, scraped_ranks, teams_data
     filtered_players.clear()
     teams_data.clear()
 
@@ -158,21 +187,18 @@ def fetch_and_filter_data():
                         "last_name": player_data.get("last_name"),
                         "injury_status": player_data.get("injury_status")
                     })
+
+    # Update the last players update timestamp
+    last_players_update = datetime.datetime.now()
+    print(f"Players updated at {last_players_update}")
+
     if scraped_ranks is not None:
         print(f"{datetime.datetime.now()} - Updated filtered_players with old scraped data.")
-
         update_filtered_players_with_scraped_data(scraped_ranks)
-            
+
 
 def update_filtered_players_with_scraped_data(input_data=None):
-    """
-    Updates the filtered_players dictionary using scraped data or provided input data.
-
-    Args:
-        input_data (list, optional): A list of player dictionaries to update filtered_players.
-                                     If None, data will be scraped from KTC and FantasyCalc.
-    """
-    global filtered_players, scraped_ranks
+    global filtered_players, scraped_ranks, last_rankings_update
 
     print(f"{datetime.datetime.now()} - Starting data scraping and updating filtered_players...")
 
@@ -218,6 +244,10 @@ def update_filtered_players_with_scraped_data(input_data=None):
                 print(f"No match found for Sleeper ID: {sleeper_id}")
         else:
             print(f"Missing Sleeper ID for player: {player.get('Player Name')}")
+
+    # Update the last rankings update timestamp
+    last_rankings_update = datetime.datetime.now()
+    print(f"Rankings updated at {last_rankings_update}")
 
     print(f"{datetime.datetime.now()} - Finished updating filtered_players.")
 
@@ -328,6 +358,42 @@ def get_all_players():
 @app.route('/teams', methods=['GET'])
 def get_teams():
     return jsonify(teams_data)
+
+
+@app.route('/statistics', methods=['GET'])
+def get_statistics():
+    """
+    Endpoint to return request statistics.
+
+    Returns:
+        JSON response containing uptime, request counts per endpoint, and average requests per day.
+    """
+    global request_statistics, startup_time, last_players_update, last_rankings_update
+
+    # Calculate uptime
+    current_time = datetime.datetime.now()
+    uptime = current_time - startup_time
+
+    # Calculate the total number of requests
+    total_requests = sum(request_statistics["endpoints"].values())
+
+    # Calculate the number of days since startup
+    days_since_startup = max(uptime.days + 1, 1)  # Add 1 to avoid division by zero
+
+    # Calculate the average requests per day
+    average_requests_per_day = total_requests / days_since_startup
+
+    # Prepare the response
+    response = {
+        "uptime": str(uptime),  # Format uptime as a string
+        "total_requests": total_requests,
+        "average_requests_per_day": average_requests_per_day,
+        "requests_per_endpoint": request_statistics["endpoints"],
+        "last_players_update": str(last_players_update) if last_players_update else "Never",
+        "last_rankings_update": str(last_rankings_update) if last_rankings_update else "Never"
+    }
+
+    return jsonify(response), 200
 
 
 @app.route('/', methods=['GET'])

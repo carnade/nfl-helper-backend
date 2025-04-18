@@ -18,7 +18,7 @@ def translate_name(player_name):
     """
     name_translations = {
         "Brian Thomas Jr.": "Brian Thomas",
-        "Marvin Harrison Jr.": "Marvin Harrison",
+        "Marvin Harrison Jr.": "Marvin Harrison Jr",
         "Kenneth Walker III": "Kenneth Walker",
         "D.J. Moore": "DJ Moore",
         "Michael Penix Jr.": "Michael Penix",
