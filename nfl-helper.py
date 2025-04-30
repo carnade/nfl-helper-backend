@@ -222,15 +222,18 @@ def update_filtered_players_with_scraped_data(input_data=None):
             if sleeper_id in filtered_players:
                 existing_player = filtered_players[sleeper_id]
 
-                # Ensure KTC Delta and FC Delta are initialized to 0 if not already set
-                if "KTC Delta" not in existing_player:
-                    ktc_delta = 0
+                if input_data is not None: 
+                    if "KTC Delta" not in existing_player:
+                        ktc_delta = 0
+                    else:
+                        ktc_delta = player.get("SFValue", 0) - existing_player.get("KTC Value", 0)
+                    if "FC Delta" not in existing_player:
+                        fc_delta = 0
+                    else:
+                        fc_delta = player.get("FantasyCalc SF Value", 0) - existing_player.get("FC Value", 0)
                 else:
-                    ktc_delta = player.get("SFValue", 0) - existing_player.get("KTC Value", 0)
-                if "FC Delta" not in existing_player:
-                    fc_delta = 0
-                else:
-                    fc_delta = player.get("FantasyCalc SF Value", 0) - existing_player.get("FC Value", 0)
+                    ktc_delta = player.get("KTC Delta", 0)
+                    fc_delta = player.get("FC Delta", 0)
 
                 filtered_players[sleeper_id].update({
                     "KTC Position Rank": player["Position Rank"],
@@ -370,30 +373,77 @@ def get_statistics():
     """
     global request_statistics, startup_time, last_players_update, last_rankings_update
 
-    # Calculate uptime
-    current_time = datetime.datetime.now()
-    uptime = current_time - startup_time
+    try:
+        # Calculate uptime
+        current_time = datetime.datetime.now()
+        uptime = current_time - startup_time
 
-    # Calculate the total number of requests
-    total_requests = sum(request_statistics["endpoints"].values())
+        # Calculate the total number of requests
+        total_requests = sum(request_statistics["endpoints"].values())
 
-    # Calculate the number of days since startup
-    days_since_startup = max(uptime.days + 1, 1)  # Add 1 to avoid division by zero
+        # Calculate the number of days since startup
+        days_since_startup = max(uptime.days + 1, 1)  # Add 1 to avoid division by zero
 
-    # Calculate the average requests per day
-    average_requests_per_day = total_requests / days_since_startup
+        # Calculate the average requests per day
+        average_requests_per_day = total_requests / days_since_startup
 
-    # Prepare the response
-    response = {
-        "uptime": str(uptime),  # Format uptime as a string
-        "total_requests": total_requests,
-        "average_requests_per_day": average_requests_per_day,
-        "requests_per_endpoint": request_statistics["endpoints"],
-        "last_players_update": str(last_players_update) if last_players_update else "Never",
-        "last_rankings_update": str(last_rankings_update) if last_rankings_update else "Never"
-    }
+        # Prepare the response
+        response = {
+            "uptime": str(uptime),  # Format uptime as a string
+            "total_requests": total_requests,
+            "average_requests_per_day": average_requests_per_day,
+            "requests_per_endpoint": request_statistics["endpoints"],
+            "last_players_update": str(last_players_update) if last_players_update else "Never",
+            "last_rankings_update": str(last_rankings_update) if last_rankings_update else "Never"
+        }
 
-    return jsonify(response), 200
+        # Filter valid endpoints
+        valid_endpoints = {
+            str(key): int(value) for key, value in request_statistics["endpoints"].items()
+            if isinstance(key, str) and isinstance(value, int)
+        }
+        response["requests_per_endpoint"] = valid_endpoints
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        # Debugging: Log the error
+        print(f"Error in /statistics endpoint: {e}")
+        # Debugging: Log the response data
+        print("Response data:", response)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/rankings/update', methods=['POST'])
+def admin_update_rankings():
+    """
+    Admin endpoint to manually trigger a rankings update.
+
+    Request Body (optional):
+        {
+            "input_data": [...]  # Optional list of player dictionaries to update rankings
+        }
+
+    Returns:
+        JSON response indicating success or failure.
+    """
+    try:
+        # Handle optional input data
+        request_data = request.get_json(silent=True) or {}
+        input_data = request_data.get("input_data")
+
+        if input_data:
+            print("Admin triggered rankings update with provided input data...")
+        else:
+            print("Admin triggered rankings update with scraped data...")
+
+        # Call the rankings update method
+        update_filtered_players_with_scraped_data(input_data=input_data)
+
+        return jsonify({"message": "Rankings update triggered successfully."}), 200
+    except Exception as e:
+        print(f"Error while triggering rankings update: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/', methods=['GET'])
