@@ -222,7 +222,8 @@ def update_filtered_players_with_scraped_data(input_data=None):
             if sleeper_id in filtered_players:
                 existing_player = filtered_players[sleeper_id]
 
-                if input_data is not None: 
+                # Only calculate deltas if input_data is None (i.e., when scraping new data)
+                if input_data is None:
                     if "KTC Delta" not in existing_player:
                         ktc_delta = 0
                     else:
@@ -232,8 +233,9 @@ def update_filtered_players_with_scraped_data(input_data=None):
                     else:
                         fc_delta = player.get("FantasyCalc SF Value", 0) - existing_player.get("FC Value", 0)
                 else:
-                    ktc_delta = player.get("KTC Delta", 0)
-                    fc_delta = player.get("FC Delta", 0)
+                    # Keep existing deltas when using static data
+                    ktc_delta = existing_player.get("KTC Delta", 0)
+                    fc_delta = existing_player.get("FC Delta", 0)
 
                 filtered_players[sleeper_id].update({
                     "KTC Position Rank": player["Position Rank"],
