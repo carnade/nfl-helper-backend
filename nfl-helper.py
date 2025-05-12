@@ -38,6 +38,7 @@ def custom_cors_origin(origin):
 
 @app.after_request
 def after_request(response):
+
     origin = request.headers.get('Origin')
     if origin and custom_cors_origin(origin):
         response.headers.add('Access-Control-Allow-Origin', origin)
@@ -65,7 +66,7 @@ def track_request_statistics():
 
 # Dictionary to store filtered player data
 filtered_players = {}
-scraped_ranks = []
+scraped_ranks = {}
 teams_data = {}
 
 # Global variables to track the last update times
@@ -188,67 +189,114 @@ def fetch_and_filter_data():
                         "injury_status": player_data.get("injury_status")
                     })
 
+    # Fetch projections and update filtered_players
+    projections = get_player_projections()
+    for projection in projections:
+        player_id = projection.get("player_id")
+        if player_id in filtered_players:
+            stats = projection.get("stats", {})
+            filtered_players[player_id].update({
+                "adp_2qb": stats.get("adp_2qb", None),
+                "adp_dynasty_2qb": stats.get("adp_dynasty_2qb", None),
+                "adp_half_ppr": stats.get("adp_half_ppr", None),
+                "adp_ppr": stats.get("adp_ppr", None)
+            })
+
+    # Fetch stats and update filtered_players
+    stats = get_player_stats()
+    for stat in stats:
+        player_id = stat.get("player_id")
+        if player_id in filtered_players:
+            player_stats = stat.get("stats", {})
+            filtered_players[player_id].update({
+                "pos_rank_std": player_stats.get("pos_rank_std", None),
+                "gp": player_stats.get("gp", None),
+                "rank_half_ppr": player_stats.get("rank_half_ppr", None),
+                "pos_rank_half_ppr": player_stats.get("pos_rank_half_ppr", None),
+                "pos_rank_ppr": player_stats.get("pos_rank_ppr", None),
+                "rank_ppr": player_stats.get("rank_ppr", None),
+                "pts_half_ppr": player_stats.get("pts_half_ppr", None),
+                "pts_ppr": player_stats.get("pts_ppr", None)
+            })
+
     # Update the last players update timestamp
     last_players_update = datetime.datetime.now()
     print(f"Players updated at {last_players_update}")
 
-    if scraped_ranks is not None:
+    if scraped_ranks:
         print(f"{datetime.datetime.now()} - Updated filtered_players with old scraped data.")
-        update_filtered_players_with_scraped_data(scraped_ranks)
+        update_players_with_old_data()
 
 
-def update_filtered_players_with_scraped_data(input_data=None):
+def update_players_with_old_data():
+    """Update filtered_players with pre-scraped data stored in scraped_ranks."""
+    global filtered_players, scraped_ranks
+
+    print(f"{datetime.datetime.now()} - Updating filtered_players with old scraped data...")
+
+    for sleeper_id, player in scraped_ranks.items():
+        if sleeper_id in filtered_players:
+            existing_player = filtered_players[sleeper_id]
+
+            filtered_players[sleeper_id].update({
+                "KTC Position Rank": player["Position Rank"],
+                "KTC Value": player["SFValue"] if player["SFValue"] != 0 else player["Value"],
+                "KTC Delta": player["KTC Delta"],
+                "FC Position Rank": player["FantasyCalc SF Position Rank"],
+                "FC Value": player["FantasyCalc SF Value"],
+                "FC Delta": player["FC Delta"],
+            })
+        else:
+            print(f"No match found for Sleeper ID: {sleeper_id}")
+
+    print(f"{datetime.datetime.now()} - Finished updating filtered_players with old data.")
+
+
+def update_filtered_players_with_scraped_data():
     global filtered_players, scraped_ranks, last_rankings_update
 
     print(f"{datetime.datetime.now()} - Starting data scraping and updating filtered_players...")
 
-    # Use input_data if provided, otherwise scrape data
-    if input_data is not None:
-        print("Using provided input data to update filtered_players.")
-        adjusted_players = input_data
-    else:
-        print("Scraping data from KTC and FantasyCalc...")
-        tep_level = 1
-        ktc_players = scrape_ktc()
-        ktc_players = scrape_fantasy_calc(ktc_players)
-        adjusted_players = tep_adjust(ktc_players, tep_level)
-        scraped_ranks = adjusted_players
+
+    print("Scraping data from KTC and FantasyCalc...")
+    tep_level = 1
+    ktc_players = scrape_ktc()
+    ktc_players = scrape_fantasy_calc(ktc_players)
+    adjusted_players = tep_adjust(ktc_players, tep_level)
+
+    # Save scraped ranks as a dictionary with sleeper_id as the key
+    scraped_ranks = {player["Sleeper ID"]: player for player in adjusted_players if "Sleeper ID" in player and player["Sleeper ID"] is not None}
 
     # Update filtered_players with the provided or scraped data
-    for player in adjusted_players:
-        if "Sleeper ID" in player and player["Sleeper ID"] is not None:
-            sleeper_id = player["Sleeper ID"]
+    for sleeper_id, player in scraped_ranks.items():
+        if sleeper_id in filtered_players:
+            existing_player = filtered_players[sleeper_id]
 
-            if sleeper_id in filtered_players:
-                existing_player = filtered_players[sleeper_id]
-
-                # Only calculate deltas if input_data is None (i.e., when scraping new data)
-                if input_data is None:
-                    if "KTC Delta" not in existing_player:
-                        ktc_delta = 0
-                    else:
-                        ktc_delta = player.get("SFValue", 0) - existing_player.get("KTC Value", 0)
-                    if "FC Delta" not in existing_player:
-                        fc_delta = 0
-                    else:
-                        fc_delta = player.get("FantasyCalc SF Value", 0) - existing_player.get("FC Value", 0)
-                else:
-                    # Keep existing deltas when using static data
-                    ktc_delta = existing_player.get("KTC Delta", 0)
-                    fc_delta = existing_player.get("FC Delta", 0)
-
-                filtered_players[sleeper_id].update({
-                    "KTC Position Rank": player["Position Rank"],
-                    "KTC Value": player["SFValue"] if player["SFValue"] != 0 else player["Value"],
-                    "KTC Delta": ktc_delta,
-                    "FC Position Rank": player["FantasyCalc SF Position Rank"],
-                    "FC Value": player["FantasyCalc SF Value"],
-                    "FC Delta": fc_delta,
-                })
+            if "KTC Delta" not in existing_player:
+                ktc_delta = 0
             else:
-                print(f"No match found for Sleeper ID: {sleeper_id}")
+                ktc_delta = player.get("SFValue", 0) - existing_player.get("KTC Value", 0)
+            if "FC Delta" not in existing_player:
+                fc_delta = 0
+            else:
+                fc_delta = player.get("FantasyCalc SF Value", 0) - existing_player.get("FC Value", 0)
+
+            updated_data = {
+                "KTC Position Rank": player["Position Rank"],
+                "KTC Value": player["SFValue"] if player["SFValue"] != 0 else player["Value"],
+                "KTC Delta": ktc_delta,
+                "FC Position Rank": player["FantasyCalc SF Position Rank"],
+                "FC Value": player["FantasyCalc SF Value"],
+                "FC Delta": fc_delta,
+            }
+
+            # Update filtered_players
+            filtered_players[sleeper_id].update(updated_data)
+
+            # Update scraped_ranks
+            scraped_ranks[sleeper_id].update(updated_data)
         else:
-            print(f"Missing Sleeper ID for player: {player.get('Player Name')}")
+            print(f"No match found for Sleeper ID: {sleeper_id}")
 
     # Update the last rankings update timestamp
     last_rankings_update = datetime.datetime.now()
@@ -430,27 +478,84 @@ def admin_update_rankings():
         JSON response indicating success or failure.
     """
     try:
-        # Handle optional input data
-        request_data = request.get_json(silent=True) or {}
-        input_data = request_data.get("input_data")
 
-        if input_data:
-            print("Admin triggered rankings update with provided input data...")
-        else:
-            print("Admin triggered rankings update with scraped data...")
 
         # Call the rankings update method
-        update_filtered_players_with_scraped_data(input_data=input_data)
+        update_filtered_players_with_scraped_data()
 
         return jsonify({"message": "Rankings update triggered successfully."}), 200
     except Exception as e:
         print(f"Error while triggering rankings update: {e}")
         return jsonify({"error": str(e)}), 500
 
+"""
+@app.route('/admin/assign-random-deltas', methods=['POST'])
+def assign_random_deltas():
+    global filtered_players, scraped_ranks
+
+    for player_id, player_data in filtered_players.items():
+        ktc_delta = random.randint(-50, 50)
+        fc_delta = random.randint(-50, 50)
+
+        player_data['KTC Delta'] = ktc_delta
+        player_data['FC Delta'] = fc_delta
+
+        # Update KTC Value and FC Value by adding the deltas
+        if 'KTC Value' in player_data:
+            player_data['KTC Value'] = player_data.get('KTC Value', 0) + ktc_delta
+        if 'FC Value' in player_data:
+            player_data['FC Value'] = player_data.get('FC Value', 0) + fc_delta
+
+        # Update scraped_ranks if the player exists there
+        if player_id in scraped_ranks:
+            scraped_ranks[player_id]['KTC Delta'] = ktc_delta
+            scraped_ranks[player_id]['FC Delta'] = fc_delta
+            if 'KTC Value' in scraped_ranks[player_id]:
+                scraped_ranks[player_id]['KTC Value'] = scraped_ranks[player_id].get('KTC Value', 0) + ktc_delta
+            if 'FC Value' in scraped_ranks[player_id]:
+                scraped_ranks[player_id]['FC Value'] = scraped_ranks[player_id].get('FC Value', 0) + fc_delta
+
+    return jsonify({"message": "Random deltas assigned and values updated for all filtered players and scraped ranks."}), 200
+
+
+@app.route('/admin/trigger-fetch', methods=['POST'])
+def trigger_fetch_and_filter():
+    try:
+        fetch_and_filter_data()
+        return jsonify({"message": "fetch_and_filter_data triggered successfully."}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+"""
 
 @app.route('/', methods=['GET'])
 def health_check():
     return "Health check passed", 200
+
+
+def get_player_projections():
+    """
+    Fetch player projections for the 2025 NFL regular season.
+
+    Returns:
+        dict: JSON response containing player projections.
+    """
+    url = "https://api.sleeper.com/projections/nfl/2025?season_type=regular&position[]=QB&position[]=RB&position[]=TE&position[]=WR&order_by=adp_2qb"
+    response = requests.get(url)
+    response.raise_for_status()  # Raise an exception for HTTP errors
+    return response.json()
+
+
+def get_player_stats():
+    """
+    Fetch player stats for the 2024 NFL regular season.
+
+    Returns:
+        dict: JSON response containing player stats.
+    """
+    url = "https://api.sleeper.com/stats/nfl/2024?season_type=regular&position%5B%5D=QB&position%5B%5D=RB&position%5B%5D=TE&position%5B%5D=WR&order_by=pts_dynasty_2qb"
+    response = requests.get(url)
+    response.raise_for_status()  # Raise an exception for HTTP errors
+    return response.json()
 
 
 if __name__ == '__main__':
