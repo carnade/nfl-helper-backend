@@ -49,6 +49,16 @@ def after_request(response):
 
 
 @app.before_request
+def handle_global_preflight():
+    if request.method == 'OPTIONS':
+        response = jsonify({"message": "Preflight OK"})
+        response.headers.add('Access-Control-Allow-Origin', '*')  # Adjust origin as needed
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        return response
+
+
+@app.before_request
 def track_request_statistics():
     """
     Middleware to track request statistics for each endpoint.
@@ -202,6 +212,9 @@ def fetch_and_filter_data():
                 "adp_ppr": stats.get("adp_ppr", None)
             })
 
+    # Calculate ADP ranks within each position
+    calculate_adp_ranks()
+
     # Fetch stats and update filtered_players
     stats = get_player_stats()
     for stat in stats:
@@ -226,6 +239,35 @@ def fetch_and_filter_data():
     if scraped_ranks:
         print(f"{datetime.datetime.now()} - Updated filtered_players with old scraped data.")
         update_players_with_old_data()
+
+
+def calculate_adp_ranks():
+    """
+    Calculate ADP ranks for each player within their position.
+    """
+    # Group players by position
+    positions = {"QB": [], "RB": [], "WR": [], "TE": []}
+    for player_id, player_data in filtered_players.items():
+        position = player_data.get("position")
+        if position in positions:
+            positions[position].append((player_id, player_data))
+
+    # ADP types to calculate ranks for
+    adp_types = ["adp_2qb", "adp_dynasty_2qb", "adp_half_ppr", "adp_ppr"]
+
+    # Calculate ranks for each position and ADP type
+    for position, players in positions.items():
+        for adp_type in adp_types:
+            # Sort players by the current ADP type (ignoring None values)
+            sorted_players = sorted(
+                [p for p in players if p[1].get(adp_type) is not None],
+                key=lambda x: x[1][adp_type]
+            )
+
+            # Assign ranks
+            for rank, (player_id, _) in enumerate(sorted_players, start=1):
+                if player_id in filtered_players:
+                    filtered_players[player_id][f"{adp_type}_rank"] = rank
 
 
 def update_players_with_old_data():
@@ -556,6 +598,16 @@ def get_player_stats():
     response = requests.get(url)
     response.raise_for_status()  # Raise an exception for HTTP errors
     return response.json()
+
+
+@app.route('/data', methods=['OPTIONS'])
+def handle_preflight():
+    """Handle CORS preflight requests."""
+    response = jsonify({"message": "Preflight OK"})
+    response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+    response.headers.add('Access-Control-Allow-Methods', 'POST, GET, OPTIONS')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    return response
 
 
 if __name__ == '__main__':
