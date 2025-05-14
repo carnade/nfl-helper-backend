@@ -49,16 +49,6 @@ def after_request(response):
 
 
 @app.before_request
-def handle_global_preflight():
-    if request.method == 'OPTIONS':
-        response = jsonify({"message": "Preflight OK"})
-        response.headers.add('Access-Control-Allow-Origin', '*')  # Adjust origin as needed
-        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-        return response
-
-
-@app.before_request
 def track_request_statistics():
     """
     Middleware to track request statistics for each endpoint.
@@ -598,16 +588,6 @@ def get_player_stats():
     response = requests.get(url)
     response.raise_for_status()  # Raise an exception for HTTP errors
     return response.json()
-
-
-@app.route('/data', methods=['OPTIONS'])
-def handle_preflight():
-    """Handle CORS preflight requests."""
-    response = jsonify({"message": "Preflight OK"})
-    response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
-    response.headers.add('Access-Control-Allow-Methods', 'POST, GET, OPTIONS')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    return response
 
 
 if __name__ == '__main__':
