@@ -95,6 +95,49 @@ BYE_WEEKS_2024 = {
     "NYJ": 12, "PHI": 5, "PIT": 9, "SEA": 10, "SF": 9, "TB": 11,
     "TEN": 5, "WAS": 14
 }
+BYE_WEEKS_2025 = {
+    "ARI": 8, "ATL": 5, "BAL": 7, "BUF": 7, "CAR": 14, "CHI": 5,
+    "CIN": 10, "CLE": 9, "DAL": 10, "DEN": 12, "DET": 8, "GB": 5,
+    "HOU": 6, "IND": 11, "JAX": 8, "KC": 10, "LAC": 11, "LAR": 8,
+    "LV": 8, "MIA": 12, "MIN": 6, "NE": 13, "NO": 11, "NYG": 12,
+    "NYJ": 9, "PHI": 9, "PIT": 5, "SF": 14, "SEA": 8, "TB": 9,
+    "TEN": 10, "WSH": 12
+}
+
+TEAM_SCHEDULES_2025 = {
+    "ARI": ["@NO", "CAR", "@SF", "SEA", "TEN", "@IND", "GB", "BYE", "@DAL", "@SEA", "SF", "JAX", "@TB", "LAR", "@HOU", "ATL", "@CIN", "@LAR"],
+    "ATL": ["TB", "@MIN", "@CAR", "WSH", "BYE", "BUF", "@SF", "MIA", "@NE", "@IND", "CAR", "@NO", "@NYJ", "SEA", "@TB", "@ARI", "LAR", "NO"],
+    "BAL": ["@BUF", "CLE", "DET", "@KC", "HOU", "LAR", "BYE", "CHI", "@MIA", "@MIN", "@CLE", "NYJ", "CIN", "PIT", "@CIN", "NE", "@GB", "@PIT"],
+    "BUF": ["BAL", "@NYJ", "MIA", "NO", "NE", "@ATL", "BYE", "@CAR", "KC", "@MIA", "TB", "@HOU", "@PIT", "CIN", "@NE", "@CLE", "PHI", "NYJ"],
+    "CAR": ["@JAX", "@ARI", "ATL", "@NE", "MIA", "DAL", "@NYJ", "BUF", "@GB", "NO", "@ATL", "@SF", "LAR", "BYE", "@NO", "TB", "SEA", "@TB"],
+    "CHI": ["MIN", "@DET", "DAL", "@LV", "BYE", "@WSH", "NO", "@BAL", "@CIN", "NYG", "@MIN", "PIT", "@PHI", "@GB", "CLE", "GB", "@SF", "DET"],
+    "CIN": ["@CLE", "JAX", "@MIN", "@DEN", "DET", "@GB", "PIT", "NYJ", "CHI", "BYE", "@PIT", "NE", "@BAL", "@BUF", "BAL", "@MIA", "ARI", "CLE"],
+    "CLE": ["CIN", "@BAL", "GB", "@DET", "MIN", "@PIT", "MIA", "@NE", "BYE", "@NYJ", "BAL", "@LV", "SF", "TEN", "@CHI", "BUF", "PIT", "@CIN"],
+    "DAL": ["@PHI", "NYG", "@CHI", "GB", "@NYJ", "@CAR", "WSH", "@DEN", "ARI", "BYE", "@LV", "PHI", "KC", "@DET", "MIN", "LAC", "@WSH", "@NYG"],
+    "DEN": ["TEN", "@IND", "@LAC", "CIN", "@PHI", "@NYJ", "NYG", "DAL", "@HOU", "LV", "KC", "BYE", "@WSH", "@LV", "GB", "JAX", "@KC", "LAC"],
+    "DET": ["@GB", "CHI", "@BAL", "CLE", "@CIN", "@KC", "TB", "BYE", "MIN", "@WSH", "@PHI", "NYG", "GB", "DAL", "@LAR", "PIT", "@MIN", "@CHI"],
+    "GB": ["DET", "WSH", "@CLE", "@DAL", "BYE", "CIN", "@ARI", "@PIT", "CAR", "PHI", "@NYG", "MIN", "@DET", "CHI", "@DEN", "@CHI", "BAL", "@MIN"],
+    "HOU": ["@LAR", "TB", "@JAX", "TEN", "@BAL", "BYE", "@SEA", "SF", "DEN", "JAX", "@TEN", "BUF", "@IND", "@KC", "ARI", "LV", "@LAC", "IND"],
+    "IND": ["MIA", "DEN", "@TEN", "@LAR", "LV", "ARI", "@LAC", "TEN", "@PIT", "ATL", "BYE", "@KC", "HOU", "@JAX", "@SEA", "SF", "JAX", "@HOU"],
+    "JAX": ["CAR", "@CIN", "HOU", "@SF", "KC", "SEA", "LAR", "BYE", "@LV", "@HOU", "LAC", "@ARI", "@TEN", "IND", "NYJ", "@DEN", "@IND", "TEN"],
+    "KC": ["@LAC", "PHI", "@NYG", "BAL", "@JAX", "DET", "LV", "WSH", "@BUF", "BYE", "@DEN", "IND", "@DAL", "HOU", "LAC", "@TEN", "DEN", "@LV"],
+    "LV": ["@NE", "LAC", "@WSH", "CHI", "@IND", "TEN", "@KC", "BYE", "JAX", "@DEN", "DAL", "CLE", "@LAC", "DEN", "@PHI", "@HOU", "NYG", "KC"],
+    "LAR": ["HOU", "@TEN", "@PHI", "IND", "SF", "@BAL", "@JAX", "BYE", "NO", "@SF", "SEA", "TB", "@CAR", "@ARI", "DET", "@SEA", "@ATL", "ARI"],
+    "LAC": ["KC", "@LV", "DEN", "@NYG", "WSH", "@MIA", "IND", "MIN", "@TEN", "PIT", "@JAX", "BYE", "LV", "PHI", "@KC", "@DAL", "HOU", "@DEN"],
+    "MIA": ["@IND", "NE", "@BUF", "NYJ", "@CAR", "LAC", "@CLE", "@ATL", "BAL", "BUF", "WSH", "BYE", "NO", "@NYJ", "@PIT", "CIN", "TB", "@NE"],
+    "MIN": ["@CHI", "ATL", "CIN", "@PIT", "@CLE", "BYE", "PHI", "@LAC", "@DET", "BAL", "CHI", "@GB", "@SEA", "WSH", "@DAL", "@NYG", "DET", "GB"],
+    "NE": ["LV", "@MIA", "PIT", "CAR", "@BUF", "@NO", "@TEN", "CLE", "ATL", "@TB", "NYJ", "@CIN", "NYG", "BYE", "BUF", "@BAL", "@NYJ", "MIA"],
+    "NO": ["ARI", "SF", "@SEA", "@BUF", "NYG", "NE", "@CHI", "TB", "@LAR", "@CAR", "BYE", "ATL", "@MIA", "@TB", "CAR", "NYJ", "@TEN", "@ATL"],
+    "NYG": ["@WSH", "@DAL", "KC", "LAC", "@NO", "PHI", "@DEN", "@PHI", "SF", "@CHI", "GB", "@DET", "@NE", "BYE", "WSH", "MIN", "@LV", "DAL"],
+    "NYJ": ["PIT", "BUF", "@TB", "@MIA", "DAL", "DEN", "CAR", "@CIN", "BYE", "CLE", "@NE", "@BAL", "ATL", "MIA", "@JAX", "@NO", "NE", "@BUF"],
+    "PHI": ["DAL", "@KC", "LAR", "@TB", "DEN", "@NYG", "@MIN", "NYG", "BYE", "@GB", "DET", "@DAL", "CHI", "@LAC", "LV", "@WSH", "@BUF", "WSH"],
+    "PIT": ["@NYJ", "SEA", "@NE", "MIN", "BYE", "CLE", "@CIN", "GB", "IND", "@LAC", "CIN", "@CHI", "BUF", "@BAL", "MIA", "@DET", "@CLE", "BAL"],
+    "SF": ["@SEA", "@NO", "ARI", "JAX", "@LAR", "@TB", "ATL", "@HOU", "@NYG", "LAR", "@ARI", "CAR", "@CLE", "BYE", "TEN", "@IND", "CHI", "SEA"],
+    "SEA": ["SF", "@PIT", "NO", "@ARI", "TB", "@JAX", "HOU", "BYE", "@WSH", "ARI", "@LAR", "@TEN", "MIN", "@ATL", "IND", "LAR", "@CAR", "@SF"],
+    "TB": ["@ATL", "@HOU", "NYJ", "PHI", "@SEA", "SF", "@DET", "@NO", "BYE", "NE", "@BUF", "@LAR", "ARI", "NO", "ATL", "@CAR", "@MIA", "CAR"],
+    "TEN": ["@DEN", "LAR", "IND", "@HOU", "@ARI", "@LV", "NE", "@IND", "LAC", "BYE", "HOU", "SEA", "JAX", "@CLE", "@SF", "KC", "NO", "@JAX"],
+    "WSH": ["NYG", "@GB", "LV", "@ATL", "@LAC", "CHI", "@DAL", "@KC", "SEA", "DET", "@MIA", "BYE", "DEN", "@MIN", "@NYG", "PHI", "DAL", "@PHI"]
+}
 
 # Global variable to track the startup time
 startup_time = datetime.datetime.now()
@@ -145,7 +188,7 @@ def fetch_and_filter_data():
         if player_data.get("team") is not None:
             try:
                 # Compare the player's team bye to today's gameweek
-                if (BYE_WEEKS_2024[player_data.get("team")]
+                if (BYE_WEEKS_2025[player_data.get("team")]
                         == get_nfl_gameweek(datetime.date.today())):
                     on_bye = True
             except:
@@ -443,6 +486,17 @@ def get_all_players():
 @app.route('/teams', methods=['GET'])
 def get_teams():
     return jsonify(teams_data)
+
+
+@app.route('/teams/schedules', methods=['GET'])
+def get_team_schedules():
+    """
+    Endpoint to return the 2025 NFL team schedules.
+
+    Returns:
+        JSON response containing the team schedules for 2025.
+    """
+    return jsonify(TEAM_SCHEDULES_2025), 200
 
 
 @app.route('/statistics', methods=['GET'])
