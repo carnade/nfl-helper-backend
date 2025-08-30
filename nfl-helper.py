@@ -101,7 +101,16 @@ BYE_WEEKS_2025 = {
     "HOU": 6, "IND": 11, "JAX": 8, "KC": 10, "LAC": 11, "LAR": 8,
     "LV": 8, "MIA": 12, "MIN": 6, "NE": 13, "NO": 11, "NYG": 12,
     "NYJ": 9, "PHI": 9, "PIT": 5, "SF": 14, "SEA": 8, "TB": 9,
-    "TEN": 10, "WSH": 12
+    "TEN": 10, "WAS": 12
+}
+
+WIN_OU_2025 = {
+    "ARI": 8.5, "ATL": 7.5, "BAL": 11.5, "BUF": 11.5, "CAR": 6.5, "CHI": 8.5,
+    "CIN": 9.5, "CLE": 5.5, "DAL": 7.5, "DEN": 9.5, "DET": 11.5, "GB": 9.5,
+    "HOU": 9.5, "IND": 7.5, "JAX": 7.5, "KC": 11.5, "LAC": 9.5, "LAR": 9.5,
+    "LV": 6.5, "MIA": 8.5, "MIN": 8.5, "NE": 7.5, "NO": 5.5, "NYG": 5.5,
+    "NYJ": 5.5, "PHI": 11.5, "PIT": 8.5, "SF": 10.5, "SEA": 7.5, "TB": 9.5,
+    "TEN": 5.5, "WAS": 9.5
 }
 
 TEAM_SCHEDULES_2025 = {
@@ -136,7 +145,7 @@ TEAM_SCHEDULES_2025 = {
     "SEA": ["SF", "@PIT", "NO", "@ARI", "TB", "@JAX", "HOU", "BYE", "@WSH", "ARI", "@LAR", "@TEN", "MIN", "@ATL", "IND", "LAR", "@CAR", "@SF"],
     "TB": ["@ATL", "@HOU", "NYJ", "PHI", "@SEA", "SF", "@DET", "@NO", "BYE", "NE", "@BUF", "@LAR", "ARI", "NO", "ATL", "@CAR", "@MIA", "CAR"],
     "TEN": ["@DEN", "LAR", "IND", "@HOU", "@ARI", "@LV", "NE", "@IND", "LAC", "BYE", "HOU", "SEA", "JAX", "@CLE", "@SF", "KC", "NO", "@JAX"],
-    "WSH": ["NYG", "@GB", "LV", "@ATL", "@LAC", "CHI", "@DAL", "@KC", "SEA", "DET", "@MIA", "BYE", "DEN", "@MIN", "@NYG", "PHI", "DAL", "@PHI"]
+    "WAS": ["NYG", "@GB", "LV", "@ATL", "@LAC", "CHI", "@DAL", "@KC", "SEA", "DET", "@MIA", "BYE", "DEN", "@MIN", "@NYG", "PHI", "DAL", "@PHI"]
 }
 
 # Global variable to track the startup time
@@ -150,7 +159,7 @@ request_statistics = {
 
 def get_nfl_gameweek(date):
     # Gameweek 1 started on September 5th, 2024 (a Tuesday)
-    gameweek_1_start = datetime.date(2024, 9, 3)
+    gameweek_1_start = datetime.date(2025, 9, 3)
     days_since_start = (date - gameweek_1_start).days
     # Each gameweek is effectively a 7-day window starting on Tuesdays
     gameweek = (days_since_start // 7) + 1
@@ -192,7 +201,7 @@ def fetch_and_filter_data():
                         == get_nfl_gameweek(datetime.date.today())):
                     on_bye = True
             except:
-                print(f"Team not found in BYE_WEEKS_2024: {player_data.get('team')}")
+                print(f"Team not found in BYE_WEEKS_2025: {player_data.get('team')}")
 
         if fantasy_positions is None:
             fantasy_positions = []
@@ -638,7 +647,7 @@ def get_player_stats():
     Returns:
         dict: JSON response containing player stats.
     """
-    url = "https://api.sleeper.com/stats/nfl/2024?season_type=regular&position%5B%5D=QB&position%5B%5D=RB&position%5B%5D=TE&position%5B%5D=WR&order_by=pts_dynasty_2qb"
+    url = "https://api.sleeper.com/stats/nfl/2025?season_type=regular&position%5B%5D=QB&position%5B%5D=RB&position%5B%5D=TE&position%5B%5D=WR&order_by=pts_dynasty_2qb"
     response = requests.get(url)
     response.raise_for_status()  # Raise an exception for HTTP errors
     return response.json()
