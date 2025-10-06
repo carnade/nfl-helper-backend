@@ -26,7 +26,29 @@ def translate_name(player_name):
         "Chigoziem Okonkwo": "Chig Okonkwo",
         "Gabriel Davis": "Gabe Davis",
         "Calvin Austin III": "Calvin Austin",
-        "K.J. Osborn": "KJ Osborn",                 
+        "K.J. Osborn": "KJ Osborn",
+        # Additional common player name translations
+        "A.J. Brown": "AJ Brown",
+        "T.J. Hockenson": "TJ Hockenson",
+        "J.K. Dobbins": "JK Dobbins",
+        "D.K. Metcalf": "DK Metcalf",
+        "A.J. Dillon": "AJ Dillon",
+        "C.J. Stroud": "CJ Stroud",
+        "T.J. Watt": "TJ Watt",
+        "J.J. Watt": "JJ Watt",
+        "A.J. Green": "AJ Green",
+        "T.J. Yeldon": "TJ Yeldon",
+        "C.J. Anderson": "CJ Anderson",
+        "D.J. Chark": "DJ Chark",
+        "K.J. Hamler": "KJ Hamler",
+        "A.J. Terrell": "AJ Terrell",
+        "T.J. Edwards": "TJ Edwards",
+        # Additional Jr. names found in real data
+        "Frank Gore Jr.": "Frank Gore Jr",
+        "Pierre Strong Jr.": "Pierre Strong Jr",
+        # Additional period names found in real data
+        "Amon-Ra St. Brown": "Amon-Ra St Brown",
+        "J.J. McCarthy": "JJ McCarthy",
     }
     return name_translations.get(player_name, player_name)
 
@@ -61,6 +83,8 @@ def scrape_ktc():
 
                 # remove the team suffix
                 player_name = player_name.replace(team_suffix, "").strip()
+                # Store original name for matching in Superflex section
+                original_player_name = player_name
                 player_position_rank = player_position_element.get_text(strip=True)
                 player_value = player_value_element.get_text(strip=True)
                 player_value = int(player_value)
@@ -146,12 +170,12 @@ def scrape_ktc():
 
                 if player_position == "PI":
                     for pick in players:
-                        if pick["Player Name"] == player_name:
+                        if pick["Player Name"] == translate_name(original_player_name):
                             pick["SFValue"] = player_value
                             break
                 else:
                     for player in players:
-                        if player["Player Name"] == player_name:
+                        if player["Player Name"] == translate_name(original_player_name):
                             player["SFPosition Rank"] = player_position_rank
                             player["SFValue"] = player_value
                             break
@@ -169,6 +193,7 @@ def scrape_fantasy_calc(players):
             json = requests.get(URL.format(numQBs)).json()
             for fc_player in json:
                 player_name = fc_player['player']['name']
+                player_name = translate_name(player_name)  # Apply the translation
                 player_sleeper_id = fc_player['player']['sleeperId']
                 player_position_rank = fc_player['player']['position'] + str(fc_player['positionRank'])
                 player_value = fc_player['value']

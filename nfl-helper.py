@@ -215,6 +215,7 @@ def fetch_and_filter_data():
                 "status": player_data.get("status"),
                 "first_name": player_data.get("first_name"),
                 "last_name": player_data.get("last_name"),
+                "age": player_data.get("age"),
                 "position": player_data.get("position"),
                 "competitions": player_data.get("competitions"),
                 "sportradar_id": player_data.get("sportradar_id"),
