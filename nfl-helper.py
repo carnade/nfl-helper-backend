@@ -68,6 +68,7 @@ def track_request_statistics():
 filtered_players = {}
 scraped_ranks = {}
 teams_data = {}
+picks_data = {}  # Dictionary to store draft pick data
 
 # Global variables to track the last update times
 last_players_update = None
@@ -338,7 +339,7 @@ def update_players_with_old_data():
 
 
 def update_filtered_players_with_scraped_data():
-    global filtered_players, scraped_ranks, last_rankings_update
+    global filtered_players, scraped_ranks, last_rankings_update, picks_data
 
     print(f"{datetime.datetime.now()} - Starting data scraping and updating filtered_players...")
 
@@ -351,6 +352,9 @@ def update_filtered_players_with_scraped_data():
 
     # Save scraped ranks as a dictionary with sleeper_id as the key
     scraped_ranks = {player["Sleeper ID"]: player for player in adjusted_players if "Sleeper ID" in player and player["Sleeper ID"] is not None}
+    
+    # Save picks data as a dictionary with pick_id as the key
+    picks_data = {player["Pick ID"]: player for player in adjusted_players if "Pick ID" in player and player.get("Is Future Pick", False)}
 
     # Update filtered_players with the provided or scraped data
     for sleeper_id, player in scraped_ranks.items():
@@ -470,17 +474,21 @@ def get_bestball_players():
 def get_all_players():
     """
     Endpoint to return filtered players based on a list of Sleeper IDs.
+    Can also include draft picks when requested.
 
     Request Body:
         {
-            "player_list": [12345, 67890, ...]
+            "playerlist": [12345, 67890, ...],
+            "include_picks": true/false (optional, defaults to false)
         }
 
     Returns:
         JSON response containing the filtered players matching the Sleeper IDs.
+        If include_picks is true, also includes draft picks.
     """
     request_data = request.json
     player_ids = request_data.get("playerlist", [])
+    include_picks = request_data.get("include_picks", False)
 
     if not isinstance(player_ids, list):
         return jsonify({"error": "Invalid player_list format. Must be a list of Sleeper IDs."}), 400
@@ -491,7 +499,22 @@ def get_all_players():
         for pid in player_ids if pid in filtered_players
     }
 
+    # Add picks if requested
+    if include_picks:
+        # Add all picks to the response
+        players_info.update(picks_data)
+
     return jsonify(players_info), 200
+
+@app.route('/picks/data', methods=['GET'])
+def get_all_picks():
+    """
+    Endpoint to return all draft picks data.
+
+    Returns:
+        JSON response containing all draft picks with their values and metadata.
+    """
+    return jsonify(picks_data), 200
 
 @app.route('/teams', methods=['GET'])
 def get_teams():
