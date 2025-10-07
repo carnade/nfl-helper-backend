@@ -26,9 +26,107 @@ def translate_name(player_name):
         "Chigoziem Okonkwo": "Chig Okonkwo",
         "Gabriel Davis": "Gabe Davis",
         "Calvin Austin III": "Calvin Austin",
-        "K.J. Osborn": "KJ Osborn",                 
+        "K.J. Osborn": "KJ Osborn",
+        # Additional common player name translations
+        "A.J. Brown": "AJ Brown",
+        "T.J. Hockenson": "TJ Hockenson",
+        "J.K. Dobbins": "JK Dobbins",
+        "D.K. Metcalf": "DK Metcalf",
+        "A.J. Dillon": "AJ Dillon",
+        "C.J. Stroud": "CJ Stroud",
+        "T.J. Watt": "TJ Watt",
+        "J.J. Watt": "JJ Watt",
+        "A.J. Green": "AJ Green",
+        "T.J. Yeldon": "TJ Yeldon",
+        "C.J. Anderson": "CJ Anderson",
+        "D.J. Chark": "DJ Chark",
+        "K.J. Hamler": "KJ Hamler",
+        "A.J. Terrell": "AJ Terrell",
+        "T.J. Edwards": "TJ Edwards",
+        # Additional Jr. names found in real data
+        "Frank Gore Jr.": "Frank Gore Jr",
+        "Pierre Strong Jr.": "Pierre Strong Jr",
+        # Additional period names found in real data
+        "Amon-Ra St. Brown": "Amon-Ra St Brown",
+        "J.J. McCarthy": "JJ McCarthy",
     }
     return name_translations.get(player_name, player_name)
+
+def parse_pick_name(pick_name):
+    """
+    Parse pick name to extract year, round, and pick type information.
+    
+    Args:
+        pick_name (str): The pick name from KTC (e.g., "2026 Early 1st", "2027 Mid 2nd")
+    
+    Returns:
+        dict: Parsed pick data with pick_id, year, round, and pick_type
+    """
+    import re
+    
+    # Extract year
+    year_match = re.search(r'(\d{4})', pick_name)
+    year = int(year_match.group(1)) if year_match else None
+    
+    # Extract round
+    round_match = re.search(r'(\d+)(?:st|nd|rd|th)', pick_name)
+    round_num = int(round_match.group(1)) if round_match else None
+    
+    # Extract pick type (Early, Mid, Late)
+    if "Early" in pick_name:
+        pick_type = "Early"
+    elif "Mid" in pick_name:
+        pick_type = "Mid"
+    elif "Late" in pick_name:
+        pick_type = "Late"
+    else:
+        pick_type = "Unknown"
+    
+    # Generate unique pick ID
+    pick_id = f"{year}_{pick_type.lower()}_{round_num}" if year and round_num else pick_name.lower().replace(" ", "_")
+    
+    return {
+        "pick_id": pick_id,
+        "year": year,
+        "round": round_num,
+        "pick_type": pick_type
+    }
+
+def parse_fantasycalc_pick_name(pick_name):
+    """
+    Parse FantasyCalc pick name to extract year, round, and pick type information.
+    
+    Args:
+        pick_name (str): The pick name from FantasyCalc (e.g., "2026 2nd (Mid)", "2027 1st (Early)")
+    
+    Returns:
+        dict: Parsed pick data with year, round, and pick_type
+    """
+    import re
+    
+    # Extract year
+    year_match = re.search(r'(\d{4})', pick_name)
+    year = int(year_match.group(1)) if year_match else None
+    
+    # Extract round
+    round_match = re.search(r'(\d+)(?:st|nd|rd|th)', pick_name)
+    round_num = int(round_match.group(1)) if round_match else None
+    
+    # Extract pick type from parentheses
+    if "(Early)" in pick_name:
+        pick_type = "Early"
+    elif "(Mid)" in pick_name:
+        pick_type = "Mid"
+    elif "(Late)" in pick_name:
+        pick_type = "Late"
+    else:
+        pick_type = "Unknown"
+    
+    return {
+        "year": year,
+        "round": round_num,
+        "pick_type": pick_type
+    }
 
 def scrape_ktc():
     # universal vars
@@ -61,6 +159,8 @@ def scrape_ktc():
 
                 # remove the team suffix
                 player_name = player_name.replace(team_suffix, "").strip()
+                # Store original name for matching in Superflex section
+                original_player_name = player_name
                 player_position_rank = player_position_element.get_text(strip=True)
                 player_value = player_value_element.get_text(strip=True)
                 player_value = int(player_value)
@@ -82,8 +182,14 @@ def scrape_ktc():
                     player_rookie = "No"
 
                 if player_position == "PI":
+                    # Parse pick information from the name
+                    pick_data = parse_pick_name(player_name)
                     pick_info = {
                         "Player Name": player_name,
+                        "Pick ID": pick_data["pick_id"],
+                        "Year": pick_data["year"],
+                        "Round": pick_data["round"],
+                        "Pick Type": pick_data["pick_type"],
                         "Position Rank": None,
                         "Position": player_position,
                         "Team": None,
@@ -95,7 +201,13 @@ def scrape_ktc():
                         "RdrftPosition Rank": None,
                         "RdrftValue": 0,
                         "SFRdrftPosition Rank": None,
-                        "SFRdrftValue": 0
+                        "SFRdrftValue": 0,
+                        "FantasyCalc 1QB Value": None,
+                        "FantasyCalc SF Value": None,
+                        "FantasyCalc 1QB Delta": 0,
+                        "FantasyCalc SF Delta": 0,
+                        "KTC Delta": 0,
+                        "Is Future Pick": True
                     }
                     players.append(pick_info)
 
@@ -151,7 +263,7 @@ def scrape_ktc():
                             break
                 else:
                     for player in players:
-                        if player["Player Name"] == player_name:
+                        if player["Player Name"] == translate_name(original_player_name):
                             player["SFPosition Rank"] = player_position_rank
                             player["SFValue"] = player_value
                             break
@@ -169,17 +281,36 @@ def scrape_fantasy_calc(players):
             json = requests.get(URL.format(numQBs)).json()
             for fc_player in json:
                 player_name = fc_player['player']['name']
+                player_position = fc_player['player']['position']
                 player_sleeper_id = fc_player['player']['sleeperId']
                 player_position_rank = fc_player['player']['position'] + str(fc_player['positionRank'])
                 player_value = fc_player['value']
                 player_redraft_value = fc_player['redraftValue']
-                for player in players:
-                    if player["Player Name"] == player_name:
-                        player["FantasyCalc 1QB Position Rank"] = player_position_rank
-                        player["FantasyCalc 1QB Value"] = player_value
-                        player["FantasyCalc 1QB Redraft Value"] = player_redraft_value
-                        player["Sleeper ID"] = player_sleeper_id
-                        break
+                
+                if player_position == "PICK":
+                    # Handle FantasyCalc picks
+                    fc_pick_data = parse_fantasycalc_pick_name(player_name)
+                    
+                    for player in players:
+                        if player.get("Position") == "PI" and player.get("Year") and player.get("Pick Type") and player.get("Round"):
+                            # Try to match FantasyCalc pick with KTC pick based on year, type, and round
+                            if (fc_pick_data["year"] == player.get("Year") and 
+                                fc_pick_data["pick_type"] == player.get("Pick Type") and
+                                fc_pick_data["round"] == player.get("Round")):
+                                player["FantasyCalc 1QB Value"] = player_value
+                                player["FantasyCalc 1QB Redraft Value"] = player_redraft_value
+                                player["FantasyCalc 1QB Position Rank"] = player_position_rank
+                                break
+                else:
+                    # Handle regular players
+                    player_name = translate_name(player_name)  # Apply the translation
+                    for player in players:
+                        if player["Player Name"] == player_name:
+                            player["FantasyCalc 1QB Position Rank"] = player_position_rank
+                            player["FantasyCalc 1QB Value"] = player_value
+                            player["FantasyCalc 1QB Redraft Value"] = player_redraft_value
+                            player["Sleeper ID"] = player_sleeper_id
+                            break
 
         else:
             # pull fantasycalc player values json
@@ -187,18 +318,36 @@ def scrape_fantasy_calc(players):
             json = requests.get(URL.format(numQBs)).json()
             for fc_player in json:
                 player_name = fc_player['player']['name']
-                player_name = translate_name(player_name)  # Apply the translation
+                player_position = fc_player['player']['position']
                 player_sleeper_id = fc_player['player']['sleeperId']
                 player_position_rank = fc_player['player']['position'] + str(fc_player['positionRank'])
                 player_value = fc_player['value']
                 player_redraft_value = fc_player['redraftValue']
-                for player in players:
-                    if player["Player Name"] == player_name:
-                        player["FantasyCalc SF Position Rank"] = player_position_rank
-                        player["FantasyCalc SF Value"] = player_value
-                        player["FantasyCalc SF Redraft Value"] = player_redraft_value
-                        player["Sleeper ID"] = player_sleeper_id
-                        break
+                
+                if player_position == "PICK":
+                    # Handle FantasyCalc picks
+                    fc_pick_data = parse_fantasycalc_pick_name(player_name)
+                    
+                    for player in players:
+                        if player.get("Position") == "PI" and player.get("Year") and player.get("Pick Type") and player.get("Round"):
+                            # Try to match FantasyCalc pick with KTC pick based on year, type, and round
+                            if (fc_pick_data["year"] == player.get("Year") and 
+                                fc_pick_data["pick_type"] == player.get("Pick Type") and
+                                fc_pick_data["round"] == player.get("Round")):
+                                player["FantasyCalc SF Value"] = player_value
+                                player["FantasyCalc SF Redraft Value"] = player_redraft_value
+                                player["FantasyCalc SF Position Rank"] = player_position_rank
+                                break
+                else:
+                    # Handle regular players
+                    player_name = translate_name(player_name)  # Apply the translation
+                    for player in players:
+                        if player["Player Name"] == player_name:
+                            player["FantasyCalc SF Position Rank"] = player_position_rank
+                            player["FantasyCalc SF Value"] = player_value
+                            player["FantasyCalc SF Redraft Value"] = player_redraft_value
+                            player["Sleeper ID"] = player_sleeper_id
+                            break
 
     return players
 
