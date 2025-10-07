@@ -291,16 +291,28 @@ def scrape_fantasy_calc(players):
                     # Handle FantasyCalc picks
                     fc_pick_data = parse_fantasycalc_pick_name(player_name)
                     
-                    for player in players:
-                        if player.get("Position") == "PI" and player.get("Year") and player.get("Pick Type") and player.get("Round"):
-                            # Try to match FantasyCalc pick with KTC pick based on year, type, and round
-                            if (fc_pick_data["year"] == player.get("Year") and 
-                                fc_pick_data["pick_type"] == player.get("Pick Type") and
-                                fc_pick_data["round"] == player.get("Round")):
-                                player["FantasyCalc 1QB Value"] = player_value
-                                player["FantasyCalc 1QB Redraft Value"] = player_redraft_value
-                                player["FantasyCalc 1QB Position Rank"] = player_position_rank
-                                break
+                    # Check if this is a specific pick (Early/Mid/Late) or generic (Unknown)
+                    if fc_pick_data["pick_type"] != "Unknown":
+                        # Specific pick - match exactly by year, type, and round
+                        for player in players:
+                            if player.get("Position") == "PI" and player.get("Year") and player.get("Pick Type") and player.get("Round"):
+                                if (fc_pick_data["year"] == player.get("Year") and 
+                                    fc_pick_data["pick_type"] == player.get("Pick Type") and
+                                    fc_pick_data["round"] == player.get("Round")):
+                                    player["FantasyCalc 1QB Value"] = player_value
+                                    player["FantasyCalc 1QB Redraft Value"] = player_redraft_value
+                                    player["FantasyCalc 1QB Position Rank"] = player_position_rank
+                                    break
+                    else:
+                        # Generic pick (e.g., "2027 1st") - apply to all Early/Mid/Late variants
+                        for player in players:
+                            if player.get("Position") == "PI" and player.get("Year") and player.get("Round"):
+                                if (fc_pick_data["year"] == player.get("Year") and 
+                                    fc_pick_data["round"] == player.get("Round") and
+                                    player.get("FantasyCalc 1QB Value") is None):  # Only if not already set
+                                    player["FantasyCalc 1QB Value"] = player_value
+                                    player["FantasyCalc 1QB Redraft Value"] = player_redraft_value
+                                    player["FantasyCalc 1QB Position Rank"] = player_position_rank
                 else:
                     # Handle regular players
                     player_name = translate_name(player_name)  # Apply the translation
@@ -328,16 +340,28 @@ def scrape_fantasy_calc(players):
                     # Handle FantasyCalc picks
                     fc_pick_data = parse_fantasycalc_pick_name(player_name)
                     
-                    for player in players:
-                        if player.get("Position") == "PI" and player.get("Year") and player.get("Pick Type") and player.get("Round"):
-                            # Try to match FantasyCalc pick with KTC pick based on year, type, and round
-                            if (fc_pick_data["year"] == player.get("Year") and 
-                                fc_pick_data["pick_type"] == player.get("Pick Type") and
-                                fc_pick_data["round"] == player.get("Round")):
-                                player["FantasyCalc SF Value"] = player_value
-                                player["FantasyCalc SF Redraft Value"] = player_redraft_value
-                                player["FantasyCalc SF Position Rank"] = player_position_rank
-                                break
+                    # Check if this is a specific pick (Early/Mid/Late) or generic (Unknown)
+                    if fc_pick_data["pick_type"] != "Unknown":
+                        # Specific pick - match exactly by year, type, and round
+                        for player in players:
+                            if player.get("Position") == "PI" and player.get("Year") and player.get("Pick Type") and player.get("Round"):
+                                if (fc_pick_data["year"] == player.get("Year") and 
+                                    fc_pick_data["pick_type"] == player.get("Pick Type") and
+                                    fc_pick_data["round"] == player.get("Round")):
+                                    player["FantasyCalc SF Value"] = player_value
+                                    player["FantasyCalc SF Redraft Value"] = player_redraft_value
+                                    player["FantasyCalc SF Position Rank"] = player_position_rank
+                                    break
+                    else:
+                        # Generic pick (e.g., "2027 1st") - apply to all Early/Mid/Late variants
+                        for player in players:
+                            if player.get("Position") == "PI" and player.get("Year") and player.get("Round"):
+                                if (fc_pick_data["year"] == player.get("Year") and 
+                                    fc_pick_data["round"] == player.get("Round") and
+                                    player.get("FantasyCalc SF Value") is None):  # Only if not already set
+                                    player["FantasyCalc SF Value"] = player_value
+                                    player["FantasyCalc SF Redraft Value"] = player_redraft_value
+                                    player["FantasyCalc SF Position Rank"] = player_position_rank
                 else:
                     # Handle regular players
                     player_name = translate_name(player_name)  # Apply the translation
