@@ -263,7 +263,7 @@ def scrape_ktc():
                             break
                 else:
                     for player in players:
-                        if player["Player Name"] == translate_name(original_player_name):
+                        if player["Player Name"] == translate_name(player_name):
                             player["SFPosition Rank"] = player_position_rank
                             player["SFValue"] = player_value
                             break

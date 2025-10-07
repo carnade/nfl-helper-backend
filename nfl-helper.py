@@ -345,7 +345,7 @@ def update_filtered_players_with_scraped_data():
 
 
     print("Scraping data from KTC and FantasyCalc...")
-    tep_level = 1
+    tep_level = 1  # TEP adjustment level (0=none, 1=standard, 2=high, 3=very high)
     ktc_players = scrape_ktc()
     ktc_players = scrape_fantasy_calc(ktc_players)
     adjusted_players = tep_adjust(ktc_players, tep_level)
