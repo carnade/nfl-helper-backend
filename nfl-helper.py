@@ -10,6 +10,7 @@ from flask_cors import CORS
 import datetime
 from get_dynasty_ranks import scrape_ktc, scrape_fantasy_calc, tep_adjust
 from fantasydatascraper import FantasyDataScraper
+from get_dfs_salaries import DFSSalariesScraper
 import random  # Import random for generating random deltas
 
 
@@ -71,11 +72,13 @@ scraped_ranks = {}
 teams_data = {}
 picks_data = {}  # Dictionary to store draft pick data
 fantasy_points_data = {}  # Dictionary to store fantasy points data with Sleeper IDs
+dfs_salaries_data = {}  # Dictionary to store DFS salaries data with Sleeper IDs
 
 # Global variables to track the last update times
 last_players_update = None
 last_rankings_update = None
 last_fantasy_points_update = None
+last_dfs_salaries_update = None
 
 # URL to fetch data from
 DATA_URL = "https://api.sleeper.app/v1/players/nfl"
@@ -84,9 +87,9 @@ DATA_URL = "https://api.sleeper.app/v1/players/nfl"
 MOCK_DATA_FILE = "sleeper_data.json"
 
 # Toggle to switch between fetching data from the API or reading from the file
-#USE_MOCK_DATA = False  # Will be overridden by command-line flag if set
+USE_MOCK_DATA = False  # Will be overridden by command-line flag if set
 
-DO_THIS_ONCE = False
+DO_THIS_ONCE = True
 
 # Valid fantasy positions to keep
 VALID_FANTASY_POSITIONS = {"QB", "RB", "WR", "TE", "DEF", "K"}
@@ -366,6 +369,82 @@ def update_fantasy_points_data():
         
     except Exception as e:
         print(f"Error updating fantasy points data: {e}")
+
+
+def update_dfs_salaries_data():
+    """
+    Update DFS salaries data by fetching from RapidAPI and matching to Sleeper IDs.
+    Tries current day first, then previous day if no data available.
+    Stores only one entry per player (most recent data).
+    """
+    global dfs_salaries_data, last_dfs_salaries_update
+    
+    print(f"{datetime.datetime.now()} - Starting DFS salaries data update...")
+    
+    try:
+        # Initialize scraper
+        scraper = DFSSalariesScraper()
+        
+        # Try current day first
+        today = datetime.datetime.now().strftime("%Y%m%d")
+        print(f"Trying to fetch DFS salaries for today: {today}")
+        
+        dfs_data = scraper.get_dfs_salaries(today)
+        
+        # Check if we got valid data
+        if "error" in dfs_data or dfs_data.get("statusCode") != 200:
+            print(f"No DFS data for today ({today}), trying previous day...")
+            
+            # Try previous day
+            yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y%m%d")
+            print(f"Trying to fetch DFS salaries for yesterday: {yesterday}")
+            
+            dfs_data = scraper.get_dfs_salaries(yesterday)
+            
+            if "error" in dfs_data or dfs_data.get("statusCode") != 200:
+                print(f"No DFS data available for {today} or {yesterday}. Aborting DFS salaries update.")
+                return
+            
+            # Use yesterday's date for storage
+            date_to_use = yesterday
+        else:
+            date_to_use = today
+        
+        # Parse and match to Sleeper IDs
+        parsed_salaries = scraper.parse_dfs_data(dfs_data, filtered_players)
+        
+        if not parsed_salaries:
+            print(f"No DFS salary data parsed for {date_to_use}. Aborting DFS salaries update.")
+            return
+        
+        # Clear existing data and store new data (one entry per player)
+        global dfs_salaries_data
+        dfs_salaries_data = {}
+        for player in parsed_salaries:
+            # Use sleeper_id as key if available, otherwise use name+team as fallback
+            if player.get("sleeper_id"):
+                key = player["sleeper_id"]
+            else:
+                key = f"{player['name']}_{player['team']}"
+            
+            # Add date to the player data
+            player_with_date = player.copy()
+            player_with_date["date"] = date_to_use
+            
+            dfs_salaries_data[key] = player_with_date
+        
+        last_dfs_salaries_update = datetime.datetime.now()
+        
+        # Count matched players
+        matched_count = sum(1 for p in dfs_salaries_data.values() if p.get("sleeper_id") is not None)
+        
+        print(f"DFS salaries updated at {last_dfs_salaries_update}")
+        print(f"Total DFS salary entries: {len(dfs_salaries_data)}")
+        print(f"Matched to Sleeper IDs: {matched_count}")
+        print(f"Date: {date_to_use}")
+        
+    except Exception as e:
+        print(f"Error updating DFS salaries data: {e}")
 
 
 def get_fantasy_points_for_player(sleeper_id, week=None):
@@ -662,15 +741,13 @@ scheduler.add_job(
     trigger=CronTrigger(day_of_week="fri,mon,tue", hour=6, minute=30)
 )
 
-scheduler.start()
+# Schedule DFS salaries update daily at 14:00 CET
+scheduler.add_job(
+    func=update_dfs_salaries_data,
+    trigger=CronTrigger(hour=14, minute=0)
+)
 
-if DO_THIS_ONCE:
-    fetch_and_filter_data()
-    update_filtered_players_with_scraped_data()
-    # Now that filtered_players is populated, update fantasy points
-    print(f"filtered_players populated with {len(filtered_players)} players, proceeding with fantasy points update")
-    update_fantasy_points_data()
-    DO_THIS_ONCE = False
+scheduler.start()
 
 # Ensure the scheduler is shut down when the app exits
 atexit.register(lambda: scheduler.shutdown())
@@ -842,7 +919,7 @@ def get_statistics():
     Returns:
         JSON response containing uptime, request counts per endpoint, and average requests per day.
     """
-    global request_statistics, startup_time, last_players_update, last_rankings_update, last_fantasy_points_update
+    global request_statistics, startup_time, last_players_update, last_rankings_update, last_fantasy_points_update, last_dfs_salaries_update, dfs_salaries_data
 
     try:
         # Calculate uptime
@@ -858,15 +935,27 @@ def get_statistics():
         # Calculate the average requests per day
         average_requests_per_day = total_requests / days_since_startup
 
+        # Count DFS salaries entries
+        total_dfs_salaries = len(dfs_salaries_data)
+        
+        # Get the date from the first player (all players should have the same date)
+        dfs_date = None
+        if dfs_salaries_data:
+            first_player = next(iter(dfs_salaries_data.values()))
+            dfs_date = first_player.get("date")
+        
         # Prepare the response
         response = {
             "uptime": str(uptime),  # Format uptime as a string
             "total_requests": total_requests,
             "average_requests_per_day": average_requests_per_day,
             "requests_per_endpoint": request_statistics["endpoints"],
+            "total_dfs_salaries": total_dfs_salaries,
+            "dfs_salaries_date": dfs_date,
             "last_players_update": str(last_players_update) if last_players_update else "Never",
             "last_rankings_update": str(last_rankings_update) if last_rankings_update else "Never",
-            "last_fantasy_points_update": str(last_fantasy_points_update) if last_fantasy_points_update else "Never"
+            "last_fantasy_points_update": str(last_fantasy_points_update) if last_fantasy_points_update else "Never",
+            "last_dfs_salaries_update": str(last_dfs_salaries_update) if last_dfs_salaries_update else "Never"
         }
 
         # Filter valid endpoints
@@ -926,6 +1015,59 @@ def admin_update_fantasy_points():
         return jsonify({"message": "Fantasy points update triggered successfully."}), 200
     except Exception as e:
         print(f"Error while triggering fantasy points update: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/dfs-salaries/data', methods=['GET'])
+def get_dfs_salaries_data():
+    """
+    Endpoint to return all DFS salaries data.
+
+    Returns:
+        JSON response containing DFS salaries data with Sleeper IDs.
+    """
+    return jsonify(dfs_salaries_data), 200
+
+
+@app.route('/dfs-salaries/player/<sleeper_id>', methods=['GET'])
+def get_dfs_salaries_for_player_endpoint(sleeper_id):
+    """
+    Endpoint to return DFS salaries data for a specific player.
+
+    Args:
+        sleeper_id (str): Sleeper player ID
+
+    Returns:
+        JSON response containing DFS salaries data for the player.
+    """
+    try:
+        # Look up player by sleeper_id
+        player_data = dfs_salaries_data.get(sleeper_id)
+        
+        if player_data:
+            return jsonify(player_data), 200
+        else:
+            return jsonify({"error": "Player not found"}), 404
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/dfs-salaries/update', methods=['POST'])
+def admin_update_dfs_salaries():
+    """
+    Admin endpoint to manually trigger a DFS salaries update.
+
+    Returns:
+        JSON response indicating success or failure.
+    """
+    try:
+        # Call the DFS salaries update method
+        update_dfs_salaries_data()
+
+        return jsonify({"message": "DFS salaries update triggered successfully."}), 200
+    except Exception as e:
+        print(f"Error while triggering DFS salaries update: {e}")
         return jsonify({"error": str(e)}), 500
 
 """
@@ -1006,12 +1148,16 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # 2. Override global USE_MOCK_DATA if --mock flag is provided
-    global USE_MOCK_DATA
     USE_MOCK_DATA = args.mock
 
     # 3. Fetch data once on startup
     fetch_and_filter_data()
     update_filtered_players_with_scraped_data()
+    
+    # Now that filtered_players is populated, update fantasy points and DFS salaries
+    print(f"filtered_players populated with {len(filtered_players)} players, proceeding with fantasy points and DFS salaries updates")
+    update_fantasy_points_data()
+    update_dfs_salaries_data()
 
     # 4. Run the Flask app
     port = int(os.environ.get("PORT", 5000))  # Default to port 5000 if not set
