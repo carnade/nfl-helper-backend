@@ -9,6 +9,7 @@ import os
 from flask_cors import CORS
 import datetime
 from get_dynasty_ranks import scrape_ktc, scrape_fantasy_calc, tep_adjust
+from fantasydatascraper import FantasyDataScraper
 import random  # Import random for generating random deltas
 
 
@@ -69,10 +70,12 @@ filtered_players = {}
 scraped_ranks = {}
 teams_data = {}
 picks_data = {}  # Dictionary to store draft pick data
+fantasy_points_data = {}  # Dictionary to store fantasy points data with Sleeper IDs
 
 # Global variables to track the last update times
 last_players_update = None
 last_rankings_update = None
+last_fantasy_points_update = None
 
 # URL to fetch data from
 DATA_URL = "https://api.sleeper.app/v1/players/nfl"
@@ -165,6 +168,247 @@ def get_nfl_gameweek(date):
     # Each gameweek is effectively a 7-day window starting on Tuesdays
     gameweek = (days_since_start // 7) + 1
     return gameweek
+
+
+def normalize_name(name):
+    """
+    Normalize player names for better matching between FantasyData and Sleeper.
+    
+    Args:
+        name (str): Player name to normalize
+        
+    Returns:
+        str: Normalized name
+    """
+    if not name:
+        return ""
+    
+    # Convert to lowercase and remove extra spaces
+    normalized = name.lower().strip()
+    
+    # Remove common suffixes and prefixes
+    suffixes_to_remove = ['jr.', 'jr', 'sr.', 'sr', 'iii', 'ii', 'iv', 'v']
+    for suffix in suffixes_to_remove:
+        if normalized.endswith(' ' + suffix):
+            normalized = normalized[:-len(suffix)-1].strip()
+    
+    # Remove periods and apostrophes
+    normalized = normalized.replace('.', '').replace("'", "")
+    
+    # Handle common name variations
+    name_variations = {
+        'dj moore': 'd.j. moore',
+        'aj brown': 'a.j. brown',
+        'tj hockenson': 't.j. hockenson',
+        'jk dobbins': 'j.k. dobbins',
+        'dk metcalf': 'd.k. metcalf',
+        'aj dillon': 'a.j. dillon',
+        'cj stroud': 'c.j. stroud',
+        'tj watt': 't.j. watt',
+        'jj watt': 'j.j. watt',
+        'aj green': 'a.j. green',
+        'tj yeldon': 't.j. yeldon',
+        'cj anderson': 'c.j. anderson',
+        'dj chark': 'd.j. chark',
+        'kj hamler': 'k.j. hamler',
+        'aj terrell': 'a.j. terrell',
+        'tj edwards': 't.j. edwards',
+        'jj mccarthy': 'j.j. mccarthy',
+        'brian thomas jr': 'brian thomas',
+        'marvin harrison jr': 'marvin harrison jr',
+        'kenneth walker iii': 'kenneth walker',
+        'michael penix jr': 'michael penix',
+        'marquise brown': 'hollywood brown',
+        'chigoziem okonkwo': 'chig okonkwo',
+        'gabriel davis': 'gabe davis',
+        'calvin austin iii': 'calvin austin',
+        'kj osborn': 'k.j. osborn',
+        'amon-ra st brown': 'amon-ra st. brown'
+    }
+    
+    return name_variations.get(normalized, normalized)
+
+
+def find_sleeper_id_by_name(fantasy_data_name, filtered_players):
+    """
+    Find Sleeper ID by matching FantasyData name to Sleeper player data.
+    
+    Args:
+        fantasy_data_name (str): Name from FantasyData
+        filtered_players (dict): Dictionary of Sleeper players
+        
+    Returns:
+        str: Sleeper ID if found, None otherwise
+    """
+    normalized_fantasy_name = normalize_name(fantasy_data_name)
+    
+    # Team name to abbreviation mapping for DST
+    team_name_to_abbr = {
+        'arizona cardinals': 'ARI',
+        'atlanta falcons': 'ATL', 
+        'baltimore ravens': 'BAL',
+        'buffalo bills': 'BUF',
+        'carolina panthers': 'CAR',
+        'chicago bears': 'CHI',
+        'cincinnati bengals': 'CIN',
+        'cleveland browns': 'CLE',
+        'dallas cowboys': 'DAL',
+        'denver broncos': 'DEN',
+        'detroit lions': 'DET',
+        'green bay packers': 'GB',
+        'houston texans': 'HOU',
+        'indianapolis colts': 'IND',
+        'jacksonville jaguars': 'JAX',
+        'kansas city chiefs': 'KC',
+        'las vegas raiders': 'LV',
+        'los angeles chargers': 'LAC',
+        'los angeles rams': 'LAR',
+        'miami dolphins': 'MIA',
+        'minnesota vikings': 'MIN',
+        'new england patriots': 'NE',
+        'new orleans saints': 'NO',
+        'new york giants': 'NYG',
+        'new york jets': 'NYJ',
+        'philadelphia eagles': 'PHI',
+        'pittsburgh steelers': 'PIT',
+        'san francisco 49ers': 'SF',
+        'seattle seahawks': 'SEA',
+        'tampa bay buccaneers': 'TB',
+        'tennessee titans': 'TEN',
+        'washington commanders': 'WAS'
+    }
+    
+    # First try exact match
+    for sleeper_id, player_data in filtered_players.items():
+        sleeper_name = f"{player_data.get('first_name', '')} {player_data.get('last_name', '')}".strip()
+        if normalize_name(sleeper_name) == normalized_fantasy_name:
+            return sleeper_id
+    
+    # Try DST team matching
+    if normalized_fantasy_name in team_name_to_abbr:
+        team_abbr = team_name_to_abbr[normalized_fantasy_name]
+        # Look for DST players with matching team abbreviation
+        for sleeper_id, player_data in filtered_players.items():
+            if (player_data.get('position') == 'DEF' and 
+                player_data.get('team') == team_abbr):
+                return sleeper_id
+    
+    # Try partial matches (first name + last name variations)
+    fantasy_parts = normalized_fantasy_name.split()
+    if len(fantasy_parts) >= 2:
+        first_name = fantasy_parts[0]
+        last_name = ' '.join(fantasy_parts[1:])
+        
+        for sleeper_id, player_data in filtered_players.items():
+            sleeper_first = normalize_name(player_data.get('first_name', ''))
+            sleeper_last = normalize_name(player_data.get('last_name', ''))
+            
+            # Check if first and last names match
+            if sleeper_first == first_name and sleeper_last == last_name:
+                return sleeper_id
+            
+            # Check if last name matches and first name is similar
+            if sleeper_last == last_name and first_name in sleeper_first:
+                return sleeper_id
+    
+    return None
+
+
+def update_fantasy_points_data():
+    """
+    Update fantasy points data by scraping FantasyData and matching to Sleeper IDs.
+    Stores data with key format: "sleeper_id_week" to support multiple weeks.
+    """
+    global fantasy_points_data, last_fantasy_points_update
+    
+    print(f"{datetime.datetime.now()} - Starting fantasy points data update...")
+    
+    try:
+        # Initialize scraper
+        scraper = FantasyDataScraper()
+        
+        # Scrape all positions
+        all_fantasy_data = scraper.scrape_all_positions()
+        
+        # Get current week for this update
+        current_week = scraper.get_current_week()
+        
+        # Process each position
+        for position, players in all_fantasy_data.items():
+            for player in players:
+                player_name = player.get('name', '')
+                fantasy_points = player.get('fantasy_points', 0)
+                week = player.get('week', current_week)
+                
+                if player_name and fantasy_points is not None:
+                    # Find matching Sleeper ID
+                    sleeper_id = find_sleeper_id_by_name(player_name, filtered_players)
+                    
+                    if sleeper_id:
+                        # Create key with sleeper_id and week
+                        key = f"{sleeper_id}_{week}"
+                        fantasy_points_data[key] = {
+                            'sleeper_id': sleeper_id,
+                            'name': player_name,
+                            'fantasy_points': fantasy_points,
+                            'position': position,
+                            'week': week,
+                            'team': player.get('team', None)
+                        }
+                    else:
+                        print(f"No Sleeper ID found for: {player_name} ({position})")
+        
+        # Update timestamp
+        last_fantasy_points_update = datetime.datetime.now()
+        print(f"Fantasy points updated at {last_fantasy_points_update}")
+        print(f"Total fantasy points entries: {len(fantasy_points_data)}")
+        print(f"Current week data: {current_week}")
+        
+    except Exception as e:
+        print(f"Error updating fantasy points data: {e}")
+
+
+def get_fantasy_points_for_player(sleeper_id, week=None):
+    """
+    Get fantasy points data for a specific player and week.
+    
+    Args:
+        sleeper_id (str): Sleeper player ID
+        week (int, optional): Week number. If None, returns all weeks for the player.
+        
+    Returns:
+        dict or list: Fantasy points data for the player
+    """
+    if week is not None:
+        # Get specific week data
+        key = f"{sleeper_id}_{week}"
+        return fantasy_points_data.get(key, None)
+    else:
+        # Get all weeks for the player
+        player_data = []
+        for key, data in fantasy_points_data.items():
+            if data.get('sleeper_id') == sleeper_id:
+                player_data.append(data)
+        return player_data
+
+
+def get_fantasy_points_by_week(week):
+    """
+    Get all fantasy points data for a specific week.
+    
+    Args:
+        week (int): Week number
+        
+    Returns:
+        dict: Fantasy points data for the week, keyed by sleeper_id
+    """
+    week_data = {}
+    for key, data in fantasy_points_data.items():
+        if data.get('week') == week:
+            sleeper_id = data.get('sleeper_id')
+            if sleeper_id:
+                week_data[sleeper_id] = data
+    return week_data
 
 
 def fetch_data():
@@ -412,11 +656,20 @@ scheduler.add_job(
     trigger=CronTrigger(day_of_week="wed", hour=8, minute=0)
 )
 
+# Schedule fantasy points updates on Fridays, Mondays, and Tuesdays at 06:30
+scheduler.add_job(
+    func=update_fantasy_points_data,
+    trigger=CronTrigger(day_of_week="fri,mon,tue", hour=6, minute=30)
+)
+
 scheduler.start()
 
 if DO_THIS_ONCE:
     fetch_and_filter_data()
     update_filtered_players_with_scraped_data()
+    # Now that filtered_players is populated, update fantasy points
+    print(f"filtered_players populated with {len(filtered_players)} players, proceeding with fantasy points update")
+    update_fantasy_points_data()
     DO_THIS_ONCE = False
 
 # Ensure the scheduler is shut down when the app exits
@@ -516,6 +769,55 @@ def get_all_picks():
     """
     return jsonify(picks_data), 200
 
+
+@app.route('/fantasy-points/data', methods=['GET'])
+def get_fantasy_points_data():
+    """
+    Endpoint to return all fantasy points data.
+
+    Returns:
+        JSON response containing fantasy points data with Sleeper IDs.
+    """
+    return jsonify(fantasy_points_data), 200
+
+
+@app.route('/fantasy-points/week/<int:week>', methods=['GET'])
+def get_fantasy_points_by_week_endpoint(week):
+    """
+    Endpoint to return fantasy points data for a specific week.
+
+    Args:
+        week (int): Week number
+
+    Returns:
+        JSON response containing fantasy points data for the specified week.
+    """
+    try:
+        week_data = get_fantasy_points_by_week(week)
+        return jsonify(week_data), 200
+    except Exception as e:
+        print(f"Error in get_fantasy_points_by_week_endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/fantasy-points/player/<sleeper_id>', methods=['GET'])
+def get_fantasy_points_for_player_endpoint(sleeper_id):
+    """
+    Endpoint to return fantasy points data for a specific player.
+
+    Args:
+        sleeper_id (str): Sleeper player ID
+
+    Query Parameters:
+        week (int, optional): Week number. If not provided, returns all weeks.
+
+    Returns:
+        JSON response containing fantasy points data for the player.
+    """
+    week = request.args.get('week', type=int)
+    player_data = get_fantasy_points_for_player(sleeper_id, week)
+    return jsonify(player_data), 200
+
 @app.route('/teams', methods=['GET'])
 def get_teams():
     return jsonify(teams_data)
@@ -540,7 +842,7 @@ def get_statistics():
     Returns:
         JSON response containing uptime, request counts per endpoint, and average requests per day.
     """
-    global request_statistics, startup_time, last_players_update, last_rankings_update
+    global request_statistics, startup_time, last_players_update, last_rankings_update, last_fantasy_points_update
 
     try:
         # Calculate uptime
@@ -563,7 +865,8 @@ def get_statistics():
             "average_requests_per_day": average_requests_per_day,
             "requests_per_endpoint": request_statistics["endpoints"],
             "last_players_update": str(last_players_update) if last_players_update else "Never",
-            "last_rankings_update": str(last_rankings_update) if last_rankings_update else "Never"
+            "last_rankings_update": str(last_rankings_update) if last_rankings_update else "Never",
+            "last_fantasy_points_update": str(last_fantasy_points_update) if last_fantasy_points_update else "Never"
         }
 
         # Filter valid endpoints
@@ -605,6 +908,24 @@ def admin_update_rankings():
         return jsonify({"message": "Rankings update triggered successfully."}), 200
     except Exception as e:
         print(f"Error while triggering rankings update: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/fantasy-points/update', methods=['POST'])
+def admin_update_fantasy_points():
+    """
+    Admin endpoint to manually trigger a fantasy points update.
+
+    Returns:
+        JSON response indicating success or failure.
+    """
+    try:
+        # Call the fantasy points update method
+        update_fantasy_points_data()
+
+        return jsonify({"message": "Fantasy points update triggered successfully."}), 200
+    except Exception as e:
+        print(f"Error while triggering fantasy points update: {e}")
         return jsonify({"error": str(e)}), 500
 
 """
