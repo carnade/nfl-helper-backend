@@ -32,7 +32,7 @@ class DFSSalariesScraper:
         self.base_url = "https://tank01-nfl-live-in-game-real-time-statistics-nfl.p.rapidapi.com/getNFLDFS"
         self.headers = {
             'x-rapidapi-host': 'tank01-nfl-live-in-game-real-time-statistics-nfl.p.rapidapi.com',
-            'x-rapidapi-key': '4b5226529emsh982479d281b6f79p108379jsne68b59b000a2'
+            'x-rapidapi-key': 'PUT_KEY_HERE'
         }
         self.session = requests.Session()
         self.session.headers.update(self.headers)
