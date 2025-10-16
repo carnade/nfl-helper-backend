@@ -10,7 +10,7 @@ from flask_cors import CORS
 import datetime
 from get_dynasty_ranks import scrape_ktc, scrape_fantasy_calc, tep_adjust
 from fantasydatascraper import FantasyDataScraper
-from get_dfs_salaries import DFSSalariesScraper
+from get_dfs_salaries_and_stats import DFFSalariesScraper
 import random  # Import random for generating random deltas
 
 
@@ -67,6 +67,7 @@ def track_request_statistics():
 
 
 # Dictionary to store filtered player data
+all_players = {}  # Full unfiltered Sleeper player data for matching
 filtered_players = {}
 scraped_ranks = {}
 teams_data = {}
@@ -326,6 +327,12 @@ def update_fantasy_points_data():
     
     print(f"{datetime.datetime.now()} - Starting fantasy points data update...")
     
+    if USE_MOCK_DATA:
+        print("Using mock mode - skipping FantasyData scraping")
+        last_fantasy_points_update = datetime.datetime.now()
+        print(f"Fantasy points skipped in mock mode at {last_fantasy_points_update}")
+        return
+    
     try:
         # Initialize scraper
         scraper = FantasyDataScraper()
@@ -373,63 +380,66 @@ def update_fantasy_points_data():
 
 def update_dfs_salaries_data():
     """
-    Update DFS salaries data by fetching from RapidAPI and matching to Sleeper IDs.
-    Tries current day first, then previous day if no data available.
+    Update DFS salaries data by fetching from DailyFantasyFuel and matching to Sleeper IDs.
+    Uses dynamic slate detection to always get the main slate with the most teams.
     Stores only one entry per player (most recent data).
     """
-    global dfs_salaries_data, last_dfs_salaries_update
+    global dfs_salaries_data, last_dfs_salaries_update, all_players
     
     print(f"{datetime.datetime.now()} - Starting DFS salaries data update...")
     
+    if USE_MOCK_DATA:
+        print("Using mock mode - skipping DFF scraping")
+        last_dfs_salaries_update = datetime.datetime.now()
+        print(f"DFS salaries skipped in mock mode at {last_dfs_salaries_update}")
+        return
+    
     try:
-        # Initialize scraper
-        scraper = DFSSalariesScraper()
+        # Initialize DFF scraper
+        scraper = DFFSalariesScraper()
         
-        # Try current day first
-        today = datetime.datetime.now().strftime("%Y%m%d")
-        print(f"Trying to fetch DFS salaries for today: {today}")
+        # Get current date for slate detection
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        print(f"Fetching DFS salaries for date: {today}")
+        print(f"all_players count: {len(all_players)}")
         
-        dfs_data = scraper.get_dfs_salaries(today)
-        
-        # Check if we got valid data
-        if "error" in dfs_data or dfs_data.get("statusCode") != 200:
-            print(f"No DFS data for today ({today}), trying previous day...")
-            
-            # Try previous day
-            yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y%m%d")
-            print(f"Trying to fetch DFS salaries for yesterday: {yesterday}")
-            
-            dfs_data = scraper.get_dfs_salaries(yesterday)
-            
-            if "error" in dfs_data or dfs_data.get("statusCode") != 200:
-                print(f"No DFS data available for {today} or {yesterday}. Aborting DFS salaries update.")
-                return
-            
-            # Use yesterday's date for storage
-            date_to_use = yesterday
-        else:
-            date_to_use = today
-        
-        # Parse and match to Sleeper IDs
-        parsed_salaries = scraper.parse_dfs_data(dfs_data, filtered_players)
+        # Scrape DFF projections with Sleeper ID matching (use all_players, not filtered_players)
+        parsed_salaries = scraper.get_salaries_with_sleeper_ids(all_players, date=today)
         
         if not parsed_salaries:
-            print(f"No DFS salary data parsed for {date_to_use}. Aborting DFS salaries update.")
+            print(f"No DFS salary data scraped for {today}. Aborting DFS salaries update.")
             return
         
-        # Clear existing data and store new data (one entry per player)
-        global dfs_salaries_data
-        dfs_salaries_data = {}
+        # Get current week from the scraped data
+        current_week = parsed_salaries[0].get('week', 0) if parsed_salaries else 0
+        
+        # Clean up old data (keep only current and previous week)
+        weeks_to_keep = {current_week, current_week - 1}
+        keys_to_delete = []
+        
+        for key in list(dfs_salaries_data.keys()):
+            # Extract week from existing entries
+            existing_week = dfs_salaries_data[key].get('week', 0)
+            if existing_week not in weeks_to_keep:
+                keys_to_delete.append(key)
+        
+        for key in keys_to_delete:
+            del dfs_salaries_data[key]
+        
+        if keys_to_delete:
+            print(f"Cleaned up {len(keys_to_delete)} old entries, keeping weeks {weeks_to_keep}")
+        
+        # Add new data with week in the key (supports multi-week storage)
         for player in parsed_salaries:
-            # Use sleeper_id as key if available, otherwise use name+team as fallback
+            # Use sleeper_id + week as composite key if available, otherwise use name+team+week
             if player.get("sleeper_id"):
-                key = player["sleeper_id"]
+                key = f"{player['sleeper_id']}_W{player.get('week', 0)}"
             else:
-                key = f"{player['name']}_{player['team']}"
+                key = f"{player['name']}_{player['team']}_W{player.get('week', 0)}"
             
             # Add date to the player data
             player_with_date = player.copy()
-            player_with_date["date"] = date_to_use
+            player_with_date["date"] = today
             
             dfs_salaries_data[key] = player_with_date
         
@@ -439,9 +449,10 @@ def update_dfs_salaries_data():
         matched_count = sum(1 for p in dfs_salaries_data.values() if p.get("sleeper_id") is not None)
         
         print(f"DFS salaries updated at {last_dfs_salaries_update}")
-        print(f"Total DFS salary entries: {len(dfs_salaries_data)}")
+        print(f"Added {len(parsed_salaries)} players for week {current_week}")
+        print(f"Total DFS salary entries in memory: {len(dfs_salaries_data)}")
         print(f"Matched to Sleeper IDs: {matched_count}")
-        print(f"Date: {date_to_use}")
+        print(f"Date: {today}")
         
     except Exception as e:
         print(f"Error updating DFS salaries data: {e}")
@@ -508,9 +519,12 @@ def fetch_data():
 
 
 def fetch_and_filter_data():
-    global filtered_players, scraped_ranks, teams_data, last_players_update
+    global all_players, filtered_players, scraped_ranks, teams_data, last_players_update
 
     data = fetch_data()
+    
+    # Store the full unfiltered data for matching purposes
+    all_players = data
     filtered_players.clear()
     teams_data.clear()
 
@@ -666,12 +680,16 @@ def update_filtered_players_with_scraped_data():
 
     print(f"{datetime.datetime.now()} - Starting data scraping and updating filtered_players...")
 
-
-    print("Scraping data from KTC and FantasyCalc...")
-    tep_level = 1  # TEP adjustment level (0=none, 1=standard, 2=high, 3=very high)
-    ktc_players = scrape_ktc()
-    ktc_players = scrape_fantasy_calc(ktc_players)
-    adjusted_players = tep_adjust(ktc_players, tep_level)
+    if USE_MOCK_DATA:
+        print("Using mock mode - skipping KTC and FantasyCalc scraping")
+        # In mock mode, just use empty rankings
+        adjusted_players = []
+    else:
+        print("Scraping data from KTC and FantasyCalc...")
+        tep_level = 1  # TEP adjustment level (0=none, 1=standard, 2=high, 3=very high)
+        ktc_players = scrape_ktc()
+        ktc_players = scrape_fantasy_calc(ktc_players)
+        adjusted_players = tep_adjust(ktc_players, tep_level)
 
     # Save scraped ranks as a dictionary with sleeper_id as the key
     scraped_ranks = {player["Sleeper ID"]: player for player in adjusted_players if "Sleeper ID" in player and player["Sleeper ID"] is not None}
@@ -938,11 +956,17 @@ def get_statistics():
         # Count DFS salaries entries
         total_dfs_salaries = len(dfs_salaries_data)
         
-        # Get the date from the first player (all players should have the same date)
-        dfs_date = None
+        # Get weeks and dates from DFS data
+        dfs_weeks = set()
+        dfs_dates = set()
         if dfs_salaries_data:
-            first_player = next(iter(dfs_salaries_data.values()))
-            dfs_date = first_player.get("date")
+            for player_data in dfs_salaries_data.values():
+                week = player_data.get("week")
+                date = player_data.get("date")
+                if week:
+                    dfs_weeks.add(week)
+                if date:
+                    dfs_dates.add(date)
         
         # Prepare the response
         response = {
@@ -951,7 +975,8 @@ def get_statistics():
             "average_requests_per_day": average_requests_per_day,
             "requests_per_endpoint": request_statistics["endpoints"],
             "total_dfs_salaries": total_dfs_salaries,
-            "dfs_salaries_date": dfs_date,
+            "dfs_salaries_weeks": sorted(list(dfs_weeks)) if dfs_weeks else [],
+            "dfs_salaries_dates": sorted(list(dfs_dates)) if dfs_dates else [],
             "last_players_update": str(last_players_update) if last_players_update else "Never",
             "last_rankings_update": str(last_rankings_update) if last_rankings_update else "Never",
             "last_fantasy_points_update": str(last_fantasy_points_update) if last_fantasy_points_update else "Never",
@@ -1033,24 +1058,76 @@ def get_dfs_salaries_data():
 def get_dfs_salaries_for_player_endpoint(sleeper_id):
     """
     Endpoint to return DFS salaries data for a specific player.
-
+    
     Args:
         sleeper_id (str): Sleeper player ID
+        
+    Query Parameters:
+        week (int, optional): Specific week to query. If not provided, returns all weeks.
 
     Returns:
         JSON response containing DFS salaries data for the player.
     """
     try:
-        # Look up player by sleeper_id
-        player_data = dfs_salaries_data.get(sleeper_id)
+        week = request.args.get('week', type=int)
         
-        if player_data:
-            return jsonify(player_data), 200
+        if week:
+            # Get specific week data
+            key = f"{sleeper_id}_W{week}"
+            player_data = dfs_salaries_data.get(key)
+            
+            if player_data:
+                return jsonify(player_data), 200
+            else:
+                return jsonify({"error": f"No DFS data for player {sleeper_id} in week {week}"}), 404
         else:
-            return jsonify({"error": "Player not found"}), 404
+            # Get all weeks for this player
+            player_weeks = {k: v for k, v in dfs_salaries_data.items() 
+                           if k.startswith(f"{sleeper_id}_W")}
+            
+            if player_weeks:
+                return jsonify(player_weeks), 200
+            else:
+                return jsonify({"error": "Player not found"}), 404
             
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/dfs-salaries/week/<int:week>', methods=['GET'])
+def get_dfs_salaries_by_week_endpoint(week):
+    """
+    Endpoint to return all DFS salaries data for a specific week.
+    
+    Args:
+        week (int): Week number
+        
+    Returns:
+        JSON response containing all DFS salaries data for the specified week.
+    """
+    try:
+        # Filter data by week
+        week_data = {k: v for k, v in dfs_salaries_data.items() 
+                     if v.get('week') == week}
+        
+        if week_data:
+            return jsonify(week_data), 200
+        else:
+            return jsonify({"error": f"No DFS data found for week {week}"}), 404
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/debug', methods=['GET'])
+def debug_info():
+    """Debug endpoint to check global variables"""
+    return jsonify({
+        "all_players_count": len(all_players),
+        "filtered_players_count": len(filtered_players),
+        "dfs_salaries_count": len(dfs_salaries_data),
+        "fantasy_points_count": len(fantasy_points_data)
+    }), 200
 
 
 @app.route('/admin/dfs-salaries/update', methods=['POST'])
