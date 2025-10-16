@@ -166,7 +166,8 @@ curl -X POST "http://localhost:5000/admin/dfs-salaries/update"
 | `spread` | float | Point spread (negative = favored) |
 | `over_under` | float | Total points O/U |
 | `proj_team_score` | float | Projected team score |
-| `opp_rank` | int | Opponent rank vs position (1-32) |
+| `opp_rank` | int | Opponent rank vs position (1-32, lower = easier) |
+| `injury_status` | string/null | Injury status: Q, O, IR, or null (healthy) |
 | `date` | string | Date of data (YYYY-MM-DD) |
 
 ---
@@ -205,5 +206,17 @@ curl "http://localhost:5000/dfs-salaries/week/7" | jq 'to_entries | sort_by(.val
 ```bash
 # Lower opp_rank = easier matchup
 curl "http://localhost:5000/dfs-salaries/week/7" | jq '[.[] | select(.position == "RB")] | sort_by(.opp_rank) | .[0:10]'
+```
+
+### Find Injured Players
+```bash
+# Get all injured/questionable players
+curl "http://localhost:5000/dfs-salaries/week/7" | jq '[.[] | select(.injury_status != null)] | .[] | {name, position, injury_status, salary}'
+```
+
+### Find High-Value Plays with Good Matchups
+```bash
+# RBs with opp_rank > 25 (easy matchup) and value_proj > 2.5
+curl "http://localhost:5000/dfs-salaries/week/7" | jq '[.[] | select(.position == "RB" and .opp_rank > 25 and .value_proj > 2.5)] | sort_by(.value_proj) | reverse'
 ```
 

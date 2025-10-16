@@ -301,6 +301,12 @@ class DFFSalariesScraper:
             except ValueError:
                 opp_rank = 0
             
+            # Extract injury status
+            injury_status = row.get('data-inj', '').strip()
+            # Convert empty string to None for cleaner API responses
+            if not injury_status:
+                injury_status = None
+            
             # Map DEF to DST
             if position == 'DEF':
                 position = 'DST'
@@ -320,7 +326,8 @@ class DFFSalariesScraper:
                 'spread': spread,
                 'over_under': over_under,
                 'proj_team_score': proj_team_score,
-                'opp_rank': opp_rank  # Defense vs Position rank (1-32, lower is worse matchup)
+                'opp_rank': opp_rank,  # Defense vs Position rank (1-32, lower is worse matchup)
+                'injury_status': injury_status  # Q (Questionable), O (Out), IR (Injured Reserve), or None
             }
             
         except Exception as e:
