@@ -28,10 +28,10 @@ class FantasyDataScraper:
     def get_current_week(self) -> int:
         """
         Get the current NFL week from Sleeper API.
-        Uses week 6 until next Tuesday 07:00 CET.
+        Uses previous week until Thursday 19:00 CET.
         
         Returns:
-            int: Current week number (will be 6 until next Tuesday)
+            int: Current week number (will be previous week until Thursday 19:00 CET)
         """
         try:
             logger.info("Fetching current week from Sleeper API")
@@ -44,52 +44,56 @@ class FantasyDataScraper:
             
             logger.info(f"Sleeper API returned week {current_week}, season_type: {season_type}")
             
-            # Always use week 6 until next Tuesday 07:00 CET
-            if self._should_use_week_6():
-                logger.info(f"Using week 6 until next Tuesday 07:00 CET rule")
-                return 6
+            # Use previous week until Thursday 19:00 CET
+            if self.should_use_previous_week():
+                previous_week = max(1, current_week - 1)
+                logger.info(f"Using previous week {previous_week} until Thursday 19:00 CET")
+                return previous_week
             else:
                 logger.info(f"Using current week: {current_week}")
                 return current_week
                 
         except Exception as e:
             logger.error(f"Error fetching current week from Sleeper API: {e}")
-            # Fallback to week 6
-            logger.info("Using fallback week 6")
-            return 6
+            # Fallback to week 1
+            logger.info("Using fallback week 1")
+            return 1
             
-    def _should_use_week_6(self) -> bool:
+    def should_use_previous_week(self) -> bool:
         """
-        Check if we should use week 6 until next Tuesday 07:00 CET.
+        Check if we should use previous week until Thursday 19:00 CET.
         
         Returns:
-            bool: True if we should use week 6, False otherwise
+            bool: True if we should use previous week, False otherwise
         """
         try:
             # Get current time in CET
             cet_tz = timezone(timedelta(hours=1))  # CET is UTC+1
             now_cet = datetime.datetime.now(cet_tz)
             
-            # Use week 6 until next Tuesday 07:00 CET
-            # This means we use week 6 from now until Tuesday 07:00 CET
-            # After Tuesday 07:00 CET, we can use the current week
+            # Use previous week until Thursday 19:00 CET
+            # After Thursday 19:00 CET, we can use the current week
             
-            # Check if it's Tuesday and before 07:00 CET
-            if now_cet.weekday() == 1:  # Tuesday is weekday 1
-                if now_cet.hour < 7:
-                    logger.info(f"Current time is Tuesday {now_cet.hour:02d}:{now_cet.minute:02d} CET - using week 6")
+            # Check if it's Thursday or later
+            if now_cet.weekday() == 3:  # Thursday is weekday 3
+                if now_cet.hour < 19:
+                    logger.info(f"Current time is Thursday {now_cet.hour:02d}:{now_cet.minute:02d} CET - using previous week")
                     return True
                 else:
-                    logger.info(f"Current time is Tuesday {now_cet.hour:02d}:{now_cet.minute:02d} CET - past 07:00, using current week")
+                    logger.info(f"Current time is Thursday {now_cet.hour:02d}:{now_cet.minute:02d} CET - past 19:00, using current week")
                     return False
+            elif now_cet.weekday() > 3:  # Friday, Saturday, Sunday
+                # After Thursday, use current week
+                logger.info(f"Current time is {now_cet.strftime('%A %H:%M')} CET - using current week")
+                return False
             else:
-                # Not Tuesday yet, so use week 6
-                logger.info(f"Current time is {now_cet.strftime('%A %H:%M')} CET - using week 6 until next Tuesday 07:00")
+                # Monday, Tuesday, Wednesday - use previous week
+                logger.info(f"Current time is {now_cet.strftime('%A %H:%M')} CET - using previous week until Thursday 19:00")
                 return True
                     
         except Exception as e:
             logger.error(f"Error checking time for week calculation: {e}")
-            return True  # Default to week 6 if there's an error
+            return True  # Default to previous week if there's an error
             
     def _calculate_fallback_week(self) -> int:
         """
