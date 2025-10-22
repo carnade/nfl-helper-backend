@@ -32,6 +32,7 @@ class DFFSalariesScraper:
         """
         Get the active main slate URL from DFF API.
         Always selects the slate with the most teams (typically the main slate).
+        If no slates found for the given date, tries recent dates.
         
         Args:
             date: Date in format YYYY-MM-DD (defaults to today)
@@ -42,36 +43,53 @@ class DFFSalariesScraper:
         if not date:
             date = datetime.now().strftime("%Y-%m-%d")
         
-        try:
-            # Make request to slates API
-            params = {'date': date}
-            response = self.session.get(self.slates_api_url, params=params, timeout=10)
-            response.raise_for_status()
-            
-            data = response.json()
-            slates = data.get('slates', [])
-            
-            if not slates:
-                logger.warning(f"No slates found for date {date}")
-                return None
-            
-            # Find the slate with the most teams (excludes showdown slates)
-            main_slate = max(slates, key=lambda s: s.get('team_count', 0))
-            
-            slate_url = main_slate.get('url')
-            team_count = main_slate.get('team_count', 0)
-            slate_type = main_slate.get('slate_type', 'Unknown')
-            
-            logger.info(f"Selected main slate: {slate_type} with {team_count} teams (URL: {slate_url})")
-            
-            return slate_url
-            
-        except requests.RequestException as e:
-            logger.error(f"Error fetching slate data: {e}")
-            return None
-        except (KeyError, ValueError) as e:
-            logger.error(f"Error parsing slate data: {e}")
-            return None
+        # Try the requested date first, then try future dates (tomorrow, day after) for current week slates
+        dates_to_try = [date]
+        
+        # Add future dates to find current week's main slate
+        from datetime import timedelta
+        current_date = datetime.strptime(date, "%Y-%m-%d")
+        for i in range(1, 4):  # Try next 3 days
+            dates_to_try.append((current_date + timedelta(days=i)).strftime("%Y-%m-%d"))
+        
+        # Also try recent dates as fallback
+        for i in range(1, 4):
+            dates_to_try.append((current_date - timedelta(days=i)).strftime("%Y-%m-%d"))
+        
+        for try_date in dates_to_try:
+            try:
+                # Make request to slates API
+                params = {'date': try_date}
+                response = self.session.get(self.slates_api_url, params=params, timeout=10)
+                response.raise_for_status()
+                
+                data = response.json()
+                slates = data.get('slates', [])
+                
+                if not slates:
+                    logger.warning(f"No slates found for date {try_date}")
+                    continue
+                
+                # Find the slate with the most teams (excludes showdown slates)
+                main_slate = max(slates, key=lambda s: s.get('team_count', 0))
+                
+                slate_url = main_slate.get('url')
+                team_count = main_slate.get('team_count', 0)
+                slate_type = main_slate.get('slate_type', 'Unknown')
+                
+                logger.info(f"Selected main slate for {try_date}: {slate_type} with {team_count} teams (URL: {slate_url})")
+                
+                return slate_url
+                
+            except requests.RequestException as e:
+                logger.warning(f"Error fetching slate data for {try_date}: {e}")
+                continue
+            except (KeyError, ValueError) as e:
+                logger.warning(f"Error parsing slate data for {try_date}: {e}")
+                continue
+        
+        logger.error(f"No slates found for any of the tried dates: {dates_to_try}")
+        return None
     
     def normalize_name(self, name: str) -> str:
         """
