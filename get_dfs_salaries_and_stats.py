@@ -70,14 +70,16 @@ class DFFSalariesScraper:
                     logger.warning(f"No slates found for date {try_date}")
                     continue
                 
-                # Find the slate with the most teams (excludes showdown slates)
-                main_slate = max(slates, key=lambda s: s.get('team_count', 0))
+                # Find the slate with the most games (excludes showdown slates)
+                # Prioritize game_count over team_count to get the largest slate
+                main_slate = max(slates, key=lambda s: (s.get('game_count', 0), s.get('team_count', 0)))
                 
                 slate_url = main_slate.get('url')
                 team_count = main_slate.get('team_count', 0)
                 slate_type = main_slate.get('slate_type', 'Unknown')
                 
-                logger.info(f"Selected main slate for {try_date}: {slate_type} with {team_count} teams (URL: {slate_url})")
+                game_count = main_slate.get('game_count', 0)
+                logger.info(f"Selected main slate for {try_date}: {slate_type} with {game_count} games ({team_count} teams) (URL: {slate_url})")
                 
                 return slate_url
                 
@@ -133,14 +135,16 @@ class DFFSalariesScraper:
                     logger.warning(f"No slates found for date {try_date}")
                     continue
                 
-                # Find the slate with the most teams (excludes showdown slates)
-                main_slate = max(slates, key=lambda s: s.get('team_count', 0))
+                # Find the slate with the most games (excludes showdown slates)
+                # Prioritize game_count over team_count to get the largest slate
+                main_slate = max(slates, key=lambda s: (s.get('game_count', 0), s.get('team_count', 0)))
                 
                 slate_url = main_slate.get('url')
                 team_count = main_slate.get('team_count', 0)
                 slate_type = main_slate.get('slate_type', 'Unknown')
                 
-                logger.info(f"Selected main slate for {try_date}: {slate_type} with {team_count} teams (URL: {slate_url})")
+                game_count = main_slate.get('game_count', 0)
+                logger.info(f"Selected main slate for {try_date}: {slate_type} with {game_count} games ({team_count} teams) (URL: {slate_url})")
                 
                 # Prepare slate date info
                 slate_date_info = {
@@ -287,25 +291,27 @@ class DFFSalariesScraper:
         
         return None
     
-    def scrape_dff_projections(self, slate_url: str = None) -> List[Dict]:
+    def scrape_dff_projections(self, slate_url: str = None, date: str = None) -> List[Dict]:
         """
         Scrape DFS salaries and projections from DailyFantasyFuel.
         
         Args:
             slate_url: Specific slate URL (e.g., "210E7"). If None, auto-detects the main slate.
+            date: Date for the slate (e.g., "2025-10-26"). If None, uses today.
         
         Returns:
             List of dictionaries containing player data
         """
-        # Get the main slate URL if not provided
-        if not slate_url:
-            slate_url = self.get_active_main_slate()
+        # Get the main slate URL and date info if not provided
+        if not slate_url or not date:
+            slate_url, slate_info = self.get_active_main_slate_with_date_info()
             if not slate_url:
                 logger.error("Could not determine active main slate")
                 return []
+            date = slate_info.get('date', datetime.now().strftime("%Y-%m-%d"))
         
-        # Construct the URL with the slate parameter
-        url = f"{self.base_url}?slate={slate_url}"
+        # Construct the URL with the date and slate parameter
+        url = f"{self.base_url}/{date}?slate={slate_url}"
         logger.info(f"Scraping DFF projections from {url}")
         
         try:
@@ -486,7 +492,7 @@ class DFFSalariesScraper:
             logger.error("Could not determine active main slate")
             return []
         
-        players = self.scrape_dff_projections(slate_url)
+        players = self.scrape_dff_projections(slate_url, slate_date_info.get('date', date))
         
         if not players:
             logger.warning("No players scraped from DFF")
