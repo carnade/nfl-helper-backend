@@ -91,6 +91,123 @@ class DFFSalariesScraper:
         logger.error(f"No slates found for any of the tried dates: {dates_to_try}")
         return None
     
+    def get_active_main_slate_with_date_info(self, date: str = None) -> tuple:
+        """
+        Get the active main slate URL and date information from DFF API.
+        Always selects the slate with the most teams (typically the main slate).
+        If no slates found for the given date, tries future dates (tomorrow, day after) for current week slates.
+        
+        Args:
+            date: Date in format YYYY-MM-DD (defaults to today)
+            
+        Returns:
+            Tuple of (slate_url, slate_date_info) or (None, None) if not found
+        """
+        if not date:
+            date = datetime.now().strftime("%Y-%m-%d")
+        
+        # Try the requested date first, then try future dates (tomorrow, day after) for current week slates
+        dates_to_try = [date]
+        
+        # Add future dates to find current week's main slate
+        from datetime import timedelta
+        current_date = datetime.strptime(date, "%Y-%m-%d")
+        for i in range(1, 4):  # Try next 3 days
+            dates_to_try.append((current_date + timedelta(days=i)).strftime("%Y-%m-%d"))
+        
+        # Also try recent dates as fallback
+        for i in range(1, 4):
+            dates_to_try.append((current_date - timedelta(days=i)).strftime("%Y-%m-%d"))
+        
+        for try_date in dates_to_try:
+            try:
+                # Make request to slates API
+                params = {'date': try_date}
+                response = self.session.get(self.slates_api_url, params=params, timeout=10)
+                response.raise_for_status()
+                
+                data = response.json()
+                slates = data.get('slates', [])
+                
+                if not slates:
+                    logger.warning(f"No slates found for date {try_date}")
+                    continue
+                
+                # Find the slate with the most teams (excludes showdown slates)
+                main_slate = max(slates, key=lambda s: s.get('team_count', 0))
+                
+                slate_url = main_slate.get('url')
+                team_count = main_slate.get('team_count', 0)
+                slate_type = main_slate.get('slate_type', 'Unknown')
+                
+                logger.info(f"Selected main slate for {try_date}: {slate_type} with {team_count} teams (URL: {slate_url})")
+                
+                # Prepare slate date info
+                slate_date_info = {
+                    'date': try_date,
+                    'slate_type': slate_type,
+                    'start_hhmm': main_slate.get('start_hhmm', 'Unknown'),
+                    'long_dow_name': main_slate.get('long_dow_name', 'Unknown'),
+                    'month_daynum': main_slate.get('month_daynum', 'Unknown'),
+                    'team_count': team_count,
+                    'game_count': main_slate.get('game_count', 0)
+                }
+                
+                return slate_url, slate_date_info
+                
+            except requests.RequestException as e:
+                logger.warning(f"Error fetching slate data for {try_date}: {e}")
+                continue
+            except (KeyError, ValueError) as e:
+                logger.warning(f"Error parsing slate data for {try_date}: {e}")
+                continue
+        
+        logger.error(f"No slates found for any of the tried dates: {dates_to_try}")
+        return None, None
+    
+    def get_game_showdown_info(self, date: str, team: str, opponent: str) -> Optional[Dict]:
+        """
+        Get specific showdown information for a game between two teams.
+        
+        Args:
+            date: Date in format YYYY-MM-DD
+            team: Team abbreviation (e.g., 'GB')
+            opponent: Opponent team abbreviation (e.g., 'PIT')
+            
+        Returns:
+            Dict with showdown info or None if not found
+        """
+        try:
+            # First get all slates for the date to find the specific game
+            params = {'date': date}
+            response = self.session.get(self.slates_api_url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            slates = data.get('slates', [])
+            
+            # Look for showdown slates that match the teams
+            for slate in slates:
+                if slate.get('showdown_flag', 0) == 1:  # This is a showdown slate
+                    slate_type = slate.get('slate_type', '')
+                    # Check if this showdown matches our teams
+                    if (team in slate_type and opponent in slate_type) or \
+                       (opponent in slate_type and team in slate_type):
+                        return {
+                            'start_hhmm': slate.get('start_hhmm', 'Unknown'),
+                            'long_dow_name': slate.get('long_dow_name', 'Unknown'),
+                            'month_daynum': slate.get('month_daynum', 'Unknown'),
+                            'slate_type': slate_type,
+                            'url': slate.get('url', 'Unknown')
+                        }
+            
+            # If no specific showdown found, return None
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Error getting showdown info for {team} vs {opponent}: {e}")
+            return None
+    
     def normalize_name(self, name: str) -> str:
         """
         Normalize player names for matching.
@@ -363,8 +480,8 @@ class DFFSalariesScraper:
         Returns:
             List of player dictionaries with Sleeper IDs
         """
-        # Get slate URL for the specified date
-        slate_url = self.get_active_main_slate(date)
+        # Get slate URL and date info for the specified date
+        slate_url, slate_date_info = self.get_active_main_slate_with_date_info(date)
         if not slate_url:
             logger.error("Could not determine active main slate")
             return []
@@ -374,6 +491,26 @@ class DFFSalariesScraper:
         if not players:
             logger.warning("No players scraped from DFF")
             return []
+        
+        # Add slate date information to each player
+        for player in players:
+            player['slate_date'] = slate_date_info.get('date', date)
+            player['slate_type'] = slate_date_info.get('slate_type', 'Unknown')
+            player['slate_start_time'] = slate_date_info.get('start_hhmm', 'Unknown')
+            player['slate_day'] = slate_date_info.get('long_dow_name', 'Unknown')
+            player['slate_month_day'] = slate_date_info.get('month_daynum', 'Unknown')
+            
+            # Try to get specific game showdown data for more accurate timing
+            game_showdown_info = self.get_game_showdown_info(
+                slate_date_info.get('date', date),
+                player.get('team', ''),
+                player.get('opponent', '')
+            )
+            if game_showdown_info:
+                player['game_start_time'] = game_showdown_info.get('start_hhmm', 'Unknown')
+                player['game_day'] = game_showdown_info.get('long_dow_name', 'Unknown')
+                player['game_month_day'] = game_showdown_info.get('month_daynum', 'Unknown')
+                player['game_slate_type'] = game_showdown_info.get('slate_type', 'Unknown')
         
         # Match to Sleeper IDs if filtered_players provided
         if filtered_players:
