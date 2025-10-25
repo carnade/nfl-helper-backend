@@ -1065,6 +1065,75 @@ def admin_update_fantasy_points():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/admin/fantasy-points/update-week/<int:week>', methods=['POST'])
+def update_fantasy_points_for_week(week):
+    """
+    Admin endpoint to update fantasy points data for a specific week.
+    
+    Args:
+        week (int): The week number to update (e.g., 1-18)
+        
+    Returns:
+        JSON response indicating success or failure.
+    """
+    try:
+        print(f"{datetime.datetime.now()} - Starting fantasy points update for week {week}...")
+        
+        if USE_MOCK_DATA:
+            print("Using mock mode - skipping FantasyData scraping")
+            return jsonify({"message": f"Fantasy points update for week {week} skipped in mock mode."}), 200
+        
+        # Initialize scraper
+        scraper = FantasyDataScraper()
+        
+        # Scrape all positions for the specific week
+        all_fantasy_data = scraper.scrape_all_positions(week_from=week, week_to=week)
+        
+        if not all_fantasy_data:
+            return jsonify({"error": f"No fantasy data found for week {week}"}), 404
+        
+        # Process each position
+        players_updated = 0
+        for position, players in all_fantasy_data.items():
+            for player in players:
+                player_name = player.get('name', '')
+                fantasy_points = player.get('fantasy_points', 0)
+                player_week = player.get('week', week)
+                
+                if player_name and fantasy_points is not None:
+                    # Find matching Sleeper ID
+                    sleeper_id = find_sleeper_id_by_name(player_name, filtered_players)
+                    
+                    if sleeper_id:
+                        # Create key with sleeper_id and week
+                        key = f"{sleeper_id}_{player_week}"
+                        fantasy_points_data[key] = {
+                            'sleeper_id': sleeper_id,
+                            'name': player_name,
+                            'fantasy_points': fantasy_points,
+                            'position': position,
+                            'week': player_week,
+                            'team': player.get('team', None)
+                        }
+                        players_updated += 1
+                    else:
+                        print(f"No Sleeper ID found for: {player_name} ({position})")
+        
+        print(f"Fantasy points updated for week {week} at {datetime.datetime.now()}")
+        print(f"Updated {players_updated} players for week {week}")
+        print(f"Total fantasy points entries: {len(fantasy_points_data)}")
+        
+        return jsonify({
+            "message": f"Fantasy points update for week {week} completed successfully.",
+            "players_updated": players_updated,
+            "total_entries": len(fantasy_points_data)
+        }), 200
+        
+    except Exception as e:
+        print(f"Error while updating fantasy points for week {week}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/dfs-salaries/data', methods=['GET'])
 def get_dfs_salaries_data():
     """
