@@ -154,7 +154,8 @@ class DFFSalariesScraper:
                     'long_dow_name': main_slate.get('long_dow_name', 'Unknown'),
                     'month_daynum': main_slate.get('month_daynum', 'Unknown'),
                     'team_count': team_count,
-                    'game_count': main_slate.get('game_count', 0)
+                    'game_count': main_slate.get('game_count', 0),
+                    'slate_dates': data.get('dates', [])  # Include the dates array from slate data
                 }
                 
                 return slate_url, slate_date_info
@@ -210,6 +211,84 @@ class DFFSalariesScraper:
             
         except Exception as e:
             logger.debug(f"Error getting showdown info for {team} vs {opponent}: {e}")
+            return None
+    
+    def determine_game_date(self, team: str, opponent: str, slate_dates: List[Dict], slate_date: str = None) -> str:
+        """
+        Determine the actual game date for a team by checking showdown slates.
+        
+        Args:
+            team: Team abbreviation (e.g., 'WAS')
+            opponent: Opponent team abbreviation (e.g., 'KC')
+            slate_dates: List of dates included in the slate
+            slate_date: The actual slate date (e.g., '2025-10-26')
+            
+        Returns:
+            Game date string (e.g., '2025-10-27') or None if not found
+        """
+        try:
+            if not slate_dates:
+                return None
+                
+            if len(slate_dates) == 1:
+                # Single date slate - game is on that date
+                return slate_dates[0].get('start_date')
+            elif len(slate_dates) > 1:
+                # Multi-date slate (like Sun-Mon)
+                # Find the current week's dates (the ones that are >= the slate date)
+                from datetime import datetime
+                
+                # Use the provided slate_date or fallback to the last date
+                if not slate_date:
+                    slate_date = slate_dates[-1].get('start_date')  # Use the last date as current week
+                slate_datetime = datetime.strptime(slate_date, '%Y-%m-%d')
+                
+                # Find dates that are >= the slate date (current week)
+                current_week_dates = []
+                for date_info in slate_dates:
+                    date_str = date_info.get('start_date')
+                    if date_str:
+                        date_datetime = datetime.strptime(date_str, '%Y-%m-%d')
+                        if date_datetime >= slate_datetime:
+                            current_week_dates.append(date_info)
+                
+                logger.debug(f"Current week dates: {[d.get('start_date') + ' (' + d.get('short_dow_name') + ')' for d in current_week_dates]}")
+                
+                # Check if this team has a showdown on Sunday (first try Sunday)
+                sunday_date = None
+                monday_date = None
+                
+                for date_info in current_week_dates:
+                    if date_info.get('short_dow_name') == 'SUN':
+                        sunday_date = date_info.get('start_date')
+                    elif date_info.get('short_dow_name') == 'MON':
+                        monday_date = date_info.get('start_date')
+                
+                # Try Sunday first
+                if sunday_date:
+                    showdown_info = self.get_game_showdown_info(sunday_date, team, opponent)
+                    if showdown_info:
+                        logger.debug(f"Found Sunday showdown for {team} vs {opponent}: {sunday_date}")
+                        return sunday_date
+                
+                # Try Monday if not found on Sunday
+                if monday_date:
+                    showdown_info = self.get_game_showdown_info(monday_date, team, opponent)
+                    if showdown_info:
+                        logger.debug(f"Found Monday showdown for {team} vs {opponent}: {monday_date}")
+                        return monday_date
+                
+                # Fallback: use the first date in current week
+                if current_week_dates:
+                    return current_week_dates[0].get('start_date')
+                
+                # Fallback: use the last date in the slate
+                return slate_dates[-1].get('start_date')
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Error determining game date for {team} vs {opponent}: {e}")
             return None
     
     def normalize_name(self, name: str) -> str:
@@ -499,6 +578,8 @@ class DFFSalariesScraper:
             return []
         
         # Add slate date information to each player
+        slate_dates = slate_date_info.get('slate_dates', [])
+        
         for player in players:
             player['slate_date'] = slate_date_info.get('date', date)
             player['slate_type'] = slate_date_info.get('slate_type', 'Unknown')
@@ -506,9 +587,23 @@ class DFFSalariesScraper:
             player['slate_day'] = slate_date_info.get('long_dow_name', 'Unknown')
             player['slate_month_day'] = slate_date_info.get('month_daynum', 'Unknown')
             
+            # Determine the actual game date for this player
+            game_date = self.determine_game_date(
+                player.get('team', ''),
+                player.get('opponent', ''),
+                slate_dates,
+                slate_date_info.get('date', date)  # Pass the actual slate date
+            )
+            if game_date:
+                player['game_date'] = game_date
+                # Update the main date field to reflect the actual game date
+                player['date'] = game_date
+            
             # Try to get specific game showdown data for more accurate timing
+            # Use the actual game date if we determined it, otherwise use the slate date
+            game_date_for_showdown = game_date if game_date else slate_date_info.get('date', date)
             game_showdown_info = self.get_game_showdown_info(
-                slate_date_info.get('date', date),
+                game_date_for_showdown,
                 player.get('team', ''),
                 player.get('opponent', '')
             )
