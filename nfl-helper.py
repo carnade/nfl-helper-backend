@@ -757,6 +757,18 @@ scheduler.add_job(
 # Schedule fantasy points updates on Wednesday at 15:00, 16:00, 17:00, 18:00, 19:00
 scheduler.add_job(
     func=update_fantasy_points_data,
+    trigger=CronTrigger(day_of_week="sat", hour=23, minute=0)
+)
+scheduler.add_job(
+    func=update_fantasy_points_data,
+    trigger=CronTrigger(day_of_week="sun", hour=23, minute=0)
+)
+scheduler.add_job(
+    func=update_fantasy_points_data,
+    trigger=CronTrigger(day_of_week="tue", hour=6, minute=0)
+)
+scheduler.add_job(
+    func=update_fantasy_points_data,
     trigger=CronTrigger(day_of_week="tue", hour=7, minute=0)
 )
 scheduler.add_job(
@@ -771,15 +783,12 @@ scheduler.add_job(
     func=update_fantasy_points_data,
     trigger=CronTrigger(day_of_week="tue", hour=10, minute=0)
 )
-scheduler.add_job(
-    func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="tue", hour=6, minute=0)
-)
+
 
 # Schedule fantasy points updates on Thursday, Friday, Saturday, Sunday, Monday at 17:00
 scheduler.add_job(
     func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="thu,fri,sat,sun,mon", hour=8, minute=0)
+    trigger=CronTrigger(day_of_week="fri,sat,sun,mon", hour=8, minute=0)
 )
 
 # Schedule DFS salaries update daily at 14:00 CET
