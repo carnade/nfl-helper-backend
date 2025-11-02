@@ -74,6 +74,7 @@ teams_data = {}
 picks_data = {}  # Dictionary to store draft pick data
 fantasy_points_data = {}  # Dictionary to store fantasy points data with Sleeper IDs
 dfs_salaries_data = {}  # Dictionary to store DFS salaries data with Sleeper IDs
+tinyurl_data = {}  # Dictionary to store data: {name: {data: str, created_at: str}}
 
 # Global variables to track the last update times
 last_players_update = None
@@ -756,35 +757,47 @@ scheduler.add_job(
 # Schedule fantasy points updates on Wednesday at 15:00, 16:00, 17:00, 18:00, 19:00
 scheduler.add_job(
     func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="wed", hour=15, minute=0)
+    trigger=CronTrigger(day_of_week="tue", hour=7, minute=0)
 )
 scheduler.add_job(
     func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="wed", hour=16, minute=0)
+    trigger=CronTrigger(day_of_week="tue", hour=8, minute=0)
 )
 scheduler.add_job(
     func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="wed", hour=17, minute=0)
+    trigger=CronTrigger(day_of_week="tue", hour=9, minute=0)
 )
 scheduler.add_job(
     func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="wed", hour=18, minute=0)
+    trigger=CronTrigger(day_of_week="tue", hour=10, minute=0)
 )
 scheduler.add_job(
     func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="wed", hour=19, minute=0)
+    trigger=CronTrigger(day_of_week="tue", hour=6, minute=0)
 )
 
 # Schedule fantasy points updates on Thursday, Friday, Saturday, Sunday, Monday at 17:00
 scheduler.add_job(
     func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="thu,fri,sat,sun,mon", hour=17, minute=0)
+    trigger=CronTrigger(day_of_week="thu,fri,sat,sun,mon", hour=8, minute=0)
 )
 
 # Schedule DFS salaries update daily at 14:00 CET
 scheduler.add_job(
     func=update_dfs_salaries_data,
     trigger=CronTrigger(hour=14, minute=0)
+)
+
+def clear_tinyurl_data():
+    """Clear the tinyurl_data dictionary every Thursday at 19:00 CET"""
+    global tinyurl_data
+    tinyurl_data.clear()
+    print(f"{datetime.datetime.now()} - TinyURL data cleared")
+
+# Schedule TinyURL data clearing every Thursday at 19:00 CET
+scheduler.add_job(
+    func=clear_tinyurl_data,
+    trigger=CronTrigger(day_of_week="thu", hour=19, minute=0)
 )
 
 scheduler.start()
@@ -1237,6 +1250,148 @@ def admin_update_dfs_salaries():
     except Exception as e:
         print(f"Error while triggering DFS salaries update: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/tinyurl/create', methods=['POST'])
+def create_tinyurl():
+    """
+    Store DFS results data.
+    
+    Request body:
+    {
+        "name": "unique_name",
+        "data": "8|MIQwTgdiAmCmBcBGAnAWgKwBYAM2A0y62aAHCbniYgMwmoBsA7BYtgExtr30WPr2ZUVFm3TV6qakXxVEiSThlMJmZvmABJAHKo2agD4AVAJYBbAEawwANxAAbO7ACe8dCWYNW+aijo8RqoLoXnisHFz+eHwCQiFy9GzYDNQURIhskpHpmOjoqJgh2gAikuTY+rCVAGZglfD05EHIFITEQmV4DdgSbhQNKBhZomw9apSImEEdyJgkQYqhbLN5mCnqABIauv766GxgINawEADO8LNUDB0+yH64+K10qi3IyIwYC+lpGPcEmDOSZr4L6IOi5FpEUgdYqlXD6ADG9kcAHEwABXCDQSxgADmSEQ-GoDF+-SJrQekPaIjEEikARIKzWoUQCXemESMho8hGvH4gmE+GRACFJPd9AA1YwAawALgB7MDikBonEACwg6WorncSXoIVaUIoJESeWCfXI8n49MZRvSPQ5i2CYOknXIPQ6AEFDAAZSTSfR2YwymWOAAOxhxgaqCDkhOJELaZHp8m4LBZiWSLHYnAYkT4ogwQLwBUmkgd2VegIomh0ejhACVYNBVbA7DiY2gsC0OPME4b8P1O3m9qai683h9Urh5NQmVRxAwFjDaHDUbAZfCWxAhZUTjLjBB22BzthMBI1A8OOe5zQ-GN4ktBryRhgxuP3l3gaJQRgXWkMuIFAAAqbGWcIALIHsYQrGGA0DesY0YnmeqAXgQlJJl+swppEbgoWILwTp+UQjoWLSzL2X5SO8ojARohi6GU+hAeuMpWAA7rAe4Hvi3D5AspKoOS6GJh0zDNPxz6jlm4S5tSiDvGs+DSDOTLLmUQA"
+    }
+    
+    Returns:
+        JSON response with stored data or error message
+    """
+    global tinyurl_data
+    
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"error": "Request body is required"}), 400
+        
+        name = data.get('name')
+        url_data = data.get('data')
+        
+        if not name:
+            return jsonify({"error": "name is required"}), 400
+        if not url_data:
+            return jsonify({"error": "data is required"}), 400
+        
+        # Check if we already have 10 entries
+        if len(tinyurl_data) >= 10:
+            return jsonify({"error": "Maximum of 10 entries reached. Data will be cleared Thursday at 19:00 CET."}), 400
+        
+        # Check if name already exists
+        if name in tinyurl_data:
+            return jsonify({"error": f"Name '{name}' already exists. Use a different name or update the existing entry."}), 400
+        
+        # Store in memory
+        tinyurl_data[name] = {
+            'data': url_data,
+            'created_at': datetime.datetime.now().isoformat()
+        }
+        
+        return jsonify({
+            "name": name,
+            "data": url_data,
+            "created_at": tinyurl_data[name]['created_at'],
+            "total_entries": len(tinyurl_data)
+        }), 200
+            
+    except Exception as e:
+        print(f"Error storing data: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/tinyurl/<name>', methods=['GET'])
+def get_tinyurl(name):
+    """
+    Get stored data by name.
+    
+    Args:
+        name: The name of the stored entry
+    
+    Returns:
+        JSON response with stored data or error message
+    """
+    global tinyurl_data
+    
+    if name not in tinyurl_data:
+        return jsonify({"error": f"Data with name '{name}' not found"}), 404
+    
+    entry = tinyurl_data[name]
+    return jsonify({
+        "name": name,
+        "data": entry['data'],
+        "created_at": entry['created_at']
+    }), 200
+
+
+@app.route('/tinyurl/count', methods=['GET'])
+def get_tinyurl_count():
+    """
+    Get the count of current TinyURL entries.
+    
+    Returns:
+        JSON response with count and max capacity
+    """
+    global tinyurl_data
+    
+    return jsonify({
+        "count": len(tinyurl_data),
+        "max_entries": 10,
+        "remaining": 10 - len(tinyurl_data)
+    }), 200
+
+
+@app.route('/tinyurl/list', methods=['GET'])
+def list_tinyurls():
+    """
+    List all stored entries.
+    
+    Returns:
+        JSON response with all stored entries
+    """
+    global tinyurl_data
+    
+    entries = []
+    for name, data in tinyurl_data.items():
+        entries.append({
+            "name": name,
+            "created_at": data['created_at']
+        })
+    
+    return jsonify({
+        "total_entries": len(entries),
+        "entries": entries
+    }), 200
+
+
+@app.route('/tinyurl/<name>', methods=['DELETE'])
+def delete_tinyurl(name):
+    """
+    Delete a stored entry by name.
+    
+    Args:
+        name: The name of the stored entry to delete
+    
+    Returns:
+        JSON response indicating success or error
+    """
+    global tinyurl_data
+    
+    if name not in tinyurl_data:
+        return jsonify({"error": f"Data with name '{name}' not found"}), 404
+    
+    del tinyurl_data[name]
+    return jsonify({
+        "message": f"Entry '{name}' deleted successfully",
+        "remaining_entries": len(tinyurl_data)
+    }), 200
 
 """
 @app.route('/admin/assign-random-deltas', methods=['POST'])
