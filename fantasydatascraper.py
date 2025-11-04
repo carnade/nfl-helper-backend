@@ -76,7 +76,10 @@ class FantasyDataScraper:
             current_weekday = now_cet.weekday()  # Monday=0, Tuesday=1, Wednesday=2, Thursday=3, etc.
             
             # Use previous week on Wednesday and Thursday (up to 19:00 CET)
-            if current_weekday == 2:  # Wednesday
+            if current_weekday == 1:  # Wednesday
+                logger.info(f"Current time is Tuesday {now_cet.hour:02d}:{now_cet.minute:02d} CET - using previous week")
+                return True
+            elif current_weekday == 2:  # Wednesday
                 logger.info(f"Current time is Wednesday {now_cet.hour:02d}:{now_cet.minute:02d} CET - using previous week")
                 return True
             elif current_weekday == 3:  # Thursday

@@ -228,7 +228,9 @@ def normalize_name(name):
         'gabriel davis': 'gabe davis',
         'calvin austin iii': 'calvin austin',
         'kj osborn': 'k.j. osborn',
-        'amon-ra st brown': 'amon-ra st. brown'
+        'amon-ra st brown': 'amon-ra st. brown',
+        'bam knight': 'zonovan knight',
+        'mitchell tinsley': 'mitch tinsley'
     }
     
     return name_variations.get(normalized, normalized)
@@ -237,14 +239,16 @@ def normalize_name(name):
 def find_sleeper_id_by_name(fantasy_data_name, filtered_players):
     """
     Find Sleeper ID by matching FantasyData name to Sleeper player data.
+    Searches filtered_players first, then all_players as fallback.
     
     Args:
         fantasy_data_name (str): Name from FantasyData
         filtered_players (dict): Dictionary of Sleeper players
-        
+    
     Returns:
         str: Sleeper ID if found, None otherwise
     """
+    global all_players
     normalized_fantasy_name = normalize_name(fantasy_data_name)
     
     # Team name to abbreviation mapping for DST
@@ -315,6 +319,32 @@ def find_sleeper_id_by_name(fantasy_data_name, filtered_players):
             # Check if last name matches and first name is similar
             if sleeper_last == last_name and first_name in sleeper_first:
                 return sleeper_id
+    
+    # If not found in filtered_players, try all_players as fallback (for edge cases like DT players)
+    if all_players:
+        # First try exact match in all_players
+        for sleeper_id, player_data in all_players.items():
+            sleeper_name = f"{player_data.get('first_name', '')} {player_data.get('last_name', '')}".strip()
+            if normalize_name(sleeper_name) == normalized_fantasy_name:
+                return sleeper_id
+        
+        # Then try partial matches
+        fantasy_parts = normalized_fantasy_name.split()
+        if len(fantasy_parts) >= 2:
+            first_name = fantasy_parts[0]
+            last_name = ' '.join(fantasy_parts[1:])
+            
+            for sleeper_id, player_data in all_players.items():
+                sleeper_first = normalize_name(player_data.get('first_name', ''))
+                sleeper_last = normalize_name(player_data.get('last_name', ''))
+                
+                # Check if first and last names match
+                if sleeper_first == first_name and sleeper_last == last_name:
+                    return sleeper_id
+                
+                # Check if last name matches and first name is similar
+                if sleeper_last == last_name and first_name in sleeper_first:
+                    return sleeper_id
     
     return None
 
@@ -757,10 +787,6 @@ scheduler.add_job(
 # Schedule fantasy points updates on Wednesday at 15:00, 16:00, 17:00, 18:00, 19:00
 scheduler.add_job(
     func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="sat", hour=23, minute=0)
-)
-scheduler.add_job(
-    func=update_fantasy_points_data,
     trigger=CronTrigger(day_of_week="sun", hour=23, minute=0)
 )
 scheduler.add_job(
@@ -775,20 +801,16 @@ scheduler.add_job(
     func=update_fantasy_points_data,
     trigger=CronTrigger(day_of_week="tue", hour=8, minute=0)
 )
-scheduler.add_job(
-    func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="tue", hour=9, minute=0)
-)
-scheduler.add_job(
-    func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="tue", hour=10, minute=0)
-)
 
 
 # Schedule fantasy points updates on Thursday, Friday, Saturday, Sunday, Monday at 17:00
 scheduler.add_job(
     func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="fri,sat,sun,mon", hour=8, minute=0)
+    trigger=CronTrigger(day_of_week="fri,mon", hour=8, minute=0)
+)
+scheduler.add_job(
+    func=update_fantasy_points_data,
+    trigger=CronTrigger(day_of_week="fri,mon", hour=7, minute=0)
 )
 
 # Schedule DFS salaries update daily at 14:00 CET
