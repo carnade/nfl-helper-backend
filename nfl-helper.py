@@ -816,7 +816,7 @@ scheduler.add_job(
 # Schedule DFS salaries update daily at 14:00 CET
 scheduler.add_job(
     func=update_dfs_salaries_data,
-    trigger=CronTrigger(hour=14, minute=0)
+    trigger=CronTrigger(hour=15, minute=0)
 )
 
 def clear_tinyurl_data():
