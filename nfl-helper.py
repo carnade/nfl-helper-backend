@@ -107,7 +107,7 @@ BYE_WEEKS_2024 = {
 BYE_WEEKS_2025 = {
     "ARI": 8, "ATL": 5, "BAL": 7, "BUF": 7, "CAR": 14, "CHI": 5,
     "CIN": 10, "CLE": 9, "DAL": 10, "DEN": 12, "DET": 8, "GB": 5,
-    "HOU": 6, "IND": 11, "JAX": 8, "KC": 10, "LAC": 11, "LAR": 8,
+    "HOU": 6, "IND": 11, "JAX": 8, "KC": 10, "LAC": 12, "LAR": 8,
     "LV": 8, "MIA": 12, "MIN": 6, "NE": 13, "NO": 11, "NYG": 12,
     "NYJ": 9, "PHI": 9, "PIT": 5, "SF": 14, "SEA": 8, "TB": 9,
     "TEN": 10, "WAS": 12
