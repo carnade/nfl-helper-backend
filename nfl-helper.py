@@ -74,7 +74,7 @@ teams_data = {}
 picks_data = {}  # Dictionary to store draft pick data
 fantasy_points_data = {}  # Dictionary to store fantasy points data with Sleeper IDs
 dfs_salaries_data = {}  # Dictionary to store DFS salaries data with Sleeper IDs
-tinyurl_data = {}  # Dictionary to store data: {name: {data: str, created_at: str}}
+tinyurl_data = {}  # Dictionary to store data: {name: {data: str, created_at: str, allowed_names: List[str], user_submissions: Dict[str, {data: str, created_at: str, update_count: int, updated_at: str}]}}
 
 # Global variables to track the last update times
 last_players_update = None
@@ -743,11 +743,11 @@ def update_filtered_players_with_scraped_data():
                 fc_delta = player.get("FantasyCalc SF Value", 0) - existing_player.get("FC Value", 0)
 
             updated_data = {
-                "KTC Position Rank": player["Position Rank"],
-                "KTC Value": player["SFValue"] if player["SFValue"] != 0 else player["Value"],
+                "KTC Position Rank": player.get("Position Rank", 0),
+                "KTC Value": player.get("SFValue", 0) if player.get("SFValue", 0) != 0 else player.get("Value", 0),
                 "KTC Delta": ktc_delta,
-                "FC Position Rank": player["FantasyCalc SF Position Rank"],
-                "FC Value": player["FantasyCalc SF Value"],
+                "FC Position Rank": player.get("FantasyCalc SF Position Rank", 0),
+                "FC Value": player.get("FantasyCalc SF Value", 0),
                 "FC Delta": fc_delta,
             }
 
@@ -1283,6 +1283,14 @@ def admin_update_dfs_salaries():
         return jsonify({"error": str(e)}), 500
 
 
+def normalize_tinyurl_name(name):
+    """
+    Normalize TinyURL entry name to lowercase for case-insensitive lookups.
+    Returns the normalized name.
+    """
+    return name.lower() if name else name
+
+
 @app.route('/tinyurl/create', methods=['POST'])
 def create_tinyurl():
     """
@@ -1312,16 +1320,20 @@ def create_tinyurl():
         if not url_data:
             return jsonify({"error": "data is required"}), 400
         
+        # Normalize name for case-insensitive storage
+        normalized_name = normalize_tinyurl_name(name)
+        
         # Check if we already have 10 entries
         if len(tinyurl_data) >= 10:
             return jsonify({"error": "Maximum of 10 entries reached. Data will be cleared Thursday at 19:00 CET."}), 400
         
-        # Check if name already exists
-        if name in tinyurl_data:
+        # Check if name already exists (case-insensitive)
+        if normalized_name in tinyurl_data:
             return jsonify({"error": f"Name '{name}' already exists. Use a different name or update the existing entry."}), 400
         
-        # Store in memory
-        tinyurl_data[name] = {
+        # Store in memory (use normalized name as key, but keep original name in data)
+        tinyurl_data[normalized_name] = {
+            'name': name,  # Store original case
             'data': url_data,
             'created_at': datetime.datetime.now().isoformat()
         }
@@ -1329,7 +1341,7 @@ def create_tinyurl():
         return jsonify({
             "name": name,
             "data": url_data,
-            "created_at": tinyurl_data[name]['created_at'],
+            "created_at": tinyurl_data[normalized_name]['created_at'],
             "total_entries": len(tinyurl_data)
         }), 200
             
@@ -1338,10 +1350,10 @@ def create_tinyurl():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/tinyurl/<name>', methods=['GET'])
-def get_tinyurl(name):
+@app.route('/tinyurl/<name>/data', methods=['GET'])
+def get_tinyurl_data(name):
     """
-    Get stored data by name.
+    Get stored data by entry name.
     
     Args:
         name: The name of the stored entry
@@ -1351,14 +1363,162 @@ def get_tinyurl(name):
     """
     global tinyurl_data
     
-    if name not in tinyurl_data:
+    # Normalize name for case-insensitive lookup
+    normalized_name = normalize_tinyurl_name(name)
+    
+    if normalized_name not in tinyurl_data:
         return jsonify({"error": f"Data with name '{name}' not found"}), 404
     
-    entry = tinyurl_data[name]
+    entry = tinyurl_data[normalized_name]
+    # Use original name from entry if stored, otherwise use the provided name
+    display_name = entry.get('name', name)
+    response = {
+        "name": display_name,
+        "data": entry.get('data'),
+        "created_at": entry.get('created_at')
+    }
+    
+    # Include allowed_names if present (created via /create/empty)
+    if 'allowed_names' in entry:
+        response['allowed_names'] = entry['allowed_names']
+    
+    # Include week if present
+    if 'week' in entry:
+        response['week'] = entry['week']
+    
+    # Include reveal if present
+    if 'reveal' in entry:
+        response['reveal'] = entry['reveal']
+    
+    # Include update info if present
+    if 'updated_at' in entry:
+        response['updated_at'] = entry['updated_at']
+    if 'updated_by' in entry:
+        response['updated_by'] = entry['updated_by']
+    
+    # Include user_submissions if present (tracks per-user submission history)
+    if 'user_submissions' in entry:
+        response['user_submissions'] = entry['user_submissions']
+    
+    return jsonify(response), 200
+
+
+@app.route('/tinyurl/<name>/details', methods=['GET'])
+def get_tinyurl_details(name):
+    """
+    Get detailed submission information for an entry.
+    Shows all allowed names and their submission status with update counts.
+    
+    Args:
+        name: The name of the stored entry
+    
+    Returns:
+        JSON response with detailed submission information or error message
+    """
+    global tinyurl_data
+    
+    # Normalize name for case-insensitive lookup
+    normalized_name = normalize_tinyurl_name(name)
+    
+    if normalized_name not in tinyurl_data:
+        return jsonify({"error": f"Data with name '{name}' not found"}), 404
+    
+    entry = tinyurl_data[normalized_name]
+    # Use original name from entry if stored, otherwise use the provided name
+    display_name = entry.get('name', name)
+    response = {
+        "name": display_name,
+        "created_at": entry.get('created_at')
+    }
+    
+    # Include week if present
+    if 'week' in entry:
+        response['week'] = entry['week']
+    
+    # Include reveal if present
+    if 'reveal' in entry:
+        response['reveal'] = entry['reveal']
+    
+    # Get allowed names
+    allowed_names = entry.get('allowed_names', [])
+    if allowed_names:
+        response['allowed_names'] = allowed_names
+        
+        # Build submission details for each allowed name
+        submissions = {}
+        user_submissions = entry.get('user_submissions', {})
+        
+        for username in allowed_names:
+            # Normalize username for case-insensitive lookup in user_submissions
+            normalized_username = normalize_tinyurl_name(username)
+            if normalized_username in user_submissions:
+                user_data = user_submissions[normalized_username]
+                # Use original username from allowed_names for display
+                submissions[username] = {
+                    "has_submitted": True,
+                    "update_count": user_data.get('update_count', 0),
+                    "created_at": user_data.get('created_at'),
+                    "updated_at": user_data.get('updated_at')
+                }
+            else:
+                submissions[username] = {
+                    "has_submitted": False,
+                    "update_count": 0
+                }
+        
+        response['submissions'] = submissions
+    else:
+        # Entry created via old /create method (no allowed_names)
+        response['allowed_names'] = []
+        response['submissions'] = {}
+    
+    # Include overall update info if present
+    if 'updated_at' in entry:
+        response['updated_at'] = entry['updated_at']
+    if 'updated_by' in entry:
+        response['updated_by'] = entry['updated_by']
+    
+    return jsonify(response), 200
+
+
+@app.route('/tinyurl/<username>/available', methods=['GET'])
+def get_tinyurls_by_username(username):
+    """
+    Get all TinyURL entry names where the username is in the allowed_names list.
+    Includes a flag indicating if each entry already has data.
+    
+    Args:
+        username: The username to search for
+    
+    Returns:
+        JSON response with list of TinyURL entries with metadata
+    """
+    global tinyurl_data
+    
+    # Normalize username for case-insensitive comparison
+    normalized_username = normalize_tinyurl_name(username)
+    
+    matching_entries = []
+    for entry_name, entry_data in tinyurl_data.items():
+        allowed_names = entry_data.get('allowed_names', [])
+        # Case-insensitive comparison: normalize all allowed names and compare
+        normalized_allowed_names = [normalize_tinyurl_name(n) for n in allowed_names]
+        if normalized_username in normalized_allowed_names:
+            # Use original name from entry if stored, otherwise use entry_name
+            display_name = entry_data.get('name', entry_name)
+            entry_info = {
+                "name": display_name,
+                "has_data": entry_data.get('data') is not None
+            }
+            # Include week if present
+            if 'week' in entry_data:
+                entry_info['week'] = entry_data['week']
+            matching_entries.append(entry_info)
+    
     return jsonify({
-        "name": name,
-        "data": entry['data'],
-        "created_at": entry['created_at']
+        "username": username,
+        "entries": matching_entries,
+        "count": len(matching_entries)
     }), 200
 
 
@@ -1391,10 +1551,37 @@ def list_tinyurls():
     
     entries = []
     for name, data in tinyurl_data.items():
-        entries.append({
-            "name": name,
-            "created_at": data['created_at']
-        })
+        # Use original name from entry if stored, otherwise use the key
+        display_name = data.get('name', name)
+        entry_info = {
+            "name": display_name,
+            "created_at": data['created_at'],
+            "has_data": data.get('data') is not None
+        }
+        
+        # Include week if present
+        if 'week' in data:
+            entry_info['week'] = data['week']
+        
+        # Include reveal if present
+        if 'reveal' in data:
+            entry_info['reveal'] = data['reveal']
+        
+        # Include allowed_names if present
+        if 'allowed_names' in data:
+            entry_info['allowed_names'] = data['allowed_names']
+        
+        # Include user_submissions count if present
+        if 'user_submissions' in data:
+            entry_info['user_submissions_count'] = len(data['user_submissions'])
+        
+        # Include update info if present
+        if 'updated_at' in data:
+            entry_info['updated_at'] = data['updated_at']
+        if 'updated_by' in data:
+            entry_info['updated_by'] = data['updated_by']
+        
+        entries.append(entry_info)
     
     return jsonify({
         "total_entries": len(entries),
@@ -1415,14 +1602,240 @@ def delete_tinyurl(name):
     """
     global tinyurl_data
     
-    if name not in tinyurl_data:
+    # Normalize name for case-insensitive lookup
+    normalized_name = normalize_tinyurl_name(name)
+    
+    if normalized_name not in tinyurl_data:
         return jsonify({"error": f"Data with name '{name}' not found"}), 404
     
-    del tinyurl_data[name]
+    del tinyurl_data[normalized_name]
     return jsonify({
         "message": f"Entry '{name}' deleted successfully",
         "remaining_entries": len(tinyurl_data)
     }), 200
+
+
+@app.route('/tinyurl/create/empty', methods=['POST'])
+def create_empty_tinyurl():
+    """
+    Create an empty TinyURL entry with allowed usernames.
+    
+    Request body:
+    {
+        "name": "unique_name",
+        "names": ["username1", "username2", "username3"],
+        "week": 8,
+        "reveal": "2025-11-10T14:30:00.000Z"  // Optional, ISO 8601 UTC format
+    }
+    
+    Returns:
+        JSON response with created entry or error message
+    """
+    global tinyurl_data
+    
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"error": "Request body is required"}), 400
+        
+        name = data.get('name')
+        allowed_names = data.get('names', [])
+        week = data.get('week')
+        reveal = data.get('reveal')
+        
+        if not name:
+            return jsonify({"error": "name is required"}), 400
+        if not isinstance(allowed_names, list):
+            return jsonify({"error": "names must be a list"}), 400
+        if not allowed_names:
+            return jsonify({"error": "names list cannot be empty"}), 400
+        
+        # Normalize name for case-insensitive storage
+        normalized_name = normalize_tinyurl_name(name)
+        
+        # Check if we already have 10 entries
+        if len(tinyurl_data) >= 10:
+            return jsonify({"error": "Maximum of 10 entries reached. Data will be cleared Thursday at 19:00 CET."}), 400
+        
+        # Check if name already exists (case-insensitive)
+        if normalized_name in tinyurl_data:
+            return jsonify({"error": f"Name '{name}' already exists. Use a different name or update the existing entry."}), 400
+        
+        # Store empty entry with allowed names, week, and reveal
+        # Use normalized name as key, but keep original name and allowed_names in data
+        entry_data = {
+            'name': name,  # Store original case
+            'data': None,  # No data yet
+            'created_at': datetime.datetime.now().isoformat(),
+            'allowed_names': allowed_names  # Keep original case for display
+        }
+        
+        if week is not None:
+            entry_data['week'] = week
+        
+        if reveal is not None:
+            entry_data['reveal'] = reveal
+        
+        tinyurl_data[normalized_name] = entry_data
+        
+        response = {
+            "name": name,
+            "allowed_names": allowed_names,
+            "created_at": tinyurl_data[normalized_name]['created_at'],
+            "total_entries": len(tinyurl_data)
+        }
+        
+        if week is not None:
+            response['week'] = week
+        
+        if reveal is not None:
+            response['reveal'] = reveal
+        
+        return jsonify(response), 200
+            
+    except Exception as e:
+        print(f"Error creating empty TinyURL: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/tinyurl/<tinyurl_name>/add', methods=['POST'])
+def add_to_tinyurl(tinyurl_name):
+    """
+    Add data to an existing TinyURL entry.
+    Only allowed usernames (from the names list) can add data.
+    
+    Request body:
+    {
+        "name": "username",
+        "data": "8|MIQwTgdi..."
+    }
+    
+    Args:
+        tinyurl_name: The name of the TinyURL entry to add data to
+    
+    Returns:
+        JSON response indicating success or error
+    """
+    global tinyurl_data
+    
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"error": "Request body is required"}), 400
+        
+        username = data.get('name')
+        url_data = data.get('data')
+        
+        if not username:
+            return jsonify({"error": "name is required"}), 400
+        if not url_data:
+            return jsonify({"error": "data is required"}), 400
+        
+        # Normalize names for case-insensitive lookup and comparison
+        normalized_tinyurl_name = normalize_tinyurl_name(tinyurl_name)
+        normalized_username = normalize_tinyurl_name(username)
+        
+        # Check if TinyURL entry exists
+        if normalized_tinyurl_name not in tinyurl_data:
+            return jsonify({"error": f"TinyURL '{tinyurl_name}' not found"}), 404
+        
+        entry = tinyurl_data[normalized_tinyurl_name]
+        
+        # Check if entry has allowed_names (created via /create/empty)
+        allowed_names = entry.get('allowed_names', [])
+        if not allowed_names:
+            # Entry was created via /create (old method), cannot use /add endpoint
+            return jsonify({"error": f"TinyURL '{tinyurl_name}' was not created with allowed names. Use /tinyurl/create to update."}), 400
+        
+        # Check if username is in allowed_names (case-insensitive comparison)
+        normalized_allowed_names = [normalize_tinyurl_name(n) for n in allowed_names]
+        if normalized_username not in normalized_allowed_names:
+            return jsonify({"error": "Not allowed username"}), 401
+        
+        # Initialize user_submissions if it doesn't exist
+        if 'user_submissions' not in entry:
+            entry['user_submissions'] = {}
+        
+        current_time = datetime.datetime.now().isoformat()
+        
+        # Check if this is the user's first submission (use normalized username as key)
+        if normalized_username not in entry['user_submissions']:
+            # First submission - create entry with created_at and update_count = 1
+            # Use normalized_username as key for case-insensitive lookups
+            entry['user_submissions'][normalized_username] = {
+                'username': username,  # Store original case for display
+                'data': url_data,
+                'created_at': current_time,
+                'update_count': 1,
+                'updated_at': current_time
+            }
+        else:
+            # Subsequent submission - increment update_count
+            user_submission = entry['user_submissions'][normalized_username]
+            user_submission['data'] = url_data
+            user_submission['update_count'] = user_submission.get('update_count', 0) + 1
+            user_submission['updated_at'] = current_time
+            # Update username if case changed
+            user_submission['username'] = username
+        
+        # Update main entry data (keep latest submission or aggregate as needed)
+        entry['data'] = url_data
+        entry['updated_at'] = current_time
+        entry['updated_by'] = username  # Keep original case for display
+        
+        return jsonify({
+            "message": f"Data added to '{tinyurl_name}' successfully",
+            "name": tinyurl_name,
+            "updated_by": username,
+            "updated_at": entry['updated_at'],
+            "update_count": entry['user_submissions'][normalized_username]['update_count'],
+            "created_at": entry['user_submissions'][normalized_username]['created_at']
+        }), 200
+            
+    except Exception as e:
+        print(f"Error adding data to TinyURL: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/tinyurl/name/<name>', methods=['GET'])
+def check_tinyurl_name_exists(name):
+    """
+    Check if a TinyURL entry with the given name already exists.
+    
+    Args:
+        name: The TinyURL entry name to check
+    
+    Returns:
+        JSON response indicating whether the entry exists
+    """
+    global tinyurl_data
+    
+    # Normalize name for case-insensitive lookup
+    normalized_name = normalize_tinyurl_name(name)
+    exists = normalized_name in tinyurl_data
+    
+    response = {
+        "name": name,
+        "exists": exists
+    }
+    
+    if exists:
+        entry = tinyurl_data[normalized_name]
+        # Use original name from entry if stored, otherwise use the provided name
+        display_name = entry.get('name', name)
+        response["name"] = display_name
+        response["created_at"] = entry.get('created_at')
+        if 'allowed_names' in entry:
+            response["has_allowed_names"] = True
+            response["allowed_names"] = entry['allowed_names']
+        if 'week' in entry:
+            response["week"] = entry['week']
+        if 'reveal' in entry:
+            response["reveal"] = entry['reveal']
+        if 'data' in entry and entry['data'] is not None:
+            response["has_data"] = True
+    
+    return jsonify(response), 200
 
 """
 @app.route('/admin/assign-random-deltas', methods=['POST'])
