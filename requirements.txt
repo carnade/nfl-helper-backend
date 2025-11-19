@@ -21,3 +21,4 @@ urllib3==2.2.2
 Werkzeug==3.0.4
 tqdm==4.66.1
 beautifulsoup4==4.13.0
+lzstring==1.0.4

@@ -1283,12 +1283,435 @@ def admin_update_dfs_salaries():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/admin/dfs-salaries/check/<sleeper_id>/<int:week>', methods=['GET'])
+def admin_check_test_data(sleeper_id, week):
+    """
+    Admin endpoint to check if test data exists for a player.
+    
+    Returns:
+        JSON response with the player data if found, or error if not found.
+    """
+    global dfs_salaries_data
+    
+    key = f"{sleeper_id}_W{week}"
+    player_data = dfs_salaries_data.get(key)
+    
+    if player_data:
+        return jsonify({
+            "found": True,
+            "key": key,
+            "data": player_data
+        }), 200
+    else:
+        available_keys = [k for k in dfs_salaries_data.keys() if k.startswith(f"{sleeper_id}_")]
+        return jsonify({
+            "found": False,
+            "key": key,
+            "available_keys_for_player": available_keys[:10],
+            "total_keys": len(dfs_salaries_data)
+        }), 404
+
+
+@app.route('/admin/dfs-salaries/add-test-data', methods=['POST'])
+def admin_add_test_data():
+    """
+    Admin endpoint to manually add test data to dfs_salaries_data.
+    
+    Request body should contain the player data as JSON.
+    Example:
+    {
+        "sleeper_id": "12547",
+        "week": 11,
+        "data": {
+            "date": "2025-11-13",
+            "game_date": "2025-11-13",
+            ...
+        }
+    }
+    
+    Returns:
+        JSON response indicating success or failure.
+    """
+    global dfs_salaries_data
+    
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"error": "Request body is required"}), 400
+        
+        sleeper_id = data.get('sleeper_id')
+        week = data.get('week')
+        player_data = data.get('data')
+        
+        if not sleeper_id or not week or not player_data:
+            return jsonify({"error": "sleeper_id, week, and data are required"}), 400
+        
+        # Ensure sleeper_id and week are in the data
+        player_data['sleeper_id'] = str(sleeper_id)
+        player_data['week'] = int(week)
+        
+        # Create the key
+        key = f"{sleeper_id}_W{week}"
+        
+        # Add to dfs_salaries_data
+        dfs_salaries_data[key] = player_data
+        
+        return jsonify({
+            "message": f"Test data added successfully for {key}",
+            "key": key,
+            "data": player_data
+        }), 200
+        
+    except Exception as e:
+        print(f"Error while adding test data: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 def normalize_tinyurl_name(name):
     """
     Normalize TinyURL entry name to lowercase for case-insensitive lookups.
     Returns the normalized name.
     """
     return name.lower() if name else name
+
+
+def _localize_datetime(naive_dt, tz):
+    """
+    Localize a naive datetime to a timezone.
+    Handles both zoneinfo (Python 3.9+) and pytz.
+    
+    Args:
+        naive_dt: naive datetime object
+        tz: timezone object (zoneinfo or pytz)
+        
+    Returns:
+        timezone-aware datetime
+    """
+    # Check if it's pytz (has localize method)
+    if hasattr(tz, 'localize'):
+        return tz.localize(naive_dt)
+    else:
+        # zoneinfo or timezone - use replace
+        return naive_dt.replace(tzinfo=tz)
+
+
+def validate_lineup_players_not_started(lineup_data):
+    """
+    Validate that no players in the lineup have started their games yet.
+    Uses EST/EDT timezone for game times (NFL games are typically in ET).
+    
+    Args:
+        lineup_data: String in format "week|base64_encoded_string"
+        
+    Returns:
+        tuple: (is_valid: bool, error_message: str or None, players_started: list)
+    """
+    import base64
+    from datetime import datetime, time as dt_time, timezone, timedelta
+    
+    global dfs_salaries_data
+    
+    try:
+        # Get current time in EST/EDT (Eastern Time)
+        # EST is UTC-5, EDT is UTC-4 (daylight saving)
+        try:
+            # Try to use zoneinfo (Python 3.9+)
+            from zoneinfo import ZoneInfo
+            et_tz = ZoneInfo('America/New_York')
+        except ImportError:
+            # Fallback: use pytz (handles DST properly)
+            try:
+                import pytz
+                et_tz = pytz.timezone('America/New_York')
+            except ImportError:
+                # Last resort: use fixed UTC-5 offset (EST)
+                # Note: This doesn't handle DST, but is better than nothing
+                et_tz = timezone(timedelta(hours=-5))
+        
+        current_time_et = datetime.now(et_tz)
+        
+        # Parse the data string (format: "week|base64_encoded_string")
+        if '|' not in lineup_data:
+            return False, "Invalid lineup data format. Expected 'week|base64_data'", []
+        
+        parts = lineup_data.split('|', 1)
+        if len(parts) != 2:
+            return False, "Invalid lineup data format. Expected 'week|base64_data'", []
+        
+        week_str = parts[0]
+        base64_data = parts[1]
+        
+        # Decode base64 to get player list
+        sleeper_ids = []
+        try:
+            # Preserve original base64_data for LZString (before any modifications)
+            original_base64_data = base64_data
+            
+            # Add padding if needed (base64 strings must be multiple of 4)
+            missing_padding = len(base64_data) % 4
+            if missing_padding:
+                base64_data += '=' * (4 - missing_padding)
+            
+            # Decode base64 to bytes first
+            # Try standard base64 first, then URL-safe base64 if that fails
+            try:
+                decoded_bytes = base64.b64decode(base64_data)
+            except Exception:
+                # If standard base64 fails, try URL-safe base64 (uses - and _ instead of + and /)
+                try:
+                    decoded_bytes = base64.urlsafe_b64decode(base64_data)
+                except Exception as e:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Could not decode base64 (standard or URL-safe): {str(e)}. Base64 data (first 100 chars): {base64_data[:100]}. Skipping game time validation.")
+                    return True, None, []
+            
+            # Try to decode as UTF-8
+            try:
+                decoded_string = decoded_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                # If UTF-8 fails, try LZString decompression (common for frontend compression)
+                decoded_string = None
+                try:
+                    # Try lzstring package (most common)
+                    try:
+                        import lzstring
+                        lzs = lzstring.LZString()
+                        # LZString expects the base64 string, not the decoded bytes
+                        # Use original_base64_data (before padding was added)
+                        # Try with original first
+                        try:
+                            decoded_string = lzs.decompressFromBase64(original_base64_data)
+                        except:
+                            # If that fails, try converting URL-safe base64 to standard base64
+                            # URL-safe uses - and _ instead of + and /
+                            if '-' in original_base64_data or '_' in original_base64_data:
+                                # Convert URL-safe to standard base64
+                                standard_base64 = original_base64_data.replace('-', '+').replace('_', '/')
+                                # Re-add padding if needed
+                                missing_padding = len(standard_base64) % 4
+                                if missing_padding:
+                                    standard_base64 += '=' * (4 - missing_padding)
+                                decoded_string = lzs.decompressFromBase64(standard_base64)
+                    except ImportError:
+                        # Try alternative package name
+                        try:
+                            from lz_string import LZString
+                            lzs = LZString()
+                            try:
+                                decoded_string = lzs.decompressFromBase64(original_base64_data)
+                            except:
+                                # Try URL-safe conversion
+                                if '-' in original_base64_data or '_' in original_base64_data:
+                                    standard_base64 = original_base64_data.replace('-', '+').replace('_', '/')
+                                    missing_padding = len(standard_base64) % 4
+                                    if missing_padding:
+                                        standard_base64 += '=' * (4 - missing_padding)
+                                    decoded_string = lzs.decompressFromBase64(standard_base64)
+                        except ImportError:
+                            # Neither package available
+                            pass
+                except Exception as e:
+                    # LZString decompression failed, will try zlib as fallback
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.debug(f"LZString decompression failed: {str(e)}, trying zlib fallback")
+                    pass
+                
+                # If LZString didn't work, try zlib decompression
+                if not decoded_string:
+                    import zlib
+                    try:
+                        decompressed = zlib.decompress(decoded_bytes)
+                        decoded_string = decompressed.decode('utf-8')
+                    except:
+                        # If all decompression methods fail, log and skip validation
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.warning(f"Could not decode base64 as UTF-8, LZString, or zlib. Base64 length: {len(base64_data)}, decoded bytes length: {len(decoded_bytes)}, first 20 bytes (hex): {decoded_bytes[:20].hex()}. Skipping game time validation.")
+                        return True, None, []
+            
+            # Parse player list
+            # Format can be:
+            # - "sleeper_id:salary,sleeper_id:salary,..." 
+            # - "sleeper_id-salary,sleeper_id-salary,..."
+            # - "username:sleeper_id-salary,sleeper_id-salary,..." (with username prefix)
+            
+            # Check if there's a username prefix (format: "username:player_list")
+            # Username prefix would be at the start, all letters, followed by a colon
+            if ':' in decoded_string:
+                first_colon_idx = decoded_string.index(':')
+                before_colon = decoded_string[:first_colon_idx].strip()
+                # If the part before the first colon is all letters (username), extract player list
+                if before_colon.isalpha() and len(before_colon) > 0:
+                    player_list = decoded_string[first_colon_idx + 1:]  # Get everything after "username:"
+                else:
+                    player_list = decoded_string
+            else:
+                player_list = decoded_string
+            
+            player_pairs = player_list.split(',')
+            
+            for pair in player_pairs:
+                # Handle both colon and dash delimiters
+                if ':' in pair:
+                    sleeper_id = pair.split(':')[0].strip()
+                elif '-' in pair:
+                    sleeper_id = pair.split('-')[0].strip()
+                else:
+                    continue
+                
+                # Only add numeric sleeper IDs (skip usernames and team abbreviations like "HOU")
+                if sleeper_id and sleeper_id.isdigit():
+                    sleeper_ids.append(sleeper_id)
+        except Exception as e:
+            # If base64 decoding fails, we can't validate player game times
+            # This might be compressed data or a different format
+            # Log the error but don't block the request - just skip validation
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Could not decode base64 lineup data for validation: {str(e)}. Base64 data (first 100 chars): {base64_data[:100] if 'base64_data' in locals() else 'N/A'}. Skipping game time validation.")
+            # Return True to allow the request through without validation
+            return True, None, []
+        
+        if not sleeper_ids:
+            # No valid players found, but don't block - might be a different format
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"No sleeper_ids extracted from lineup data. Decoded string: {decoded_string[:100] if 'decoded_string' in locals() else 'N/A'}")
+            return True, None, []
+        
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Validating lineup with {len(sleeper_ids)} players for week {week_str}: {sleeper_ids}")
+        
+        # Check each player's game status
+        players_started = []
+        
+        for sleeper_id in sleeper_ids:
+            # Look up player in dfs_salaries_data
+            week = int(week_str) if week_str.isdigit() else None
+            if week is None:
+                continue
+            
+            # Try to find player data (key format: sleeper_id_W{week})
+            key = f"{sleeper_id}_W{week}"
+            player_data = dfs_salaries_data.get(key)
+            
+            if not player_data:
+                # Player not found in salary data, skip validation for this player
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.debug(f"Player {sleeper_id} (week {week}, key: {key}) not found in dfs_salaries_data. Available keys: {list(dfs_salaries_data.keys())[:10]}")
+                continue
+            
+            # Check if game has started
+            game_date_str = player_data.get('game_date') or player_data.get('start_date')
+            game_start_time_str = player_data.get('game_start_time', '')
+            game_day = player_data.get('game_day', '')  # e.g., "Monday", "Sunday"
+            
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Validating player {sleeper_id}: game_date={game_date_str}, game_start_time={game_start_time_str}, game_day={game_day}")
+            
+            if not game_date_str:
+                # No game date, skip validation
+                logger.debug(f"Player {sleeper_id} has no game_date, skipping validation")
+                continue
+            
+            # Parse game date
+            try:
+                game_date = datetime.strptime(game_date_str, '%Y-%m-%d').date()
+            except:
+                continue
+            
+            # Parse game start time (format: "1:00PM", "4:05PM", etc.)
+            game_datetime_et = None
+            if game_start_time_str and game_start_time_str != 'Unknown':
+                try:
+                    # Parse time like "1:00PM" or "4:05PM" (assumed to be ET)
+                    time_str = game_start_time_str.replace('PM', '').replace('AM', '').strip()
+                    hour, minute = map(int, time_str.split(':'))
+                    
+                    # Adjust for PM/AM
+                    if 'PM' in game_start_time_str and hour != 12:
+                        hour += 12
+                    elif 'AM' in game_start_time_str and hour == 12:
+                        hour = 0
+                    
+                    game_time = dt_time(hour=hour, minute=minute)
+                    game_datetime_naive = datetime.combine(game_date, game_time)
+                    # Assume game time is in ET - use helper to handle pytz vs zoneinfo
+                    game_datetime_et = _localize_datetime(game_datetime_naive, et_tz)
+                except:
+                    # If time parsing fails, use default based on game day
+                    game_datetime_et = _get_default_game_time(game_date, game_day, et_tz)
+            else:
+                # No time available, use smart default based on game day
+                game_datetime_et = _get_default_game_time(game_date, game_day, et_tz)
+            
+            # Check if game has started (compare in ET timezone)
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Comparing times for player {sleeper_id}: current_time_et={current_time_et}, game_datetime_et={game_datetime_et}, has_started={game_datetime_et and current_time_et >= game_datetime_et}")
+            
+            if game_datetime_et and current_time_et >= game_datetime_et:
+                player_name = player_data.get('name', sleeper_id)
+                logger.info(f"Player {sleeper_id} ({player_name}) game has started - adding to reject list")
+                players_started.append({
+                    'sleeper_id': sleeper_id,
+                    'name': player_name,
+                    'team': player_data.get('team', ''),
+                    'game_date': game_date_str,
+                    'game_start_time': game_start_time_str or 'Unknown'
+                })
+        
+        if players_started:
+            player_names = [f"{p['name']} ({p['team']})" for p in players_started]
+            error_msg = f"Lineup contains players whose games have already started: {', '.join(player_names)}"
+            return False, error_msg, players_started
+        
+        return True, None, []
+        
+    except Exception as e:
+        return False, f"Error validating lineup: {str(e)}", []
+
+
+def _get_default_game_time(game_date, game_day, et_tz):
+    """
+    Get default game start time based on game day.
+    NFL games typically:
+    - Thursday: 8:00 PM ET
+    - Sunday: 1:00 PM ET (early games)
+    - Monday: 8:00 PM ET
+    - Saturday: 1:00 PM ET (late season)
+    - Other: 6:00 PM ET (conservative default)
+    
+    Args:
+        game_date: date object
+        game_day: string like "Monday", "Sunday", etc.
+        et_tz: Eastern timezone
+        
+    Returns:
+        datetime object in ET timezone
+    """
+    from datetime import time as dt_time, datetime
+    
+    game_day_lower = game_day.lower() if game_day else ''
+    
+    # Default times based on day of week
+    if 'monday' in game_day_lower or 'thursday' in game_day_lower:
+        # Primetime games: 8:00 PM ET
+        default_time = dt_time(20, 0)
+    elif 'sunday' in game_day_lower or 'saturday' in game_day_lower:
+        # Early games: 1:00 PM ET
+        default_time = dt_time(13, 0)
+    else:
+        # Conservative default: 6:00 PM ET
+        default_time = dt_time(18, 0)
+    
+    game_datetime_naive = datetime.combine(game_date, default_time)
+    return _localize_datetime(game_datetime_naive, et_tz)
 
 
 @app.route('/tinyurl/create', methods=['POST'])
@@ -1401,6 +1824,16 @@ def create_tinyurl():
             'week': week,
             'user_submissions': {}
         }
+        
+        # Validate all entries with data before processing
+        for entry in entries_with_data:
+            entry_data_value = entry['data']
+            is_valid, error_msg, players_started = validate_lineup_players_not_started(entry_data_value)
+            if not is_valid:
+                return jsonify({
+                    "error": f"Validation failed for entry '{entry['name']}': {error_msg}",
+                    "players_started": players_started
+                }), 400
         
         # Process entries with data
         entries_added = 0
@@ -1856,6 +2289,28 @@ def add_to_tinyurl(tinyurl_name):
         # Initialize user_submissions if it doesn't exist
         if 'user_submissions' not in entry:
             entry['user_submissions'] = {}
+        
+        # Check if this is an overwrite (user already has submitted data)
+        if normalized_username in entry['user_submissions']:
+            existing_data = entry['user_submissions'][normalized_username].get('data')
+            if existing_data:
+                # Validate that no players in the EXISTING lineup have started their games yet
+                # This prevents overwriting a lineup that has players whose games have started
+                is_valid_existing, error_msg_existing, players_started_existing = validate_lineup_players_not_started(existing_data)
+                if not is_valid_existing:
+                    return jsonify({
+                        "error": f"Cannot overwrite lineup: {error_msg_existing}",
+                        "players_started": players_started_existing,
+                        "message": "The existing lineup contains players whose games have already started. You cannot overwrite it."
+                    }), 400
+        
+        # Validate that no players in the NEW lineup have started their games yet
+        is_valid, error_msg, players_started = validate_lineup_players_not_started(url_data)
+        if not is_valid:
+            return jsonify({
+                "error": error_msg,
+                "players_started": players_started
+            }), 400
         
         current_time = datetime.datetime.now().isoformat()
         
