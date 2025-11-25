@@ -819,16 +819,44 @@ scheduler.add_job(
     trigger=CronTrigger(hour=15, minute=0)
 )
 
+# Schedule DFS salaries update on Wednesdays at 19:00 CET
+scheduler.add_job(
+    func=update_dfs_salaries_data,
+    trigger=CronTrigger(day_of_week="wed", hour=19, minute=0)
+)
+
 def clear_tinyurl_data():
-    """Clear the tinyurl_data dictionary every Thursday at 19:00 CET"""
+    """Clear tinyurl_data entries for weeks that are not the current week"""
     global tinyurl_data
-    tinyurl_data.clear()
-    print(f"{datetime.datetime.now()} - TinyURL data cleared")
+    
+    try:
+        # Get current week from Sleeper
+        scraper = FantasyDataScraper()
+        current_week = scraper.get_current_week()
+        
+        # Find entries to delete (those not from current week)
+        entries_to_delete = []
+        for name, entry in tinyurl_data.items():
+            entry_week = entry.get('week')
+            # If entry doesn't have a week field or week is not current week, mark for deletion
+            if entry_week is None or entry_week != current_week:
+                entries_to_delete.append(name)
+        
+        # Delete entries that are not from current week
+        for name in entries_to_delete:
+            del tinyurl_data[name]
+        
+        print(f"{datetime.datetime.now()} - TinyURL data cleared: removed {len(entries_to_delete)} entries (kept {len(tinyurl_data)} entries for week {current_week})")
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error clearing TinyURL data: {e}")
+        # Fallback: clear all if we can't get current week
+        tinyurl_data.clear()
+        print(f"{datetime.datetime.now()} - TinyURL data cleared (fallback: all entries)")
 
 # Schedule TinyURL data clearing every Thursday at 19:00 CET
 scheduler.add_job(
     func=clear_tinyurl_data,
-    trigger=CronTrigger(day_of_week="thu", hour=19, minute=0)
+    trigger=CronTrigger(day_of_week="thu", hour=9, minute=0)
 )
 
 scheduler.start()
