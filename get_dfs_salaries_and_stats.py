@@ -170,6 +170,110 @@ class DFFSalariesScraper:
         logger.error(f"No slates found for any of the tried dates: {dates_to_try}")
         return None, None
     
+    def get_main_slate_url_for_date(self, date: str) -> Optional[str]:
+        """
+        Get the main slate URL for a specific date.
+        
+        Args:
+            date: Date in format YYYY-MM-DD
+            
+        Returns:
+            Slate URL string (e.g., "21A10") or None if not found
+        """
+        try:
+            params = {'date': date}
+            response = self.session.get(self.slates_api_url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            slates = data.get('slates', [])
+            
+            if not slates:
+                logger.warning(f"No slates found for date {date}")
+                return None
+            
+            # Find the slate with the most games (excludes showdown slates)
+            # Prioritize game_count over team_count to get the largest slate
+            main_slate = max(slates, key=lambda s: (s.get('game_count', 0), s.get('team_count', 0)))
+            slate_url = main_slate.get('url')
+            
+            if slate_url:
+                logger.info(f"Found main slate URL for {date}: {slate_url}")
+            
+            return slate_url
+            
+        except Exception as e:
+            logger.warning(f"Error getting main slate URL for {date}: {e}")
+            return None
+    
+    def get_all_relevant_slate_urls_for_date(self, date: str, initial_slate_url: str = None) -> List[str]:
+        """
+        Get all non-showdown slate URLs for a specific date that match the date's month_daynum.
+        Uses the initial_slate_url to query the API endpoint that returns all slates for that date.
+        
+        Args:
+            date: Date in format YYYY-MM-DD
+            initial_slate_url: Optional slate URL to use for querying (if provided, uses API endpoint with url param)
+            
+        Returns:
+            List of slate URL strings (e.g., ["218FF", "21A90"])
+        """
+        try:
+            from datetime import datetime
+            
+            # Parse the date to get month and day for matching
+            date_obj = datetime.strptime(date, '%Y-%m-%d')
+            target_month_day = date_obj.strftime('%b %d')  # e.g., "Nov 27"
+            
+            # If we have an initial slate URL, use the API endpoint with url parameter
+            # This gives us all slates for that date
+            if initial_slate_url:
+                params = {'date': date, 'url': initial_slate_url}
+            else:
+                params = {'date': date}
+            
+            response = self.session.get(self.slates_api_url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            slates = data.get('slates', [])
+            
+            if not slates:
+                logger.warning(f"No slates found for date {date}")
+                return []
+            
+            # Filter to get all non-showdown slates that match the target date's month_daynum
+            relevant_slates = []
+            for slate in slates:
+                # Skip showdown slates
+                if slate.get('showdown_flag', 0) == 1:
+                    continue
+                
+                slate_month_day = slate.get('month_daynum', '')
+                slate_url = slate.get('url')
+                
+                # Check if this slate's month_daynum matches our target date
+                if slate_month_day == target_month_day and slate_url:
+                    relevant_slates.append(slate_url)
+                    logger.info(f"Found relevant slate for {date}: {slate_url} ({slate.get('slate_type', 'Unknown')})")
+            
+            if not relevant_slates:
+                logger.warning(f"No relevant non-showdown slates found for {date} matching {target_month_day}")
+                # Fallback: return the main slate if no matches found
+                main_slate = max(slates, key=lambda s: (s.get('game_count', 0), s.get('team_count', 0)))
+                if main_slate.get('url'):
+                    logger.info(f"Using fallback main slate: {main_slate.get('url')}")
+                    return [main_slate.get('url')]
+            
+            logger.info(f"Found {len(relevant_slates)} relevant slate(s) for {date}: {relevant_slates}")
+            return relevant_slates
+            
+        except Exception as e:
+            logger.warning(f"Error getting all relevant slate URLs for {date}: {e}")
+            # Fallback to main slate
+            main_slate_url = self.get_main_slate_url_for_date(date)
+            return [main_slate_url] if main_slate_url else []
+    
     def get_game_showdown_info(self, date: str, team: str, opponent: str) -> Optional[Dict]:
         """
         Get specific showdown information for a game between two teams.
@@ -498,12 +602,6 @@ class DFFSalariesScraper:
             logger.error("Could not determine active main slate")
             return []
         
-        players = self.scrape_dff_projections(slate_url, slate_date_info.get('date', date))
-        
-        if not players:
-            logger.warning("No players scraped from DFF")
-            return []
-        
         # Add slate date information to each player
         slate_dates = slate_date_info.get('slate_dates', [])
         
@@ -527,6 +625,48 @@ class DFFSalariesScraper:
                     logger.info(f"  Excluding date {date_str} (< {slate_date})")
         
         logger.info(f"Final main_slate_dates: {main_slate_dates}")
+        
+        # Step 1.5: Scrape DFF projections for EACH date in the main slate
+        # Each date may have multiple relevant slates (e.g., "Thu" and "Thu-Fri"), so we get all of them
+        all_players = []
+        for game_date in main_slate_dates:
+            logger.info(f"=== Scraping DFF projections for date: {game_date} ===")
+            
+            # First get the main slate URL to use for querying all slates
+            main_slate_url = self.get_main_slate_url_for_date(game_date)
+            if not main_slate_url:
+                logger.warning(f"⚠️ Could not find main slate URL for {game_date}, skipping")
+                continue
+            
+            # Get all relevant slate URLs for this date (non-showdown slates matching the date)
+            relevant_slate_urls = self.get_all_relevant_slate_urls_for_date(game_date, main_slate_url)
+            if not relevant_slate_urls:
+                logger.warning(f"⚠️ Could not find any relevant slate URLs for {game_date}, skipping")
+                continue
+            
+            # Scrape each relevant slate for this date
+            date_players = []
+            for slate_url in relevant_slate_urls:
+                logger.info(f"Scraping slate {slate_url} for date {game_date}")
+                slate_players = self.scrape_dff_projections(slate_url, game_date)
+                if slate_players:
+                    logger.info(f"✅ Found {len(slate_players)} players from slate {slate_url}")
+                    date_players.extend(slate_players)
+                else:
+                    logger.warning(f"⚠️ No players found for slate {slate_url} on {game_date}")
+            
+            logger.info(f"Scraping result for {game_date}: {len(date_players)} total players found from {len(relevant_slate_urls)} slate(s)")
+            if date_players:
+                logger.info(f"✅ Successfully scraped {len(date_players)} players for {game_date}")
+                all_players.extend(date_players)
+            else:
+                logger.warning(f"⚠️ No players found for date {game_date} (this may be normal if data isn't available yet)")
+        
+        players = all_players
+        
+        if not players:
+            logger.warning("No players scraped from DFF for any date in main slate")
+            return []
         
         # Step 2: Make ONE call per date to get all showdowns
         showdown_data = {}  # date -> list of showdowns
