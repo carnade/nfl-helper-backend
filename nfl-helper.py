@@ -826,7 +826,7 @@ scheduler.add_job(
 )
 
 def clear_tinyurl_data():
-    """Clear tinyurl_data entries for weeks that are not the current week"""
+    """Clear tinyurl_data entries for weeks that are older than the current week"""
     global tinyurl_data
     
     try:
@@ -834,19 +834,19 @@ def clear_tinyurl_data():
         scraper = FantasyDataScraper()
         current_week = scraper.get_current_week()
         
-        # Find entries to delete (those not from current week)
+        # Keep current week and all future weeks, delete only weeks older than current
         entries_to_delete = []
         for name, entry in tinyurl_data.items():
             entry_week = entry.get('week')
-            # If entry doesn't have a week field or week is not current week, mark for deletion
-            if entry_week is None or entry_week != current_week:
+            # If entry doesn't have a week field or week is older than current week, mark for deletion
+            if entry_week is None or entry_week < current_week:
                 entries_to_delete.append(name)
         
-        # Delete entries that are not from current week
+        # Delete entries that are older than current week
         for name in entries_to_delete:
             del tinyurl_data[name]
         
-        print(f"{datetime.datetime.now()} - TinyURL data cleared: removed {len(entries_to_delete)} entries (kept {len(tinyurl_data)} entries for week {current_week})")
+        print(f"{datetime.datetime.now()} - TinyURL data cleared: removed {len(entries_to_delete)} entries older than week {current_week} (kept {len(tinyurl_data)} entries for week {current_week} and future weeks)")
     except Exception as e:
         print(f"{datetime.datetime.now()} - Error clearing TinyURL data: {e}")
         # Fallback: clear all if we can't get current week
