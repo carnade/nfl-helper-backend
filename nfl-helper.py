@@ -819,16 +819,44 @@ scheduler.add_job(
     trigger=CronTrigger(hour=15, minute=0)
 )
 
+# Schedule DFS salaries update on Wednesdays at 19:00 CET
+scheduler.add_job(
+    func=update_dfs_salaries_data,
+    trigger=CronTrigger(day_of_week="wed", hour=19, minute=0)
+)
+
 def clear_tinyurl_data():
-    """Clear the tinyurl_data dictionary every Thursday at 19:00 CET"""
+    """Clear tinyurl_data entries for weeks that are older than the current week"""
     global tinyurl_data
-    tinyurl_data.clear()
-    print(f"{datetime.datetime.now()} - TinyURL data cleared")
+    
+    try:
+        # Get current week from Sleeper
+        scraper = FantasyDataScraper()
+        current_week = scraper.get_current_week()
+        
+        # Keep current week and all future weeks, delete only weeks older than current
+        entries_to_delete = []
+        for name, entry in tinyurl_data.items():
+            entry_week = entry.get('week')
+            # If entry doesn't have a week field or week is older than current week, mark for deletion
+            if entry_week is None or entry_week < current_week:
+                entries_to_delete.append(name)
+        
+        # Delete entries that are older than current week
+        for name in entries_to_delete:
+            del tinyurl_data[name]
+        
+        print(f"{datetime.datetime.now()} - TinyURL data cleared: removed {len(entries_to_delete)} entries older than week {current_week} (kept {len(tinyurl_data)} entries for week {current_week} and future weeks)")
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error clearing TinyURL data: {e}")
+        # Fallback: clear all if we can't get current week
+        tinyurl_data.clear()
+        print(f"{datetime.datetime.now()} - TinyURL data cleared (fallback: all entries)")
 
 # Schedule TinyURL data clearing every Thursday at 19:00 CET
 scheduler.add_job(
     func=clear_tinyurl_data,
-    trigger=CronTrigger(day_of_week="thu", hour=19, minute=0)
+    trigger=CronTrigger(day_of_week="thu", hour=9, minute=0)
 )
 
 scheduler.start()
@@ -1280,6 +1308,123 @@ def admin_update_dfs_salaries():
         return jsonify({"message": "DFS salaries update triggered successfully."}), 200
     except Exception as e:
         print(f"Error while triggering DFS salaries update: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/dfs-salaries/scrape-slate', methods=['POST'])
+def admin_scrape_specific_slate():
+    """
+    Admin endpoint to scrape a specific slate by date and slate URL.
+    
+    Request Body:
+        {
+            "date": "2025-11-27",           # Date in YYYY-MM-DD format
+            "slate_url": "21A90"            # Slate URL (e.g., "21A90")
+        }
+    
+    OR
+    
+    Request Body:
+        {
+            "date_slate": "2025-11-27?slate=21A90"  # Combined format
+        }
+    
+    Returns:
+        JSON response indicating success or failure with player count.
+    """
+    global dfs_salaries_data, all_players
+    
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"error": "Request body is required"}), 400
+        
+        # Parse input - support both formats
+        date = None
+        slate_url = None
+        
+        if 'date_slate' in data:
+            # Parse format like "2025-11-27?slate=21A90"
+            date_slate = data.get('date_slate', '')
+            if '?slate=' in date_slate:
+                parts = date_slate.split('?slate=')
+                date = parts[0]
+                slate_url = parts[1] if len(parts) > 1 else None
+            else:
+                return jsonify({"error": "Invalid date_slate format. Expected 'YYYY-MM-DD?slate=SLATE_URL'"}), 400
+        else:
+            # Parse separate date and slate_url
+            date = data.get('date')
+            slate_url = data.get('slate_url')
+        
+        if not date:
+            return jsonify({"error": "date is required"}), 400
+        if not slate_url:
+            return jsonify({"error": "slate_url is required"}), 400
+        
+        # Validate date format
+        try:
+            datetime.datetime.strptime(date, '%Y-%m-%d')
+        except ValueError:
+            return jsonify({"error": f"Invalid date format. Expected YYYY-MM-DD, got: {date}"}), 400
+        
+        print(f"{datetime.datetime.now()} - Admin scraping specific slate: {date}?slate={slate_url}")
+        
+        if USE_MOCK_DATA:
+            return jsonify({"message": "Mock mode enabled - skipping DFF scraping"}), 200
+        
+        # Initialize DFF scraper
+        scraper = DFFSalariesScraper()
+        
+        # Scrape the specific slate
+        players = scraper.scrape_dff_projections(slate_url, date)
+        
+        if not players:
+            return jsonify({
+                "message": f"No players found for slate {slate_url} on {date}",
+                "players_scraped": 0
+            }), 200
+        
+        # Match to Sleeper IDs
+        matched_count = 0
+        for player in players:
+            sleeper_id = scraper.find_sleeper_id_by_name(
+                player['name'],
+                player['team'],
+                all_players
+            )
+            player['sleeper_id'] = sleeper_id
+            if sleeper_id:
+                matched_count += 1
+        
+        # Add players to dfs_salaries_data
+        added_count = 0
+        for player in players:
+            # Use sleeper_id + week as composite key if available, otherwise use name+team+week
+            if player.get("sleeper_id"):
+                key = f"{player['sleeper_id']}_W{player.get('week', 0)}"
+            else:
+                key = f"{player['name']}_{player['team']}_W{player.get('week', 0)}"
+            
+            # Add date to the player data
+            player_with_date = player.copy()
+            player_with_date["date"] = date
+            
+            dfs_salaries_data[key] = player_with_date
+            added_count += 1
+        
+        return jsonify({
+            "message": f"Successfully scraped and added players from slate {slate_url}",
+            "date": date,
+            "slate_url": slate_url,
+            "players_scraped": len(players),
+            "players_added": added_count,
+            "matched_to_sleeper_ids": matched_count,
+            "week": players[0].get('week', 0) if players else None
+        }), 200
+        
+    except Exception as e:
+        print(f"Error scraping specific slate: {e}")
         return jsonify({"error": str(e)}), 500
 
 
