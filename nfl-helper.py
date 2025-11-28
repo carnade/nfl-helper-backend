@@ -1376,6 +1376,12 @@ def admin_scrape_specific_slate():
         # Initialize DFF scraper
         scraper = DFFSalariesScraper()
         
+        # Validate that the slate is not a showdown (we should never scrape prices from showdowns)
+        if scraper.is_slate_showdown(slate_url, date):
+            return jsonify({
+                "error": f"Slate {slate_url} is a showdown slate. Showdown slates should not be used for prices. Only main slates should be scraped for salary data."
+            }), 400
+        
         # Scrape the specific slate
         players = scraper.scrape_dff_projections(slate_url, date)
         
