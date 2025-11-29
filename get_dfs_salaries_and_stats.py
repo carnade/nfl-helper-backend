@@ -32,13 +32,14 @@ class DFFSalariesScraper:
         """
         Get the active main slate URL from DFF API.
         Always selects the slate with the most teams (typically the main slate).
+        NEVER returns showdown slates - only non-showdown slates are considered.
         If no slates found for the given date, tries recent dates.
         
         Args:
             date: Date in format YYYY-MM-DD (defaults to today)
             
         Returns:
-            Slate URL string (e.g., "210E7") or None if not found
+            Slate URL string (e.g., "210E7") or None if not found (including if only showdown slates exist)
         """
         if not date:
             date = datetime.now().strftime("%Y-%m-%d")
@@ -70,9 +71,16 @@ class DFFSalariesScraper:
                     logger.warning(f"No slates found for date {try_date}")
                     continue
                 
-                # Find the slate with the most games (excludes showdown slates)
+                # Filter out showdown slates - NEVER use showdown slates for prices
+                non_showdown_slates = [s for s in slates if s.get('showdown_flag', 0) == 0]
+                
+                if not non_showdown_slates:
+                    logger.warning(f"No non-showdown slates found for date {try_date} (only showdown slates available, skipping)")
+                    continue
+                
+                # Find the slate with the most games (only from non-showdown slates)
                 # Prioritize game_count over team_count to get the largest slate
-                main_slate = max(slates, key=lambda s: (s.get('game_count', 0), s.get('team_count', 0)))
+                main_slate = max(non_showdown_slates, key=lambda s: (s.get('game_count', 0), s.get('team_count', 0)))
                 
                 slate_url = main_slate.get('url')
                 team_count = main_slate.get('team_count', 0)
@@ -97,13 +105,14 @@ class DFFSalariesScraper:
         """
         Get the active main slate URL and date information from DFF API.
         Always selects the slate with the most teams (typically the main slate).
+        NEVER returns showdown slates - only non-showdown slates are considered.
         If no slates found for the given date, tries future dates (tomorrow, day after) for current week slates.
         
         Args:
             date: Date in format YYYY-MM-DD (defaults to today)
             
         Returns:
-            Tuple of (slate_url, slate_date_info) or (None, None) if not found
+            Tuple of (slate_url, slate_date_info) or (None, None) if not found (including if only showdown slates exist)
         """
         if not date:
             date = datetime.now().strftime("%Y-%m-%d")
@@ -135,9 +144,16 @@ class DFFSalariesScraper:
                     logger.warning(f"No slates found for date {try_date}")
                     continue
                 
-                # Find the slate with the most games (excludes showdown slates)
+                # Filter out showdown slates - NEVER use showdown slates for prices
+                non_showdown_slates = [s for s in slates if s.get('showdown_flag', 0) == 0]
+                
+                if not non_showdown_slates:
+                    logger.warning(f"No non-showdown slates found for date {try_date} (only showdown slates available, skipping)")
+                    continue
+                
+                # Find the slate with the most games (only from non-showdown slates)
                 # Prioritize game_count over team_count to get the largest slate
-                main_slate = max(slates, key=lambda s: (s.get('game_count', 0), s.get('team_count', 0)))
+                main_slate = max(non_showdown_slates, key=lambda s: (s.get('game_count', 0), s.get('team_count', 0)))
                 
                 slate_url = main_slate.get('url')
                 team_count = main_slate.get('team_count', 0)
@@ -170,15 +186,44 @@ class DFFSalariesScraper:
         logger.error(f"No slates found for any of the tried dates: {dates_to_try}")
         return None, None
     
+    def is_slate_showdown(self, slate_url: str, date: str) -> bool:
+        """
+        Check if a slate URL is a showdown slate.
+        
+        Args:
+            slate_url: Slate URL to check (e.g., "21A90")
+            date: Date in format YYYY-MM-DD
+            
+        Returns:
+            True if the slate is a showdown, False otherwise
+        """
+        try:
+            params = {'date': date}
+            response = self.session.get(self.slates_api_url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            slates = data.get('slates', [])
+            
+            for slate in slates:
+                if slate.get('url') == slate_url:
+                    return slate.get('showdown_flag', 0) == 1
+            
+            return False
+        except Exception as e:
+            logger.warning(f"Error checking if slate {slate_url} is showdown: {e}")
+            return False
+    
     def get_main_slate_url_for_date(self, date: str) -> Optional[str]:
         """
         Get the main slate URL for a specific date.
+        NEVER returns showdown slates - only non-showdown slates are considered.
         
         Args:
             date: Date in format YYYY-MM-DD
             
         Returns:
-            Slate URL string (e.g., "21A10") or None if not found
+            Slate URL string (e.g., "21A10") or None if not found (including if only showdown slates exist)
         """
         try:
             params = {'date': date}
@@ -192,13 +237,20 @@ class DFFSalariesScraper:
                 logger.warning(f"No slates found for date {date}")
                 return None
             
-            # Find the slate with the most games (excludes showdown slates)
+            # Filter out showdown slates - NEVER use showdown slates for prices
+            non_showdown_slates = [s for s in slates if s.get('showdown_flag', 0) == 0]
+            
+            if not non_showdown_slates:
+                logger.warning(f"No non-showdown slates found for date {date} (only showdown slates available, skipping)")
+                return None
+            
+            # Find the slate with the most games (only from non-showdown slates)
             # Prioritize game_count over team_count to get the largest slate
-            main_slate = max(slates, key=lambda s: (s.get('game_count', 0), s.get('team_count', 0)))
+            main_slate = max(non_showdown_slates, key=lambda s: (s.get('game_count', 0), s.get('team_count', 0)))
             slate_url = main_slate.get('url')
             
             if slate_url:
-                logger.info(f"Found main slate URL for {date}: {slate_url}")
+                logger.info(f"Found main slate URL for {date}: {slate_url} (non-showdown)")
             
             return slate_url
             
@@ -259,11 +311,16 @@ class DFFSalariesScraper:
             
             if not relevant_slates:
                 logger.warning(f"No relevant non-showdown slates found for {date} matching {target_month_day}")
-                # Fallback: return the main slate if no matches found
-                main_slate = max(slates, key=lambda s: (s.get('game_count', 0), s.get('team_count', 0)))
-                if main_slate.get('url'):
-                    logger.info(f"Using fallback main slate: {main_slate.get('url')}")
-                    return [main_slate.get('url')]
+                # Fallback: try to get main slate, but NEVER use showdown slates
+                non_showdown_slates = [s for s in slates if s.get('showdown_flag', 0) == 0]
+                if non_showdown_slates:
+                    main_slate = max(non_showdown_slates, key=lambda s: (s.get('game_count', 0), s.get('team_count', 0)))
+                    if main_slate.get('url'):
+                        logger.info(f"Using fallback main slate: {main_slate.get('url')} (non-showdown)")
+                        return [main_slate.get('url')]
+                else:
+                    logger.warning(f"No non-showdown slates available for {date} (only showdown slates, skipping)")
+                    return []
             
             logger.info(f"Found {len(relevant_slates)} relevant slate(s) for {date}: {relevant_slates}")
             return relevant_slates

@@ -461,6 +461,11 @@ def update_dfs_salaries_data():
             print(f"Cleaned up {len(keys_to_delete)} old entries, keeping weeks {weeks_to_keep}")
         
         # Add new data with week in the key (supports multi-week storage)
+        # Note: Scheduled updates do NOT update salaries - they only log differences
+        salary_differences = []
+        added_count = 0
+        updated_count = 0
+        
         for player in parsed_salaries:
             # Use sleeper_id + week as composite key if available, otherwise use name+team+week
             if player.get("sleeper_id"):
@@ -468,11 +473,44 @@ def update_dfs_salaries_data():
             else:
                 key = f"{player['name']}_{player['team']}_W{player.get('week', 0)}"
             
+            # Check if player already exists
+            existing_player = dfs_salaries_data.get(key)
+            new_salary = player.get('salary', 0)
+            
+            # Log salary differences if player exists
+            if existing_player:
+                existing_salary = existing_player.get('salary', 0)
+                if existing_salary != new_salary:
+                    salary_differences.append({
+                        "name": player.get('name'),
+                        "team": player.get('team'),
+                        "sleeper_id": player.get('sleeper_id'),
+                        "existing_salary": existing_salary,
+                        "new_salary": new_salary,
+                        "difference": new_salary - existing_salary
+                    })
+            
             # Add date to the player data
             player_with_date = player.copy()
             player_with_date["date"] = today
             
+            # Keep existing salary if player already exists (scheduled updates don't update salaries)
+            if existing_player:
+                player_with_date["salary"] = existing_player.get('salary', new_salary)
+                updated_count += 1
+            else:
+                added_count += 1
+            
             dfs_salaries_data[key] = player_with_date
+        
+        # Log salary differences
+        if salary_differences:
+            print(f"{datetime.datetime.now()} - Salary differences found (scheduled update - salaries NOT updated):")
+            for diff in salary_differences[:20]:  # Log first 20
+                print(f"  {diff['name']} ({diff['team']}): ${diff['existing_salary']:,} -> ${diff['new_salary']:,} (diff: ${diff['difference']:+,})")
+            if len(salary_differences) > 20:
+                print(f"  ... and {len(salary_differences) - 20} more differences")
+            print(f"Total salary differences: {len(salary_differences)} (salaries NOT updated in scheduled run)")
         
         last_dfs_salaries_update = datetime.datetime.now()
         
@@ -480,7 +518,7 @@ def update_dfs_salaries_data():
         matched_count = sum(1 for p in dfs_salaries_data.values() if p.get("sleeper_id") is not None)
         
         print(f"DFS salaries updated at {last_dfs_salaries_update}")
-        print(f"Added {len(parsed_salaries)} players for week {current_week}")
+        print(f"Added {added_count} new players, updated {updated_count} existing players (salaries preserved) for week {current_week}")
         print(f"Total DFS salary entries in memory: {len(dfs_salaries_data)}")
         print(f"Matched to Sleeper IDs: {matched_count}")
         print(f"Date: {today}")
@@ -1319,18 +1357,20 @@ def admin_scrape_specific_slate():
     Request Body:
         {
             "date": "2025-11-27",           # Date in YYYY-MM-DD format
-            "slate_url": "21A90"            # Slate URL (e.g., "21A90")
+            "slate_url": "21A90",           # Slate URL (e.g., "21A90")
+            "update_salaries": true         # Optional: If false, logs salary differences but doesn't update salaries (default: true)
         }
     
     OR
     
     Request Body:
         {
-            "date_slate": "2025-11-27?slate=21A90"  # Combined format
+            "date_slate": "2025-11-27?slate=21A90",  # Combined format
+            "update_salaries": false         # Optional: If false, logs salary differences but doesn't update salaries
         }
     
     Returns:
-        JSON response indicating success or failure with player count.
+        JSON response indicating success or failure with player count and salary differences if update_salaries is false.
     """
     global dfs_salaries_data, all_players
     
@@ -1368,13 +1408,22 @@ def admin_scrape_specific_slate():
         except ValueError:
             return jsonify({"error": f"Invalid date format. Expected YYYY-MM-DD, got: {date}"}), 400
         
-        print(f"{datetime.datetime.now()} - Admin scraping specific slate: {date}?slate={slate_url}")
+        # Get update_salaries flag (default: true)
+        update_salaries = data.get('update_salaries', True)
+        
+        print(f"{datetime.datetime.now()} - Admin scraping specific slate: {date}?slate={slate_url}, update_salaries={update_salaries}")
         
         if USE_MOCK_DATA:
             return jsonify({"message": "Mock mode enabled - skipping DFF scraping"}), 200
         
         # Initialize DFF scraper
         scraper = DFFSalariesScraper()
+        
+        # Validate that the slate is not a showdown (we should never scrape prices from showdowns)
+        if scraper.is_slate_showdown(slate_url, date):
+            return jsonify({
+                "error": f"Slate {slate_url} is a showdown slate. Showdown slates should not be used for prices. Only main slates should be scraped for salary data."
+            }), 400
         
         # Scrape the specific slate
         players = scraper.scrape_dff_projections(slate_url, date)
@@ -1399,6 +1448,9 @@ def admin_scrape_specific_slate():
         
         # Add players to dfs_salaries_data
         added_count = 0
+        updated_count = 0
+        salary_differences = []
+        
         for player in players:
             # Use sleeper_id + week as composite key if available, otherwise use name+team+week
             if player.get("sleeper_id"):
@@ -1406,22 +1458,61 @@ def admin_scrape_specific_slate():
             else:
                 key = f"{player['name']}_{player['team']}_W{player.get('week', 0)}"
             
+            # Check if player already exists
+            existing_player = dfs_salaries_data.get(key)
+            new_salary = player.get('salary', 0)
+            
+            # Log salary differences if update_salaries is false and player exists
+            if not update_salaries and existing_player:
+                existing_salary = existing_player.get('salary', 0)
+                if existing_salary != new_salary:
+                    salary_differences.append({
+                        "name": player.get('name'),
+                        "team": player.get('team'),
+                        "sleeper_id": player.get('sleeper_id'),
+                        "existing_salary": existing_salary,
+                        "new_salary": new_salary,
+                        "difference": new_salary - existing_salary
+                    })
+            
             # Add date to the player data
             player_with_date = player.copy()
             player_with_date["date"] = date
             
+            # If update_salaries is false and player exists, keep the existing salary
+            if not update_salaries and existing_player:
+                player_with_date["salary"] = existing_player.get('salary', new_salary)
+                updated_count += 1
+            else:
+                added_count += 1
+            
             dfs_salaries_data[key] = player_with_date
-            added_count += 1
         
-        return jsonify({
+        # Log salary differences
+        if salary_differences:
+            print(f"{datetime.datetime.now()} - Salary differences found (update_salaries={update_salaries}):")
+            for diff in salary_differences[:10]:  # Log first 10
+                print(f"  {diff['name']} ({diff['team']}): ${diff['existing_salary']:,} -> ${diff['new_salary']:,} (diff: ${diff['difference']:+,})")
+            if len(salary_differences) > 10:
+                print(f"  ... and {len(salary_differences) - 10} more differences")
+        
+        response = {
             "message": f"Successfully scraped and added players from slate {slate_url}",
             "date": date,
             "slate_url": slate_url,
             "players_scraped": len(players),
             "players_added": added_count,
+            "players_updated": updated_count if not update_salaries else 0,
             "matched_to_sleeper_ids": matched_count,
-            "week": players[0].get('week', 0) if players else None
-        }), 200
+            "week": players[0].get('week', 0) if players else None,
+            "update_salaries": update_salaries
+        }
+        
+        if salary_differences:
+            response["salary_differences_count"] = len(salary_differences)
+            response["salary_differences"] = salary_differences
+        
+        return jsonify(response), 200
         
     except Exception as e:
         print(f"Error scraping specific slate: {e}")
