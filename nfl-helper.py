@@ -872,21 +872,58 @@ def clear_tinyurl_data():
         scraper = FantasyDataScraper()
         current_week = scraper.get_current_week()
         
+        # Ensure current_week is an integer
+        if current_week is None:
+            print(f"{datetime.datetime.now()} - Error: Could not determine current week. Skipping cleanup.")
+            return
+        
+        current_week = int(current_week)
+        
         # Keep current week and all future weeks, delete only weeks older than current
         entries_to_delete = []
+        entries_to_keep = []
+        
         for name, entry in tinyurl_data.items():
             entry_week = entry.get('week')
-            # If entry doesn't have a week field or week is older than current week, mark for deletion
-            if entry_week is None or entry_week < current_week:
+            entry_name = entry.get('name', name)
+            
+            # Log the raw entry_week value for debugging
+            print(f"{datetime.datetime.now()} - Processing entry '{entry_name}': raw week value = {entry_week} (type: {type(entry_week).__name__})")
+            
+            # Convert entry_week to int if it's not None
+            if entry_week is not None:
+                try:
+                    entry_week = int(entry_week)
+                    print(f"{datetime.datetime.now()} - Entry '{entry_name}': converted week to int: {entry_week}")
+                except (ValueError, TypeError) as e:
+                    print(f"{datetime.datetime.now()} - Warning: Entry '{entry_name}' has invalid week value: {entry_week} (type: {type(entry_week).__name__}). Error: {e}. Treating as None.")
+                    entry_week = None
+            
+            # Keep entries where entry_week >= current_week (current week and all future weeks)
+            # Delete entries where entry_week < current_week (older weeks) or entry_week is None
+            if entry_week is None:
+                print(f"{datetime.datetime.now()} - Marking entry '{entry_name}' for deletion (no week field)")
                 entries_to_delete.append(name)
+            elif entry_week < current_week:
+                print(f"{datetime.datetime.now()} - Marking entry '{entry_name}' (week {entry_week}) for deletion (older than current week {current_week})")
+                entries_to_delete.append(name)
+            else:
+                # entry_week >= current_week, so keep it
+                print(f"{datetime.datetime.now()} - Keeping entry '{entry_name}' (week {entry_week}) (current week: {current_week}, condition: {entry_week} >= {current_week})")
+                entries_to_keep.append((name, entry_week))
         
         # Delete entries that are older than current week
         for name in entries_to_delete:
             del tinyurl_data[name]
         
         print(f"{datetime.datetime.now()} - TinyURL data cleared: removed {len(entries_to_delete)} entries older than week {current_week} (kept {len(tinyurl_data)} entries for week {current_week} and future weeks)")
+        if entries_to_keep:
+            kept_weeks = [week for _, week in entries_to_keep]
+            print(f"{datetime.datetime.now()} - Kept entries with weeks: {kept_weeks}")
     except Exception as e:
         print(f"{datetime.datetime.now()} - Error clearing TinyURL data: {e}")
+        import traceback
+        traceback.print_exc()
         # Fallback: clear all if we can't get current week
         tinyurl_data.clear()
         print(f"{datetime.datetime.now()} - TinyURL data cleared (fallback: all entries)")
@@ -2124,12 +2161,16 @@ def create_tinyurl():
 def get_tinyurl_data(name):
     """
     Get stored data by entry name.
+    If a username is provided, returns data only for that specific user.
+    If the entry has a PIN, it must be provided as a query parameter to access the data.
     
     Args:
         name: The name of the stored entry
+        username: Optional query parameter - if provided, returns data only for that username
+        pin: Optional query parameter - required if entry/user has a PIN
     
     Returns:
-        JSON response with stored data or error message
+        JSON response with stored data or error message. Returns no data if PIN is required but missing/incorrect.
     """
     global tinyurl_data
     
@@ -2140,6 +2181,117 @@ def get_tinyurl_data(name):
         return jsonify({"error": f"Data with name '{name}' not found"}), 404
     
     entry = tinyurl_data[normalized_name]
+    
+    # Get optional username parameter
+    username = request.args.get('username')
+    provided_pin = request.args.get('pin')
+    
+    # If username is provided, return data for that specific user
+    if username:
+        normalized_username = normalize_tinyurl_name(username)
+        user_submissions = entry.get('user_submissions', {})
+        
+        if normalized_username not in user_submissions:
+            # Get list of available usernames for debugging
+            available_usernames = [user_data.get('username', key) for key, user_data in user_submissions.items()]
+            return jsonify({
+                "name": entry.get('name', name),
+                "username": username,
+                "data": None,
+                "message": f"No data found for username '{username}'",
+                "available_usernames": available_usernames if available_usernames else []
+            }), 200
+        
+        user_data = user_submissions[normalized_username]
+        
+        # Check if this user's submission has a PIN
+        if 'pin' in user_data:
+            user_pin = user_data.get('pin')
+            if not provided_pin:
+                return jsonify({
+                    "name": entry.get('name', name),
+                    "username": username,
+                    "data": None,
+                    "pin_required": True,
+                    "message": "PIN required to access this user's data"
+                }), 200
+            
+            # Validate PIN format
+            provided_pin = str(provided_pin).strip()
+            if not provided_pin.isdigit() or len(provided_pin) < 2 or len(provided_pin) > 8:
+                return jsonify({
+                    "name": entry.get('name', name),
+                    "username": username,
+                    "data": None,
+                    "pin_required": True,
+                    "message": "Invalid PIN format"
+                }), 200
+            
+            # Check if PIN matches
+            if provided_pin != user_pin:
+                return jsonify({
+                    "name": entry.get('name', name),
+                    "username": username,
+                    "data": None,
+                    "pin_required": True,
+                    "message": "Incorrect PIN"
+                }), 200
+        
+        # Return user-specific data
+        return jsonify({
+            "name": entry.get('name', name),
+            "username": user_data.get('username', username),
+            "data": user_data.get('data'),
+            "created_at": user_data.get('created_at'),
+            "updated_at": user_data.get('updated_at'),
+            "update_count": user_data.get('update_count', 0),
+            "week": entry.get('week')
+        }), 200
+    
+    # No username provided - return main entry data (existing behavior)
+    # Check if entry has a PIN (stored in user_submissions)
+    # We need to check all user submissions to see if any have a PIN
+    user_submissions = entry.get('user_submissions', {})
+    stored_pins = set()
+    
+    # Collect all stored PINs from user submissions
+    for user_data in user_submissions.values():
+        if 'pin' in user_data:
+            stored_pins.add(user_data.get('pin'))
+    
+    entry_has_pin = len(stored_pins) > 0
+    
+    # If entry has a PIN, validate it
+    if entry_has_pin:
+        if not provided_pin:
+            # PIN required but not provided - return no data
+            return jsonify({
+                "name": entry.get('name', name),
+                "data": None,
+                "pin_required": True,
+                "message": "PIN required to access this data"
+            }), 200
+        
+        # Validate PIN format
+        provided_pin = str(provided_pin).strip()
+        if not provided_pin.isdigit() or len(provided_pin) < 2 or len(provided_pin) > 8:
+            return jsonify({
+                "name": entry.get('name', name),
+                "data": None,
+                "pin_required": True,
+                "message": "Invalid PIN format"
+            }), 200
+        
+        # Check if PIN matches any stored PIN
+        if provided_pin not in stored_pins:
+            # PIN doesn't match any stored PIN - return no data
+            return jsonify({
+                "name": entry.get('name', name),
+                "data": None,
+                "pin_required": True,
+                "message": "Incorrect PIN"
+            }), 200
+    
     # Use original name from entry if stored, otherwise use the provided name
     display_name = entry.get('name', name)
     response = {
@@ -2270,20 +2422,41 @@ def get_tinyurls_by_username(username):
     
     matching_entries = []
     for entry_name, entry_data in tinyurl_data.items():
-        allowed_names = entry_data.get('allowed_names', [])
-        # Case-insensitive comparison: normalize all allowed names and compare
-        normalized_allowed_names = [normalize_tinyurl_name(n) for n in allowed_names]
-        if normalized_username in normalized_allowed_names:
-            # Use original name from entry if stored, otherwise use entry_name
-            display_name = entry_data.get('name', entry_name)
-            entry_info = {
-                "name": display_name,
-                "has_data": entry_data.get('data') is not None
-            }
-            # Include week if present
-            if 'week' in entry_data:
-                entry_info['week'] = entry_data['week']
-            matching_entries.append(entry_info)
+            allowed_names = entry_data.get('allowed_names', [])
+            # Case-insensitive comparison: normalize all allowed names and compare
+            normalized_allowed_names = [normalize_tinyurl_name(n) for n in allowed_names]
+            if normalized_username in normalized_allowed_names:
+                # Use original name from entry if stored, otherwise use entry_name
+                display_name = entry_data.get('name', entry_name)
+                
+                # Check if entry has a PIN (in any user submission)
+                user_submissions = entry_data.get('user_submissions', {})
+                has_pin = False
+                for user_data in user_submissions.values():
+                    if 'pin' in user_data:
+                        has_pin = True
+                        break
+                
+                # Check if this specific username has data in user_submissions
+                # If user_submissions exists and has this username, check their data
+                # Otherwise, fall back to main entry data
+                user_has_data = False
+                if normalized_username in user_submissions:
+                    user_data = user_submissions[normalized_username]
+                    user_has_data = user_data.get('data') is not None
+                else:
+                    # Fall back to main entry data if no user-specific data
+                    user_has_data = entry_data.get('data') is not None
+                
+                entry_info = {
+                    "name": display_name,
+                    "has_data": user_has_data,
+                    "has_pin": has_pin
+                }
+                # Include week if present
+                if 'week' in entry_data:
+                    entry_info['week'] = entry_data['week']
+                matching_entries.append(entry_info)
     
     return jsonify({
         "username": username,
@@ -2477,7 +2650,8 @@ def add_to_tinyurl(tinyurl_name):
     Request body:
     {
         "name": "username",
-        "data": "8|MIQwTgdi..."
+        "data": "8|MIQwTgdi...",
+        "pin": "1234"  # Optional: 2-8 digit PIN code (numbers only)
     }
     
     Args:
@@ -2495,11 +2669,26 @@ def add_to_tinyurl(tinyurl_name):
         
         username = data.get('name')
         url_data = data.get('data')
+        pin = data.get('pin')
         
         if not username:
             return jsonify({"error": "name is required"}), 400
         if not url_data:
             return jsonify({"error": "data is required"}), 400
+        
+        # Validate PIN if provided (2-8 digits, numbers only)
+        if pin is not None:
+            if not isinstance(pin, str) and not isinstance(pin, int):
+                return jsonify({"error": "pin must be a string or number"}), 400
+            
+            pin_str = str(pin).strip()
+            if not pin_str.isdigit():
+                return jsonify({"error": "pin must contain only numbers"}), 400
+            
+            if len(pin_str) < 2 or len(pin_str) > 8:
+                return jsonify({"error": "pin must be between 2 and 8 digits"}), 400
+            
+            pin = pin_str  # Store as string
         
         # Normalize names for case-insensitive lookup and comparison
         normalized_tinyurl_name = normalize_tinyurl_name(tinyurl_name)
@@ -2554,13 +2743,17 @@ def add_to_tinyurl(tinyurl_name):
         if normalized_username not in entry['user_submissions']:
             # First submission - create entry with created_at and update_count = 1
             # Use normalized_username as key for case-insensitive lookups
-            entry['user_submissions'][normalized_username] = {
+            user_submission_data = {
                 'username': username,  # Store original case for display
                 'data': url_data,
                 'created_at': current_time,
                 'update_count': 1,
                 'updated_at': current_time
             }
+            # Store PIN if provided
+            if pin:
+                user_submission_data['pin'] = pin
+            entry['user_submissions'][normalized_username] = user_submission_data
         else:
             # Subsequent submission - increment update_count
             user_submission = entry['user_submissions'][normalized_username]
@@ -2569,6 +2762,9 @@ def add_to_tinyurl(tinyurl_name):
             user_submission['updated_at'] = current_time
             # Update username if case changed
             user_submission['username'] = username
+            # Update PIN if provided (can be set or changed)
+            if pin:
+                user_submission['pin'] = pin
         
         # Update main entry data (keep latest submission or aggregate as needed)
         entry['data'] = url_data
@@ -2615,17 +2811,21 @@ def check_username_data_in_league(name, username):
     
     # Check if username has data in user_submissions
     has_data = False
+    has_pin = False
     user_submissions = entry.get('user_submissions', {})
     
     if normalized_username in user_submissions:
         user_data = user_submissions[normalized_username]
         # Check if the user has actual data (not just an empty entry)
         has_data = user_data.get('data') is not None
+        # Check if user has a PIN
+        has_pin = 'pin' in user_data
     
     response = {
         "name": entry.get('name', name),
         "username": username,
-        "has_data": has_data
+        "has_data": has_data,
+        "has_pin": has_pin
     }
     
     # Include additional info if data exists
