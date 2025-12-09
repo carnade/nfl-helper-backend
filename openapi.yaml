@@ -1,0 +1,798 @@
+openapi: 3.0.3
+info:
+  title: NFL Helper Backend API
+  description: API for NFL fantasy football helper application with DFS salaries, player data, and TinyURL management
+  version: 1.0.0
+servers:
+  - url: http://localhost:5000
+    description: Local development server
+  - url: https://api.example.com
+    description: Production server
+
+paths:
+  /:
+    get:
+      summary: Health check endpoint
+      description: Returns a simple health check response
+      operationId: healthCheck
+      tags:
+        - Health
+      responses:
+        "200":
+          description: Service is healthy
+
+  /getplayers:
+    post:
+      summary: Get filtered player data
+      description: Returns filtered player data based on request criteria
+      operationId: getPlayers
+      tags:
+        - Players
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                league:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Player data retrieved successfully
+
+  /dfs-salaries/data:
+    get:
+      summary: Get all DFS salaries data
+      description: Returns all DFS salary entries in memory
+      operationId: getDfsSalariesData
+      tags:
+        - DFS Salaries
+      responses:
+        "200":
+          description: DFS salaries data retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  players:
+                    type: array
+                    items:
+                      type: object
+
+  /dfs-salaries/week/{week}:
+    get:
+      summary: Get DFS salaries by week
+      description: Returns DFS salary data for a specific week
+      operationId: getDfsSalariesByWeek
+      tags:
+        - DFS Salaries
+      parameters:
+        - name: week
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Week number (1-18)
+      responses:
+        "200":
+          description: DFS salaries for the specified week
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  week:
+                    type: integer
+                  players:
+                    type: array
+                    items:
+                      type: object
+
+  /dfs-salaries/player/{sleeper_id}:
+    get:
+      summary: Get DFS salaries for a specific player
+      description: Returns DFS salary data for a specific player by Sleeper ID
+      operationId: getDfsSalariesForPlayer
+      tags:
+        - DFS Salaries
+      parameters:
+        - name: sleeper_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Sleeper player ID
+        - name: week
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Optional week number to filter by
+      responses:
+        "200":
+          description: Player DFS salary data
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /admin/dfs-salaries/update:
+    post:
+      summary: Manually trigger DFS salaries update
+      description: Triggers a scheduled DFS salaries update. This update logs salary differences but does NOT update salaries, only other fields like dates and projections.
+      operationId: adminUpdateDfsSalaries
+      tags:
+        - Admin
+        - DFS Salaries
+      responses:
+        "200":
+          description: DFS salaries update triggered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "DFS salaries update triggered successfully."
+
+  /admin/dfs-salaries/scrape-slate:
+    post:
+      summary: Scrape a specific slate
+      description: Scrapes a specific DFS slate and optionally updates salaries. Rejects showdown slates (showdown_flag=1) - only non-showdown slates are allowed.
+      operationId: adminScrapeSpecificSlate
+      tags:
+        - Admin
+        - DFS Salaries
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  properties:
+                    date:
+                      type: string
+                      format: date
+                      example: "2025-11-27"
+                      description: Date in YYYY-MM-DD format
+                    slate_url:
+                      type: string
+                      example: "21A90"
+                      description: Slate URL identifier
+                    update_salaries:
+                      type: boolean
+                      default: true
+                      description: If false, logs salary differences but doesn't update salaries. If true, updates all fields including salaries.
+                - type: object
+                  properties:
+                    date_slate:
+                      type: string
+                      example: "2025-11-27?slate=21A90"
+                      description: Combined format with date and slate URL
+                    update_salaries:
+                      type: boolean
+                      default: true
+                      description: If false, logs salary differences but doesn't update salaries. If true, updates all fields including salaries.
+            examples:
+              update_salaries:
+                value:
+                  date: "2025-11-27"
+                  slate_url: "21A90"
+                  update_salaries: true
+              log_only:
+                value:
+                  date_slate: "2025-11-30?slate=21ADE"
+                  update_salaries: false
+      responses:
+        "200":
+          description: Slate scraped successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  date:
+                    type: string
+                  slate_url:
+                    type: string
+                  players_scraped:
+                    type: integer
+                  players_added:
+                    type: integer
+                  players_updated:
+                    type: integer
+                  matched_to_sleeper_ids:
+                    type: integer
+                  week:
+                    type: integer
+                  update_salaries:
+                    type: boolean
+                  salary_differences_count:
+                    type: integer
+                    description: Number of salary differences found (only when update_salaries=false)
+                  salary_differences:
+                    type: array
+                    description: Array of salary differences (only when update_salaries=false)
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        team:
+                          type: string
+                        sleeper_id:
+                          type: string
+                        existing_salary:
+                          type: integer
+                        new_salary:
+                          type: integer
+                        difference:
+                          type: integer
+        "400":
+          description: Bad request - invalid date format or showdown slate rejected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+
+  /admin/dfs-salaries/check/{sleeper_id}/{week}:
+    get:
+      summary: Check if DFS salary data exists for a player
+      description: Checks if DFS salary data exists for a specific player and week
+      operationId: adminCheckDfsData
+      tags:
+        - Admin
+        - DFS Salaries
+      parameters:
+        - name: sleeper_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Sleeper player ID
+        - name: week
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Week number
+      responses:
+        "200":
+          description: Data found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  found:
+                    type: boolean
+                  key:
+                    type: string
+                  data:
+                    type: object
+        "404":
+          description: Data not found
+
+  /tinyurl/create:
+    post:
+      summary: Create a new TinyURL entry
+      description: Creates a new TinyURL entry with multiple user entries in a single request
+      operationId: createTinyurl
+      tags:
+        - TinyURL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - week
+                - entries
+              properties:
+                name:
+                  type: string
+                  maxLength: 20
+                  description: Entry name (max 20 characters)
+                week:
+                  type: integer
+                  description: Week number
+                entries:
+                  type: array
+                  description: Array of user entries
+                  items:
+                    type: object
+                    required:
+                      - name
+                      - data
+                    properties:
+                      name:
+                        type: string
+                      data:
+                        type: string
+                        nullable: true
+      responses:
+        "200":
+          description: TinyURL entry created successfully
+        "400":
+          description: Bad request - validation error
+
+  /tinyurl/create/empty:
+    post:
+      summary: Create an empty TinyURL entry
+      description: Creates an empty TinyURL entry with allowed usernames that can be populated later
+      operationId: createEmptyTinyurl
+      tags:
+        - TinyURL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - names
+              properties:
+                name:
+                  type: string
+                  maxLength: 20
+                  description: Entry name (max 20 characters)
+                names:
+                  type: array
+                  items:
+                    type: string
+                  description: List of allowed usernames (cannot be empty)
+                week:
+                  type: integer
+                  description: Optional week number
+                reveal:
+                  type: string
+                  format: date-time
+                  description: Optional reveal date/time in ISO 8601 UTC format
+      responses:
+        "200":
+          description: Empty TinyURL entry created successfully
+        "400":
+          description: Bad request - validation error
+
+  /tinyurl/{name}/data:
+    get:
+      summary: Get TinyURL entry data
+      description: Retrieves the stored data for a TinyURL entry by name. If a username is provided, returns data only for that specific user. If the entry has a PIN, it must be provided as a query parameter to access the data. Returns no data if PIN is required but missing or incorrect.
+      operationId: getTinyurlData
+      tags:
+        - TinyURL
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Name of the TinyURL entry
+        - name: username
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Optional username. If provided, returns data only for that specific user instead of the main entry data.
+        - name: pin
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: "^[0-9]{2,8}$"
+          description: Optional PIN code (2-8 digits). Required if entry/user has a PIN stored.
+      responses:
+        "200":
+          description: TinyURL entry data (or no data if PIN required but missing/incorrect)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  data:
+                    type: string
+                    nullable: true
+                    description: Data content, or null if PIN required but missing/incorrect
+                  pin_required:
+                    type: boolean
+                    description: True if PIN is required but missing or incorrect
+                  message:
+                    type: string
+                    description: Message explaining why data is not available (if PIN required)
+                  created_at:
+                    type: string
+                  allowed_names:
+                    type: array
+                    items:
+                      type: string
+                  week:
+                    type: integer
+                  reveal:
+                    type: string
+                  updated_at:
+                    type: string
+                  updated_by:
+                    type: string
+                  user_submissions:
+                    type: object
+                  username:
+                    type: string
+                    description: Username (only present when username query parameter is provided)
+                  update_count:
+                    type: integer
+                    description: Number of times user has updated their data (only present when username query parameter is provided)
+        "404":
+          description: Entry not found
+
+  /tinyurl/{name}/details:
+    get:
+      summary: Get TinyURL entry details
+      description: Returns detailed submission information for a TinyURL entry
+      operationId: getTinyurlDetails
+      tags:
+        - TinyURL
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Entry details
+        "404":
+          description: Entry not found
+
+  /tinyurl/{username}/available:
+    get:
+      summary: Get available TinyURLs for a username
+      description: Returns all TinyURL entry names where the username is in the allowed_names list
+      operationId: getTinyurlsByUsername
+      tags:
+        - TinyURL
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Username to search for
+      responses:
+        "200":
+          description: List of available TinyURL entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  username:
+                    type: string
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        has_data:
+                          type: boolean
+                        has_pin:
+                          type: boolean
+                          description: True if the entry has a PIN stored (from any user submission)
+                        week:
+                          type: integer
+                  count:
+                    type: integer
+
+  /tinyurl/count:
+    get:
+      summary: Get TinyURL entry count
+      description: Returns the current count of TinyURL entries and remaining capacity
+      operationId: getTinyurlCount
+      tags:
+        - TinyURL
+      responses:
+        "200":
+          description: Count information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  max_entries:
+                    type: integer
+                    example: 10
+                  remaining:
+                    type: integer
+
+  /tinyurl/list:
+    get:
+      summary: List all TinyURL entries
+      description: Returns a list of all stored TinyURL entries with metadata
+      operationId: listTinyurls
+      tags:
+        - TinyURL
+      responses:
+        "200":
+          description: List of all entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_entries:
+                    type: integer
+                  entries:
+                    type: array
+                    items:
+                      type: object
+
+  /tinyurl/{name}:
+    delete:
+      summary: Delete a TinyURL entry
+      description: Deletes a stored TinyURL entry by name
+      operationId: deleteTinyurl
+      tags:
+        - TinyURL
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Entry deleted successfully
+        "404":
+          description: Entry not found
+
+  /tinyurl/{tinyurl_name}/add:
+    post:
+      summary: Add data to an existing TinyURL entry
+      description: Adds or updates data for a specific username in an existing TinyURL entry
+      operationId: addToTinyurl
+      tags:
+        - TinyURL
+      parameters:
+        - name: tinyurl_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - username
+                - data
+              properties:
+                username:
+                  type: string
+                  description: Username to add/update data for
+                data:
+                  type: string
+                  description: Data to store
+                pin:
+                  type: string
+                  pattern: "^[0-9]{2,8}$"
+                  description: Optional PIN code (2-8 digits, numbers only). Stored with the user's submission data.
+      responses:
+        "200":
+          description: Data added/updated successfully
+        "400":
+          description: Bad request
+        "404":
+          description: TinyURL entry not found
+
+  /tinyurl/{name}/{username}/check:
+    get:
+      summary: Check if username has data in a league
+      description: Checks if a specific username has data stored in a specific TinyURL entry (league)
+      operationId: checkUsernameDataInLeague
+      tags:
+        - TinyURL
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: TinyURL entry name (league)
+        - name: username
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Username to check
+      responses:
+        "200":
+          description: Check result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  username:
+                    type: string
+                  has_data:
+                    type: boolean
+                  has_pin:
+                    type: boolean
+                    description: True if the username's submission has a PIN stored
+                  update_count:
+                    type: integer
+                  created_at:
+                    type: string
+                  updated_at:
+                    type: string
+
+  /fantasy-points/data:
+    get:
+      summary: Get all fantasy points data
+      description: Returns all fantasy points data stored in memory
+      operationId: getFantasyPointsData
+      tags:
+        - Fantasy Points
+      responses:
+        "200":
+          description: Fantasy points data
+
+  /fantasy-points/week/{week}:
+    get:
+      summary: Get fantasy points by week
+      description: Returns fantasy points data for a specific week
+      operationId: getFantasyPointsByWeek
+      tags:
+        - Fantasy Points
+      parameters:
+        - name: week
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Fantasy points for the specified week
+
+  /fantasy-points/player/{sleeper_id}:
+    get:
+      summary: Get fantasy points for a player
+      description: Returns fantasy points data for a specific player
+      operationId: getFantasyPointsForPlayer
+      tags:
+        - Fantasy Points
+      parameters:
+        - name: sleeper_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: week
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Optional week number to filter by
+      responses:
+        "200":
+          description: Player fantasy points data
+
+  /admin/fantasy-points/update:
+    post:
+      summary: Manually trigger fantasy points update
+      description: Triggers a manual update of fantasy points data
+      operationId: adminUpdateFantasyPoints
+      tags:
+        - Admin
+        - Fantasy Points
+      responses:
+        "200":
+          description: Update triggered successfully
+
+  /admin/fantasy-points/update-week/{week}:
+    post:
+      summary: Update fantasy points for a specific week
+      description: Updates fantasy points data for a specific week
+      operationId: updateFantasyPointsForWeek
+      tags:
+        - Admin
+        - Fantasy Points
+      parameters:
+        - name: week
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Week number to update (1-18)
+      responses:
+        "200":
+          description: Update completed successfully
+        "404":
+          description: No data found for the specified week
+
+  /statistics:
+    get:
+      summary: Get API statistics
+      description: Returns request statistics and data counts
+      operationId: getStatistics
+      tags:
+        - Statistics
+      responses:
+        "200":
+          description: Statistics data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request_statistics:
+                    type: object
+                  dfs_salaries_weeks:
+                    type: array
+                    items:
+                      type: integer
+
+  /admin/debug:
+    get:
+      summary: Debug information
+      description: Returns debug information about global variables and data counts
+      operationId: debugInfo
+      tags:
+        - Admin
+      responses:
+        "200":
+          description: Debug information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  all_players_count:
+                    type: integer
+                  filtered_players_count:
+                    type: integer
+                  dfs_salaries_count:
+                    type: integer
+                  fantasy_points_count:
+                    type: integer
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Players
+    description: Player data endpoints
+  - name: DFS Salaries
+    description: DFS salary and projection endpoints
+  - name: Fantasy Points
+    description: Fantasy points data endpoints
+  - name: TinyURL
+    description: TinyURL entry management endpoints
+  - name: Admin
+    description: Administrative endpoints
+  - name: Statistics
+    description: Statistics and monitoring endpoints
