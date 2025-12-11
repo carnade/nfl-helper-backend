@@ -2907,6 +2907,37 @@ def get_player_stats():
     return response.json()
 
 
+def initialize_data_in_background():
+    """
+    Initialize all data in the background after the Flask app has started.
+    This allows the service to start listening immediately.
+    """
+    import threading
+    
+    def _initialize():
+        print(f"{datetime.datetime.now()} - Starting background data initialization...")
+        
+        # 1. Fetch and filter player data
+        print(f"{datetime.datetime.now()} - Fetching and filtering player data...")
+        fetch_and_filter_data()
+        
+        # 2. Update with scraped dynasty rankings
+        print(f"{datetime.datetime.now()} - Updating with scraped dynasty rankings...")
+        update_filtered_players_with_scraped_data()
+        
+        # 3. Update fantasy points and DFS salaries (requires filtered_players)
+        print(f"{datetime.datetime.now()} - filtered_players populated with {len(filtered_players)} players, proceeding with fantasy points and DFS salaries updates")
+        update_fantasy_points_data()
+        update_dfs_salaries_data()
+        
+        print(f"{datetime.datetime.now()} - Background data initialization completed!")
+    
+    # Start initialization in a background thread
+    init_thread = threading.Thread(target=_initialize, daemon=True)
+    init_thread.start()
+    print(f"{datetime.datetime.now()} - Flask app starting, data initialization running in background...")
+
+
 if __name__ == '__main__':
     # 1. Parse command-line arguments
     parser = argparse.ArgumentParser(description="Run NFL Fantasy Helper")
@@ -2917,15 +2948,11 @@ if __name__ == '__main__':
     # 2. Override global USE_MOCK_DATA if --mock flag is provided
     USE_MOCK_DATA = args.mock
 
-    # 3. Fetch data once on startup
-    fetch_and_filter_data()
-    update_filtered_players_with_scraped_data()
-    
-    # Now that filtered_players is populated, update fantasy points and DFS salaries
-    print(f"filtered_players populated with {len(filtered_players)} players, proceeding with fantasy points and DFS salaries updates")
-    update_fantasy_points_data()
-    update_dfs_salaries_data()
-
-    # 4. Run the Flask app
+    # 3. Start Flask app immediately
     port = int(os.environ.get("PORT", 5000))  # Default to port 5000 if not set
+    
+    # 4. Initialize data in background thread (non-blocking)
+    initialize_data_in_background()
+    
+    # 5. Run the Flask app (this will block, but app is already listening)
     app.run(host='0.0.0.0', port=port)

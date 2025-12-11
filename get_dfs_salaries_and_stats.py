@@ -812,8 +812,6 @@ class DFFSalariesScraper:
                         if is_det_gb:
                             logger.info(f"    ✅ Found showdown match: '{slate_type}'")
                         break
-                    elif is_det_gb:
-                        logger.info(f"    ❌ No match: '{slate_type}'")
             else:
                 # Fallback: Try to find showdown by matching (old method)
                 if is_det_gb:
