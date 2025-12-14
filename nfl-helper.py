@@ -21,6 +21,7 @@ ALLOWED_IP_PREFIX = "81.235."
 ALLOWED_DOMAIN = "https://nfl-draft-helper.netlify.app"
 ALLOW_LOCAL = "http://localhost:3000"
 
+
 # Initialize CORS to allow any origin by default
 CORS(app, supports_credentials=True)
 
@@ -2098,17 +2099,7 @@ def create_tinyurl():
             'user_submissions': {}
         }
         
-        # Validate all entries with data before processing
-        for entry in entries_with_data:
-            entry_data_value = entry['data']
-            is_valid, error_msg, players_started = validate_lineup_players_not_started(entry_data_value)
-            if not is_valid:
-                return jsonify({
-                    "error": f"Validation failed for entry '{entry['name']}': {error_msg}",
-                    "players_started": players_started
-                }), 400
-        
-        # Process entries with data
+        # Process entries with data (validation removed for bulk creation)
         entries_added = 0
         latest_data = None
         latest_updated_by = None
@@ -2163,11 +2154,13 @@ def get_tinyurl_data(name):
     Get stored data by entry name.
     If a username is provided, returns data only for that specific user.
     If the entry has a PIN, it must be provided as a query parameter to access the data.
+    Use action=results to bypass PIN requirements for results display.
     
     Args:
         name: The name of the stored entry
         username: Optional query parameter - if provided, returns data only for that username
-        pin: Optional query parameter - required if entry/user has a PIN
+        pin: Optional query parameter - required if entry/user has a PIN (unless action=results)
+        action: Optional query parameter - set to "results" to bypass PIN requirements for results display
     
     Returns:
         JSON response with stored data or error message. Returns no data if PIN is required but missing/incorrect.
@@ -2182,9 +2175,13 @@ def get_tinyurl_data(name):
     
     entry = tinyurl_data[normalized_name]
     
-    # Get optional username parameter
+    # Get optional query parameters
     username = request.args.get('username')
     provided_pin = request.args.get('pin')
+    action = request.args.get('action')
+    
+    # Check if action=results (bypasses PIN requirements for results display)
+    is_results_view = action == 'results'
     
     # If username is provided, return data for that specific user
     if username:
@@ -2204,8 +2201,8 @@ def get_tinyurl_data(name):
         
         user_data = user_submissions[normalized_username]
         
-        # Check if this user's submission has a PIN
-        if 'pin' in user_data:
+        # Check if this user's submission has a PIN (unless results view bypasses it)
+        if 'pin' in user_data and not is_results_view:
             user_pin = user_data.get('pin')
             if not provided_pin:
                 return jsonify({
@@ -2261,8 +2258,8 @@ def get_tinyurl_data(name):
     
     entry_has_pin = len(stored_pins) > 0
     
-    # If entry has a PIN, validate it
-    if entry_has_pin:
+    # If entry has a PIN, validate it (unless results view bypasses it)
+    if entry_has_pin and not is_results_view:
         if not provided_pin:
             # PIN required but not provided - return no data
             return jsonify({
@@ -2429,24 +2426,23 @@ def get_tinyurls_by_username(username):
                 # Use original name from entry if stored, otherwise use entry_name
                 display_name = entry_data.get('name', entry_name)
                 
-                # Check if entry has a PIN (in any user submission)
                 user_submissions = entry_data.get('user_submissions', {})
-                has_pin = False
-                for user_data in user_submissions.values():
-                    if 'pin' in user_data:
-                        has_pin = True
-                        break
                 
                 # Check if this specific username has data in user_submissions
                 # If user_submissions exists and has this username, check their data
                 # Otherwise, fall back to main entry data
                 user_has_data = False
+                has_pin = False
                 if normalized_username in user_submissions:
                     user_data = user_submissions[normalized_username]
                     user_has_data = user_data.get('data') is not None
+                    # Check if THIS specific username has a PIN
+                    has_pin = 'pin' in user_data
                 else:
                     # Fall back to main entry data if no user-specific data
                     user_has_data = entry_data.get('data') is not None
+                    # No user-specific submission, so no PIN
+                    has_pin = False
                 
                 entry_info = {
                     "name": display_name,
@@ -2783,6 +2779,95 @@ def add_to_tinyurl(tinyurl_name):
     except Exception as e:
         print(f"Error adding data to TinyURL: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/tinyurl/<name>/data', methods=['GET'])
+def admin_get_tinyurl_data(name):
+    """
+    Admin endpoint to get TinyURL entry data, bypassing all PIN requirements.
+    Returns all data including user_submissions without requiring any PINs.
+    
+    Args:
+        name: The name of the stored entry
+        username: Optional query parameter - if provided, returns data only for that username
+    
+    Returns:
+        JSON response with stored data (bypasses PIN checks)
+    """
+    global tinyurl_data
+    
+    # Normalize name for case-insensitive lookup
+    normalized_name = normalize_tinyurl_name(name)
+    
+    if normalized_name not in tinyurl_data:
+        return jsonify({"error": f"Data with name '{name}' not found"}), 404
+    
+    entry = tinyurl_data[normalized_name]
+    
+    # Get optional username parameter
+    username = request.args.get('username')
+    
+    # If username is provided, return data for that specific user (bypass PIN)
+    if username:
+        normalized_username = normalize_tinyurl_name(username)
+        user_submissions = entry.get('user_submissions', {})
+        
+        if normalized_username not in user_submissions:
+            # Get list of available usernames for debugging
+            available_usernames = [user_data.get('username', key) for key, user_data in user_submissions.items()]
+            return jsonify({
+                "name": entry.get('name', name),
+                "username": username,
+                "data": None,
+                "message": f"No data found for username '{username}'",
+                "available_usernames": available_usernames if available_usernames else []
+            }), 200
+        
+        user_data = user_submissions[normalized_username]
+        
+        # Return user-specific data (PIN bypassed for admin)
+        return jsonify({
+            "name": entry.get('name', name),
+            "username": user_data.get('username', username),
+            "data": user_data.get('data'),
+            "created_at": user_data.get('created_at'),
+            "updated_at": user_data.get('updated_at'),
+            "update_count": user_data.get('update_count', 0),
+            "week": entry.get('week'),
+            "pin": user_data.get('pin')  # Include PIN in admin response
+        }), 200
+    
+    # No username provided - return main entry data (PIN bypassed for admin)
+    display_name = entry.get('name', name)
+    response = {
+        "name": display_name,
+        "data": entry.get('data'),
+        "created_at": entry.get('created_at')
+    }
+    
+    # Include allowed_names if present
+    if 'allowed_names' in entry:
+        response['allowed_names'] = entry['allowed_names']
+    
+    # Include week if present
+    if 'week' in entry:
+        response['week'] = entry['week']
+    
+    # Include reveal if present
+    if 'reveal' in entry:
+        response['reveal'] = entry['reveal']
+    
+    # Include update info if present
+    if 'updated_at' in entry:
+        response['updated_at'] = entry['updated_at']
+    if 'updated_by' in entry:
+        response['updated_by'] = entry['updated_by']
+    
+    # Include user_submissions (all data, including PINs for admin access)
+    if 'user_submissions' in entry:
+        response['user_submissions'] = entry['user_submissions']
+    
+    return jsonify(response), 200
 
 
 @app.route('/tinyurl/<name>/<username>/check', methods=['GET'])
