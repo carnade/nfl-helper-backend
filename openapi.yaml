@@ -45,6 +45,89 @@ paths:
         "200":
           description: Player data retrieved successfully
 
+  /getplayers/bestball:
+    post:
+      summary: Get bestball player data
+      description: Returns simplified player data (id, name, position) for bestball lineups based on a list of Sleeper IDs
+      operationId: getBestballPlayers
+      tags:
+        - Players
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - playerlist
+              properties:
+                playerlist:
+                  type: array
+                  items:
+                    type: string
+                  description: Array of Sleeper player IDs
+      responses:
+        "200":
+          description: Bestball player data retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  players:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          description: Sleeper player ID
+                        name:
+                          type: string
+                          description: Player full name
+                        position:
+                          type: string
+                          description: Player position
+        "400":
+          description: Bad request - invalid player IDs format
+
+  /getplayers/data:
+    post:
+      summary: Get all player data
+      description: Returns filtered players based on a list of Sleeper IDs. Can optionally include draft picks.
+      operationId: getAllPlayers
+      tags:
+        - Players
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - playerlist
+              properties:
+                playerlist:
+                  type: array
+                  items:
+                    type: string
+                  description: Array of Sleeper player IDs
+                include_picks:
+                  type: boolean
+                  default: false
+                  description: If true, includes draft picks in the response
+      responses:
+        "200":
+          description: Player data retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Dictionary of player data keyed by Sleeper ID
+                additionalProperties: true
+        "400":
+          description: Bad request - invalid player list format
+
   /dfs-salaries/data:
     get:
       summary: Get all DFS salaries data
@@ -735,6 +818,214 @@ paths:
         "404":
           description: No data found for the specified week
 
+  /tournament:
+    post:
+      summary: Create a new tournament
+      description: Creates a new tournament with week, name, and games. Maximum of 10 tournaments at any time. Old tournaments are automatically cleared (keeps current and previous week).
+      operationId: createTournament
+      tags:
+        - Tournament
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - week
+                - name
+                - games
+              properties:
+                week:
+                  type: integer
+                  description: Week number
+                name:
+                  type: string
+                  description: Tournament name
+                games:
+                  type: array
+                  description: Array of game matchups
+                  items:
+                    type: object
+                    required:
+                      - player1
+                      - player2
+                    properties:
+                      player1:
+                        type: object
+                        required:
+                          - league_name
+                          - leagie_position
+                          - league
+                          - playername
+                          - playerid
+                        properties:
+                          league_name:
+                            type: string
+                          leagie_position:
+                            type: string
+                          league:
+                            type: string
+                          playername:
+                            type: string
+                          playerid:
+                            type: string
+                      player2:
+                        type: object
+                        required:
+                          - league_name
+                          - leagie_position
+                          - league
+                          - playername
+                          - playerid
+                        properties:
+                          league_name:
+                            type: string
+                          leagie_position:
+                            type: string
+                          league:
+                            type: string
+                          playername:
+                            type: string
+                          playerid:
+                            type: string
+      responses:
+        "201":
+          description: Tournament created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    description: Generated tournament ID
+                  week:
+                    type: integer
+                  name:
+                    type: string
+                  games:
+                    type: array
+                    items:
+                      type: object
+                  created_at:
+                    type: string
+                    format: date-time
+        "400":
+          description: Bad request - validation error or maximum tournaments reached
+        "500":
+          description: Server error
+
+  /tournament/list:
+    get:
+      summary: List all tournaments
+      description: Returns a simplified list of all tournaments with id, name, week, and number of participants
+      operationId: listTournaments
+      tags:
+        - Tournament
+      responses:
+        "200":
+          description: List of tournaments retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tournaments:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          description: Tournament ID
+                        name:
+                          type: string
+                          description: Tournament name
+                        week:
+                          type: integer
+                          description: Week number
+                        participants:
+                          type: integer
+                          description: Number of unique participants across all games
+                  count:
+                    type: integer
+                    description: Number of tournaments
+        "500":
+          description: Server error
+
+  /tournament/{id}:
+    get:
+      summary: Get tournament by ID
+      description: Retrieves the full tournament data that was provided when creating the tournament
+      operationId: getTournament
+      tags:
+        - Tournament
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Tournament ID
+      responses:
+        "200":
+          description: Tournament data retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    description: Tournament ID
+                  week:
+                    type: integer
+                    description: Week number
+                  name:
+                    type: string
+                    description: Tournament name
+                  games:
+                    type: array
+                    description: Array of game matchups with player1 and player2
+                    items:
+                      type: object
+                      properties:
+                        player1:
+                          type: object
+                          properties:
+                            league_name:
+                              type: string
+                            leagie_position:
+                              type: string
+                            league:
+                              type: string
+                            playername:
+                              type: string
+                            playerid:
+                              type: string
+                        player2:
+                          type: object
+                          properties:
+                            league_name:
+                              type: string
+                            leagie_position:
+                              type: string
+                            league:
+                              type: string
+                            playername:
+                              type: string
+                            playerid:
+                              type: string
+                  created_at:
+                    type: string
+                    format: date-time
+                    description: Tournament creation timestamp
+        "404":
+          description: Tournament not found
+        "500":
+          description: Server error
+
   /statistics:
     get:
       summary: Get API statistics
@@ -792,6 +1083,8 @@ tags:
     description: Fantasy points data endpoints
   - name: TinyURL
     description: TinyURL entry management endpoints
+  - name: Tournament
+    description: Tournament management endpoints
   - name: Admin
     description: Administrative endpoints
   - name: Statistics
