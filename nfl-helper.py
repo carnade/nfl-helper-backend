@@ -21,6 +21,7 @@ ALLOWED_IP_PREFIX = "81.235."
 ALLOWED_DOMAIN = "https://nfl-draft-helper.netlify.app"
 ALLOW_LOCAL = "http://localhost:3000"
 
+
 # Initialize CORS to allow any origin by default
 CORS(app, supports_credentials=True)
 
@@ -75,6 +76,7 @@ picks_data = {}  # Dictionary to store draft pick data
 fantasy_points_data = {}  # Dictionary to store fantasy points data with Sleeper IDs
 dfs_salaries_data = {}  # Dictionary to store DFS salaries data with Sleeper IDs
 tinyurl_data = {}  # Dictionary to store data: {name: {data: str, created_at: str, allowed_names: List[str], user_submissions: Dict[str, {data: str, created_at: str, update_count: int, updated_at: str}]}}
+tournament_data = {}  # Dictionary to store tournament data: {id: {week: int, name: str, games: list, created_at: str}}
 
 # Global variables to track the last update times
 last_players_update = None
@@ -928,9 +930,56 @@ def clear_tinyurl_data():
         tinyurl_data.clear()
         print(f"{datetime.datetime.now()} - TinyURL data cleared (fallback: all entries)")
 
+def clear_tournament_data():
+    """Clear tournament_data entries for weeks that are older than the previous week (keep current and previous week)"""
+    global tournament_data
+    
+    try:
+        # Get current week from Sleeper
+        scraper = FantasyDataScraper()
+        current_week = scraper.get_current_week()
+        
+        # Ensure current_week is an integer
+        if current_week is None:
+            print(f"{datetime.datetime.now()} - Error: Could not determine current week. Skipping tournament cleanup.")
+            return
+        
+        current_week = int(current_week)
+        
+        # Keep current and previous week, delete older weeks (same logic as DFS)
+        weeks_to_keep = {current_week, current_week - 1}
+        keys_to_delete = []
+        
+        for tour_id, tour in tournament_data.items():
+            tour_week = tour.get('week')
+            if tour_week is not None:
+                try:
+                    tour_week = int(tour_week)
+                    if tour_week not in weeks_to_keep:
+                        keys_to_delete.append(tour_id)
+                except (ValueError, TypeError):
+                    print(f"{datetime.datetime.now()} - Warning: Tournament '{tour_id}' has invalid week value: {tour_week}")
+        
+        # Delete old tournaments
+        for key in keys_to_delete:
+            del tournament_data[key]
+        
+        if keys_to_delete:
+            print(f"{datetime.datetime.now()} - Tournament data cleared: removed {len(keys_to_delete)} tournaments older than week {current_week - 1} (kept {len(tournament_data)} tournaments for weeks {weeks_to_keep})")
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error clearing tournament data: {e}")
+        import traceback
+        traceback.print_exc()
+
 # Schedule TinyURL data clearing every Thursday at 19:00 CET
 scheduler.add_job(
     func=clear_tinyurl_data,
+    trigger=CronTrigger(day_of_week="thu", hour=9, minute=0)
+)
+
+# Schedule tournament data clearing every Thursday at 19:00 CET (same as TinyURL)
+scheduler.add_job(
+    func=clear_tournament_data,
     trigger=CronTrigger(day_of_week="thu", hour=9, minute=0)
 )
 
@@ -2098,17 +2147,7 @@ def create_tinyurl():
             'user_submissions': {}
         }
         
-        # Validate all entries with data before processing
-        for entry in entries_with_data:
-            entry_data_value = entry['data']
-            is_valid, error_msg, players_started = validate_lineup_players_not_started(entry_data_value)
-            if not is_valid:
-                return jsonify({
-                    "error": f"Validation failed for entry '{entry['name']}': {error_msg}",
-                    "players_started": players_started
-                }), 400
-        
-        # Process entries with data
+        # Process entries with data (validation removed for bulk creation)
         entries_added = 0
         latest_data = None
         latest_updated_by = None
@@ -2163,11 +2202,13 @@ def get_tinyurl_data(name):
     Get stored data by entry name.
     If a username is provided, returns data only for that specific user.
     If the entry has a PIN, it must be provided as a query parameter to access the data.
+    Use action=results to bypass PIN requirements for results display.
     
     Args:
         name: The name of the stored entry
         username: Optional query parameter - if provided, returns data only for that username
-        pin: Optional query parameter - required if entry/user has a PIN
+        pin: Optional query parameter - required if entry/user has a PIN (unless action=results)
+        action: Optional query parameter - set to "results" to bypass PIN requirements for results display
     
     Returns:
         JSON response with stored data or error message. Returns no data if PIN is required but missing/incorrect.
@@ -2182,9 +2223,13 @@ def get_tinyurl_data(name):
     
     entry = tinyurl_data[normalized_name]
     
-    # Get optional username parameter
+    # Get optional query parameters
     username = request.args.get('username')
     provided_pin = request.args.get('pin')
+    action = request.args.get('action')
+    
+    # Check if action=results (bypasses PIN requirements for results display)
+    is_results_view = action == 'results'
     
     # If username is provided, return data for that specific user
     if username:
@@ -2204,8 +2249,8 @@ def get_tinyurl_data(name):
         
         user_data = user_submissions[normalized_username]
         
-        # Check if this user's submission has a PIN
-        if 'pin' in user_data:
+        # Check if this user's submission has a PIN (unless results view bypasses it)
+        if 'pin' in user_data and not is_results_view:
             user_pin = user_data.get('pin')
             if not provided_pin:
                 return jsonify({
@@ -2261,8 +2306,8 @@ def get_tinyurl_data(name):
     
     entry_has_pin = len(stored_pins) > 0
     
-    # If entry has a PIN, validate it
-    if entry_has_pin:
+    # If entry has a PIN, validate it (unless results view bypasses it)
+    if entry_has_pin and not is_results_view:
         if not provided_pin:
             # PIN required but not provided - return no data
             return jsonify({
@@ -2429,24 +2474,23 @@ def get_tinyurls_by_username(username):
                 # Use original name from entry if stored, otherwise use entry_name
                 display_name = entry_data.get('name', entry_name)
                 
-                # Check if entry has a PIN (in any user submission)
                 user_submissions = entry_data.get('user_submissions', {})
-                has_pin = False
-                for user_data in user_submissions.values():
-                    if 'pin' in user_data:
-                        has_pin = True
-                        break
                 
                 # Check if this specific username has data in user_submissions
                 # If user_submissions exists and has this username, check their data
                 # Otherwise, fall back to main entry data
                 user_has_data = False
+                has_pin = False
                 if normalized_username in user_submissions:
                     user_data = user_submissions[normalized_username]
                     user_has_data = user_data.get('data') is not None
+                    # Check if THIS specific username has a PIN
+                    has_pin = 'pin' in user_data
                 else:
                     # Fall back to main entry data if no user-specific data
                     user_has_data = entry_data.get('data') is not None
+                    # No user-specific submission, so no PIN
+                    has_pin = False
                 
                 entry_info = {
                     "name": display_name,
@@ -2785,6 +2829,95 @@ def add_to_tinyurl(tinyurl_name):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/admin/tinyurl/<name>/data', methods=['GET'])
+def admin_get_tinyurl_data(name):
+    """
+    Admin endpoint to get TinyURL entry data, bypassing all PIN requirements.
+    Returns all data including user_submissions without requiring any PINs.
+    
+    Args:
+        name: The name of the stored entry
+        username: Optional query parameter - if provided, returns data only for that username
+    
+    Returns:
+        JSON response with stored data (bypasses PIN checks)
+    """
+    global tinyurl_data
+    
+    # Normalize name for case-insensitive lookup
+    normalized_name = normalize_tinyurl_name(name)
+    
+    if normalized_name not in tinyurl_data:
+        return jsonify({"error": f"Data with name '{name}' not found"}), 404
+    
+    entry = tinyurl_data[normalized_name]
+    
+    # Get optional username parameter
+    username = request.args.get('username')
+    
+    # If username is provided, return data for that specific user (bypass PIN)
+    if username:
+        normalized_username = normalize_tinyurl_name(username)
+        user_submissions = entry.get('user_submissions', {})
+        
+        if normalized_username not in user_submissions:
+            # Get list of available usernames for debugging
+            available_usernames = [user_data.get('username', key) for key, user_data in user_submissions.items()]
+            return jsonify({
+                "name": entry.get('name', name),
+                "username": username,
+                "data": None,
+                "message": f"No data found for username '{username}'",
+                "available_usernames": available_usernames if available_usernames else []
+            }), 200
+        
+        user_data = user_submissions[normalized_username]
+        
+        # Return user-specific data (PIN bypassed for admin)
+        return jsonify({
+            "name": entry.get('name', name),
+            "username": user_data.get('username', username),
+            "data": user_data.get('data'),
+            "created_at": user_data.get('created_at'),
+            "updated_at": user_data.get('updated_at'),
+            "update_count": user_data.get('update_count', 0),
+            "week": entry.get('week'),
+            "pin": user_data.get('pin')  # Include PIN in admin response
+        }), 200
+    
+    # No username provided - return main entry data (PIN bypassed for admin)
+    display_name = entry.get('name', name)
+    response = {
+        "name": display_name,
+        "data": entry.get('data'),
+        "created_at": entry.get('created_at')
+    }
+    
+    # Include allowed_names if present
+    if 'allowed_names' in entry:
+        response['allowed_names'] = entry['allowed_names']
+    
+    # Include week if present
+    if 'week' in entry:
+        response['week'] = entry['week']
+    
+    # Include reveal if present
+    if 'reveal' in entry:
+        response['reveal'] = entry['reveal']
+    
+    # Include update info if present
+    if 'updated_at' in entry:
+        response['updated_at'] = entry['updated_at']
+    if 'updated_by' in entry:
+        response['updated_by'] = entry['updated_by']
+    
+    # Include user_submissions (all data, including PINs for admin access)
+    if 'user_submissions' in entry:
+        response['user_submissions'] = entry['user_submissions']
+    
+    return jsonify(response), 200
+
+
 @app.route('/tinyurl/<name>/<username>/check', methods=['GET'])
 def check_username_data_in_league(name, username):
     """
@@ -2836,6 +2969,302 @@ def check_username_data_in_league(name, username):
         response["updated_at"] = user_data.get('updated_at')
     
     return jsonify(response), 200
+
+
+@app.route('/tournament', methods=['POST'])
+def create_tournament():
+    """
+    Create a new tournament.
+    
+    Request Body:
+        {
+            "week": 15,
+            "name": "Duo Showdown",
+            "games": [
+                {
+                    "player1": {
+                        "league_name": "otherleague",
+                        "leagie_position": "2",
+                        "league": "1258067708054863872",
+                        "playername": "carnade",
+                        "playerid": "872150198389014528"
+                    },
+                    "player2": {
+                        "league_name": "examplenameleague",
+                        "leagie_position": "1",
+                        "league": "1258066982851330048",
+                        "playername": "peterpants",
+                        "playerid": "458662325709172736"
+                    }
+                }
+            ]
+        }
+    
+    Returns:
+        JSON response with tournament data including generated ID
+    """
+    global tournament_data
+    
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"error": "Request body is required"}), 400
+        
+        # Validate required fields
+        week = data.get('week')
+        name = data.get('name')
+        tournament_type = data.get('type')
+        
+        if week is None:
+            return jsonify({"error": "week is required"}), 400
+        if not isinstance(week, int):
+            return jsonify({"error": "week must be an integer"}), 400
+        if not name:
+            return jsonify({"error": "name is required"}), 400
+        if not isinstance(name, str):
+            return jsonify({"error": "name must be a string"}), 400
+        if not tournament_type:
+            return jsonify({"error": "type is required"}), 400
+        if tournament_type not in ['h2h', 'pts']:
+            return jsonify({"error": "type must be either 'h2h' or 'pts'"}), 400
+        
+        # Validate based on type
+        if tournament_type == 'h2h':
+            games = data.get('games')
+            if not games:
+                return jsonify({"error": "games is required for type 'h2h'"}), 400
+            if not isinstance(games, list):
+                return jsonify({"error": "games must be an array"}), 400
+            if len(games) == 0:
+                return jsonify({"error": "games array cannot be empty"}), 400
+            
+            # Validate games structure
+            for i, game in enumerate(games):
+                if not isinstance(game, dict):
+                    return jsonify({"error": f"games[{i}] must be an object"}), 400
+                if 'player1' not in game or 'player2' not in game:
+                    return jsonify({"error": f"games[{i}] must have player1 and player2"}), 400
+                
+                for player_key in ['player1', 'player2']:
+                    player = game.get(player_key)
+                    if not isinstance(player, dict):
+                        return jsonify({"error": f"games[{i}].{player_key} must be an object"}), 400
+                    
+                    required_fields = ['league_name', 'leagie_position', 'league', 'playername', 'playerid']
+                    for field in required_fields:
+                        if field not in player:
+                            return jsonify({"error": f"games[{i}].{player_key}.{field} is required"}), 400
+        
+        elif tournament_type == 'pts':
+            players = data.get('players')
+            if not players:
+                return jsonify({"error": "players is required for type 'pts'"}), 400
+            if not isinstance(players, list):
+                return jsonify({"error": "players must be an array"}), 400
+            if len(players) == 0:
+                return jsonify({"error": "players array cannot be empty"}), 400
+            
+            # Validate players structure
+            for i, player in enumerate(players):
+                if not isinstance(player, dict):
+                    return jsonify({"error": f"players[{i}] must be an object"}), 400
+                
+                required_fields = ['league_name', 'leagie_position', 'league', 'playername', 'playerid']
+                for field in required_fields:
+                    if field not in player:
+                        return jsonify({"error": f"players[{i}].{field} is required"}), 400
+        
+        # Check max limit (10 tournaments)
+        if len(tournament_data) >= 10:
+            # Clean up old tournaments first (keep current and previous week)
+            scraper = FantasyDataScraper()
+            current_week = scraper.get_current_week()
+            if current_week is not None:
+                current_week = int(current_week)
+                weeks_to_keep = {current_week, current_week - 1}
+                
+                # Delete tournaments older than previous week
+                keys_to_delete = []
+                for tour_id, tour in tournament_data.items():
+                    tour_week = tour.get('week')
+                    if tour_week is not None and tour_week not in weeks_to_keep:
+                        keys_to_delete.append(tour_id)
+                
+                for key in keys_to_delete:
+                    del tournament_data[key]
+                
+                if keys_to_delete:
+                    print(f"{datetime.datetime.now()} - Cleaned up {len(keys_to_delete)} old tournaments, keeping weeks {weeks_to_keep}")
+            
+            # If still at limit after cleanup, return error
+            if len(tournament_data) >= 10:
+                return jsonify({"error": "Maximum of 10 tournaments reached. Old tournaments will be cleared automatically."}), 400
+        
+        # Generate unique tournament ID (format: T + timestamp + random suffix)
+        import time
+        timestamp = int(time.time() * 1000)  # milliseconds
+        random_suffix = random.randint(1000, 9999)
+        tournament_id = f"T{timestamp}{random_suffix}"
+        
+        # Ensure ID is unique (very unlikely but check anyway)
+        while tournament_id in tournament_data:
+            random_suffix = random.randint(1000, 9999)
+            tournament_id = f"T{timestamp}{random_suffix}"
+        
+        # Store the entire body as-is, but add generated ID and created_at
+        created_at = datetime.datetime.now().isoformat()
+        tournament_entry = data.copy()  # Store body as-is
+        tournament_entry['id'] = tournament_id  # Add generated ID
+        tournament_entry['created_at'] = created_at  # Add creation timestamp
+        
+        # Store tournament
+        tournament_data[tournament_id] = tournament_entry
+        
+        # Log creation
+        if tournament_type == 'h2h':
+            games_count = len(data.get('games', []))
+            print(f"{datetime.datetime.now()} - Created tournament {tournament_id}: {name} (week {week}, type: {tournament_type}, {games_count} games)")
+        else:
+            players_count = len(data.get('players', []))
+            print(f"{datetime.datetime.now()} - Created tournament {tournament_id}: {name} (week {week}, type: {tournament_type}, {players_count} players)")
+        
+        return jsonify(tournament_entry), 201
+        
+    except Exception as e:
+        print(f"Error creating tournament: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/tournament/list', methods=['GET'])
+def list_tournaments():
+    """
+    List all tournaments with simplified information.
+    
+    Returns:
+        JSON response with list of tournaments containing id, name, week, and number of participants
+    """
+    global tournament_data
+    
+    try:
+        # Build simplified tournament list
+        tournaments_list = []
+        
+        for tour_id, tournament in tournament_data.items():
+            tournament_type = tournament.get('type', 'h2h')  # Default to 'h2h' for backwards compatibility
+            
+            # Count participants based on type
+            participants_count = 0
+            
+            if tournament_type == 'h2h':
+                games = tournament.get('games', [])
+                # For h2h, count all players (player1 + player2) across all games
+                # Each player entry counts as a participant, even if same playerid appears multiple times
+                for game in games:
+                    player1 = game.get('player1', {})
+                    player2 = game.get('player2', {})
+                    
+                    # Count each player entry (not unique playerids)
+                    if player1.get('playerid'):
+                        participants_count += 1
+                    if player2.get('playerid'):
+                        participants_count += 1
+            
+            elif tournament_type == 'pts':
+                players = tournament.get('players', [])
+                # For pts tournaments, count all players in the array
+                # Each entry in the players array represents a participant
+                participants_count = len(players)
+                # Still validate that players have playerids for data quality
+                for i, player in enumerate(players):
+                    playerid = player.get('playerid')
+                    if not playerid or not str(playerid).strip():
+                        # Log missing or empty playerid for debugging
+                        print(f"{datetime.datetime.now()} - Warning: Tournament {tour_id} player[{i}] has missing or empty playerid: {playerid}")
+            
+            tournaments_list.append({
+                'id': tournament.get('id', tour_id),
+                'name': tournament.get('name'),
+                'week': tournament.get('week'),
+                'participants': participants_count
+            })
+        
+        return jsonify({
+            "tournaments": tournaments_list,
+            "count": len(tournaments_list)
+        }), 200
+        
+    except Exception as e:
+        print(f"Error listing tournaments: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/tournament/<id>', methods=['DELETE'])
+def admin_delete_tournament(id):
+    """
+    Admin endpoint to delete a tournament by ID.
+    
+    Args:
+        id: The tournament ID to delete
+    
+    Returns:
+        JSON response indicating success or error
+    """
+    global tournament_data
+    
+    try:
+        if id not in tournament_data:
+            return jsonify({"error": f"Tournament '{id}' not found"}), 404
+        
+        # Get tournament info before deletion for logging
+        tournament = tournament_data[id]
+        tournament_name = tournament.get('name', 'Unknown')
+        tournament_week = tournament.get('week', 'Unknown')
+        
+        # Delete the tournament
+        del tournament_data[id]
+        
+        print(f"{datetime.datetime.now()} - Admin deleted tournament {id}: {tournament_name} (week {tournament_week})")
+        
+        return jsonify({
+            "message": f"Tournament '{id}' deleted successfully",
+            "deleted_tournament": {
+                "id": id,
+                "name": tournament_name,
+                "week": tournament_week
+            }
+        }), 200
+        
+    except Exception as e:
+        print(f"Error deleting tournament: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/tournament/<id>', methods=['GET'])
+def get_tournament(id):
+    """
+    Get a specific tournament by ID.
+    
+    Args:
+        id: The tournament ID
+    
+    Returns:
+        JSON response with tournament data or error message
+    """
+    global tournament_data
+    
+    try:
+        if id not in tournament_data:
+            return jsonify({"error": f"Tournament '{id}' not found"}), 404
+        
+        tournament = tournament_data[id]
+        return jsonify(tournament), 200
+        
+    except Exception as e:
+        print(f"Error getting tournament: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 """
 @app.route('/admin/assign-random-deltas', methods=['POST'])
