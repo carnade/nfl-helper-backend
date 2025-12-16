@@ -3013,7 +3013,7 @@ def create_tournament():
         # Validate required fields
         week = data.get('week')
         name = data.get('name')
-        games = data.get('games')
+        tournament_type = data.get('type')
         
         if week is None:
             return jsonify({"error": "week is required"}), 400
@@ -3023,29 +3023,56 @@ def create_tournament():
             return jsonify({"error": "name is required"}), 400
         if not isinstance(name, str):
             return jsonify({"error": "name must be a string"}), 400
-        if not games:
-            return jsonify({"error": "games is required"}), 400
-        if not isinstance(games, list):
-            return jsonify({"error": "games must be an array"}), 400
-        if len(games) == 0:
-            return jsonify({"error": "games array cannot be empty"}), 400
+        if not tournament_type:
+            return jsonify({"error": "type is required"}), 400
+        if tournament_type not in ['h2h', 'pts']:
+            return jsonify({"error": "type must be either 'h2h' or 'pts'"}), 400
         
-        # Validate games structure
-        for i, game in enumerate(games):
-            if not isinstance(game, dict):
-                return jsonify({"error": f"games[{i}] must be an object"}), 400
-            if 'player1' not in game or 'player2' not in game:
-                return jsonify({"error": f"games[{i}] must have player1 and player2"}), 400
+        # Validate based on type
+        if tournament_type == 'h2h':
+            games = data.get('games')
+            if not games:
+                return jsonify({"error": "games is required for type 'h2h'"}), 400
+            if not isinstance(games, list):
+                return jsonify({"error": "games must be an array"}), 400
+            if len(games) == 0:
+                return jsonify({"error": "games array cannot be empty"}), 400
             
-            for player_key in ['player1', 'player2']:
-                player = game.get(player_key)
+            # Validate games structure
+            for i, game in enumerate(games):
+                if not isinstance(game, dict):
+                    return jsonify({"error": f"games[{i}] must be an object"}), 400
+                if 'player1' not in game or 'player2' not in game:
+                    return jsonify({"error": f"games[{i}] must have player1 and player2"}), 400
+                
+                for player_key in ['player1', 'player2']:
+                    player = game.get(player_key)
+                    if not isinstance(player, dict):
+                        return jsonify({"error": f"games[{i}].{player_key} must be an object"}), 400
+                    
+                    required_fields = ['league_name', 'leagie_position', 'league', 'playername', 'playerid']
+                    for field in required_fields:
+                        if field not in player:
+                            return jsonify({"error": f"games[{i}].{player_key}.{field} is required"}), 400
+        
+        elif tournament_type == 'pts':
+            players = data.get('players')
+            if not players:
+                return jsonify({"error": "players is required for type 'pts'"}), 400
+            if not isinstance(players, list):
+                return jsonify({"error": "players must be an array"}), 400
+            if len(players) == 0:
+                return jsonify({"error": "players array cannot be empty"}), 400
+            
+            # Validate players structure
+            for i, player in enumerate(players):
                 if not isinstance(player, dict):
-                    return jsonify({"error": f"games[{i}].{player_key} must be an object"}), 400
+                    return jsonify({"error": f"players[{i}] must be an object"}), 400
                 
                 required_fields = ['league_name', 'leagie_position', 'league', 'playername', 'playerid']
                 for field in required_fields:
                     if field not in player:
-                        return jsonify({"error": f"games[{i}].{player_key}.{field} is required"}), 400
+                        return jsonify({"error": f"players[{i}].{field} is required"}), 400
         
         # Check max limit (10 tournaments)
         if len(tournament_data) >= 10:
@@ -3084,20 +3111,22 @@ def create_tournament():
             random_suffix = random.randint(1000, 9999)
             tournament_id = f"T{timestamp}{random_suffix}"
         
-        # Create tournament entry
+        # Store the entire body as-is, but add generated ID and created_at
         created_at = datetime.datetime.now().isoformat()
-        tournament_entry = {
-            'id': tournament_id,
-            'week': week,
-            'name': name,
-            'games': games,
-            'created_at': created_at
-        }
+        tournament_entry = data.copy()  # Store body as-is
+        tournament_entry['id'] = tournament_id  # Add generated ID
+        tournament_entry['created_at'] = created_at  # Add creation timestamp
         
         # Store tournament
         tournament_data[tournament_id] = tournament_entry
         
-        print(f"{datetime.datetime.now()} - Created tournament {tournament_id}: {name} (week {week}, {len(games)} games)")
+        # Log creation
+        if tournament_type == 'h2h':
+            games_count = len(data.get('games', []))
+            print(f"{datetime.datetime.now()} - Created tournament {tournament_id}: {name} (week {week}, type: {tournament_type}, {games_count} games)")
+        else:
+            players_count = len(data.get('players', []))
+            print(f"{datetime.datetime.now()} - Created tournament {tournament_id}: {name} (week {week}, type: {tournament_type}, {players_count} players)")
         
         return jsonify(tournament_entry), 201
         
@@ -3123,25 +3152,42 @@ def list_tournaments():
         tournaments_list = []
         
         for tour_id, tournament in tournament_data.items():
-            games = tournament.get('games', [])
+            tournament_type = tournament.get('type', 'h2h')  # Default to 'h2h' for backwards compatibility
             
-            # Count unique participants across all games
-            participants = set()
-            for game in games:
-                player1 = game.get('player1', {})
-                player2 = game.get('player2', {})
-                
-                # Add player IDs to set (unique participants)
-                if player1.get('playerid'):
-                    participants.add(player1.get('playerid'))
-                if player2.get('playerid'):
-                    participants.add(player2.get('playerid'))
+            # Count participants based on type
+            participants_count = 0
+            
+            if tournament_type == 'h2h':
+                games = tournament.get('games', [])
+                # For h2h, count all players (player1 + player2) across all games
+                # Each player entry counts as a participant, even if same playerid appears multiple times
+                for game in games:
+                    player1 = game.get('player1', {})
+                    player2 = game.get('player2', {})
+                    
+                    # Count each player entry (not unique playerids)
+                    if player1.get('playerid'):
+                        participants_count += 1
+                    if player2.get('playerid'):
+                        participants_count += 1
+            
+            elif tournament_type == 'pts':
+                players = tournament.get('players', [])
+                # For pts tournaments, count all players in the array
+                # Each entry in the players array represents a participant
+                participants_count = len(players)
+                # Still validate that players have playerids for data quality
+                for i, player in enumerate(players):
+                    playerid = player.get('playerid')
+                    if not playerid or not str(playerid).strip():
+                        # Log missing or empty playerid for debugging
+                        print(f"{datetime.datetime.now()} - Warning: Tournament {tour_id} player[{i}] has missing or empty playerid: {playerid}")
             
             tournaments_list.append({
                 'id': tournament.get('id', tour_id),
                 'name': tournament.get('name'),
                 'week': tournament.get('week'),
-                'participants': len(participants)
+                'participants': participants_count
             })
         
         return jsonify({
@@ -3151,6 +3197,47 @@ def list_tournaments():
         
     except Exception as e:
         print(f"Error listing tournaments: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/tournament/<id>', methods=['DELETE'])
+def admin_delete_tournament(id):
+    """
+    Admin endpoint to delete a tournament by ID.
+    
+    Args:
+        id: The tournament ID to delete
+    
+    Returns:
+        JSON response indicating success or error
+    """
+    global tournament_data
+    
+    try:
+        if id not in tournament_data:
+            return jsonify({"error": f"Tournament '{id}' not found"}), 404
+        
+        # Get tournament info before deletion for logging
+        tournament = tournament_data[id]
+        tournament_name = tournament.get('name', 'Unknown')
+        tournament_week = tournament.get('week', 'Unknown')
+        
+        # Delete the tournament
+        del tournament_data[id]
+        
+        print(f"{datetime.datetime.now()} - Admin deleted tournament {id}: {tournament_name} (week {tournament_week})")
+        
+        return jsonify({
+            "message": f"Tournament '{id}' deleted successfully",
+            "deleted_tournament": {
+                "id": id,
+                "name": tournament_name,
+                "week": tournament_week
+            }
+        }), 200
+        
+    except Exception as e:
+        print(f"Error deleting tournament: {e}")
         return jsonify({"error": str(e)}), 500
 
 

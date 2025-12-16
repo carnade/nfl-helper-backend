@@ -821,7 +821,7 @@ paths:
   /tournament:
     post:
       summary: Create a new tournament
-      description: Creates a new tournament with week, name, and games. Maximum of 10 tournaments at any time. Old tournaments are automatically cleared (keeps current and previous week).
+      description: 'Creates a new tournament. Supports two types: "h2h" (head-to-head with games) and "pts" (points-based with players list). Maximum of 10 tournaments at any time. Old tournaments are automatically cleared (keeps current and previous week).'
       operationId: createTournament
       tags:
         - Tournament
@@ -830,47 +830,97 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - week
-                - name
-                - games
-              properties:
-                week:
-                  type: integer
-                  description: Week number
-                name:
-                  type: string
-                  description: Tournament name
-                games:
-                  type: array
-                  description: Array of game matchups
-                  items:
-                    type: object
-                    required:
-                      - player1
-                      - player2
-                    properties:
-                      player1:
+              oneOf:
+                - type: object
+                  description: 'Head-to-head tournament (type: "h2h")'
+                  required:
+                    - week
+                    - name
+                    - type
+                    - games
+                  properties:
+                    week:
+                      type: integer
+                      description: Week number
+                    name:
+                      type: string
+                      description: Tournament name
+                    type:
+                      type: string
+                      enum: ["h2h"]
+                      description: Tournament type - head-to-head
+                    games:
+                      type: array
+                      description: Array of game matchups
+                      items:
                         type: object
                         required:
-                          - league_name
-                          - leagie_position
-                          - league
-                          - playername
-                          - playerid
+                          - player1
+                          - player2
                         properties:
-                          league_name:
-                            type: string
-                          leagie_position:
-                            type: string
-                          league:
-                            type: string
-                          playername:
-                            type: string
-                          playerid:
-                            type: string
-                      player2:
+                          player1:
+                            type: object
+                            required:
+                              - league_name
+                              - leagie_position
+                              - league
+                              - playername
+                              - playerid
+                            properties:
+                              league_name:
+                                type: string
+                              leagie_position:
+                                type: string
+                              league:
+                                type: string
+                              playername:
+                                type: string
+                              playerid:
+                                type: string
+                          player2:
+                            type: object
+                            required:
+                              - league_name
+                              - leagie_position
+                              - league
+                              - playername
+                              - playerid
+                            properties:
+                              league_name:
+                                type: string
+                              leagie_position:
+                                type: string
+                              league:
+                                type: string
+                              playername:
+                                type: string
+                              playerid:
+                                type: string
+                - type: object
+                  description: 'Points-based tournament (type: "pts")'
+                  required:
+                    - week
+                    - name
+                    - type
+                    - players
+                  properties:
+                    week:
+                      type: integer
+                      description: Week number
+                    name:
+                      type: string
+                      description: Tournament name
+                    id:
+                      type: string
+                      description: Optional custom tournament ID
+                    type:
+                      type: string
+                      enum: ["pts"]
+                      description: Tournament type - points-based
+                    players:
+                      type: array
+                      description: Array of players
+                      items:
                         type: object
                         required:
                           - league_name
@@ -904,8 +954,18 @@ paths:
                     type: integer
                   name:
                     type: string
+                  type:
+                    type: string
+                    enum: ["h2h", "pts"]
+                    description: Tournament type
                   games:
                     type: array
+                    description: Games array (for type "h2h")
+                    items:
+                      type: object
+                  players:
+                    type: array
+                    description: Players array (for type "pts")
                     items:
                       type: object
                   created_at:
@@ -985,9 +1045,13 @@ paths:
                   name:
                     type: string
                     description: Tournament name
+                  type:
+                    type: string
+                    enum: ["h2h", "pts"]
+                    description: Tournament type
                   games:
                     type: array
-                    description: Array of game matchups with player1 and player2
+                    description: Array of game matchups with player1 and player2 (for type "h2h")
                     items:
                       type: object
                       properties:
@@ -1017,10 +1081,65 @@ paths:
                               type: string
                             playerid:
                               type: string
+                  players:
+                    type: array
+                    description: Array of players (for type "pts")
+                    items:
+                      type: object
+                      properties:
+                        league_name:
+                          type: string
+                        leagie_position:
+                          type: string
+                        league:
+                          type: string
+                        playername:
+                          type: string
+                        playerid:
+                          type: string
                   created_at:
                     type: string
                     format: date-time
                     description: Tournament creation timestamp
+        "404":
+          description: Tournament not found
+        "500":
+          description: Server error
+
+  /admin/tournament/{id}:
+    delete:
+      summary: Delete tournament (Admin)
+      description: Admin endpoint to delete a tournament by ID
+      operationId: adminDeleteTournament
+      tags:
+        - Admin
+        - Tournament
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Tournament ID to delete
+      responses:
+        "200":
+          description: Tournament deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  deleted_tournament:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      week:
+                        type: integer
         "404":
           description: Tournament not found
         "500":
