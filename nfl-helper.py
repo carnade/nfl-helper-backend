@@ -157,6 +157,7 @@ def load_tinyurl_data():
     if USE_GIST:
         _load_tinyurl_data_from_gist()
     else:
+        print(f"{datetime.datetime.now()} - USE_GIST is False or not configured; loading tinyurl_data from local file")
         _load_tinyurl_data_from_file()
 
 
@@ -171,6 +172,9 @@ def _load_tinyurl_data_from_gist():
         if GITHUB_TOKEN:
             headers['Authorization'] = f'token {GITHUB_TOKEN}'
         
+        masked_token = f"{GITHUB_TOKEN[:6]}..." if GITHUB_TOKEN else "None"
+        print(f"{datetime.datetime.now()} - Loading tinyurl_data from Gist: GIST_ID={GIST_ID}, token={masked_token}")
+
         response = requests.get(GIST_API_URL, headers=headers, timeout=10)
         response.raise_for_status()
         
@@ -266,6 +270,7 @@ def load_tournament_data():
     if USE_GIST:
         _load_tournament_data_from_gist()
     else:
+        print(f"{datetime.datetime.now()} - USE_GIST is False or not configured; loading tournament_data from local file")
         _load_tournament_data_from_file()
 
 
@@ -280,6 +285,9 @@ def _load_tournament_data_from_gist():
         if GITHUB_TOKEN:
             headers['Authorization'] = f'token {GITHUB_TOKEN}'
         
+        masked_token = f"{GITHUB_TOKEN[:6]}..." if GITHUB_TOKEN else "None"
+        print(f"{datetime.datetime.now()} - Loading tournament_data from Gist: GIST_ID={GIST_ID}, token={masked_token}")
+
         response = requests.get(GIST_API_URL, headers=headers, timeout=10)
         response.raise_for_status()
         
@@ -3631,6 +3639,12 @@ def initialize_data_in_background():
     
     def _initialize():
         print(f"{datetime.datetime.now()} - Starting background data initialization...")
+        
+        # 0. Load persisted TinyURL and Tournament data (from Gist if configured, else local files)
+        gist_mask = f"{GIST_ID[:6]}..." if GIST_ID else "None"
+        print(f"{datetime.datetime.now()} - Persistence: USE_GIST={USE_GIST}, GIST_ID={gist_mask}")
+        load_tinyurl_data()
+        load_tournament_data()
         
         # 1. Fetch and filter player data
         print(f"{datetime.datetime.now()} - Fetching and filtering player data...")
