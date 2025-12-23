@@ -12,9 +12,14 @@ from get_dynasty_ranks import scrape_ktc, scrape_fantasy_calc, tep_adjust
 from fantasydatascraper import FantasyDataScraper
 from get_dfs_salaries_and_stats import DFFSalariesScraper
 import random  # Import random for generating random deltas
+from pathlib import Path
 
 
 app = Flask(__name__)
+
+# Data directory for persistence (works locally, ephemeral on Koyeb free tier)
+DATA_DIR = Path(os.environ.get('DATA_DIR', './data'))
+DATA_DIR.mkdir(exist_ok=True)
 
 # Allowed IP prefix and specific domain
 ALLOWED_IP_PREFIX = "81.235."
@@ -77,6 +82,237 @@ fantasy_points_data = {}  # Dictionary to store fantasy points data with Sleeper
 dfs_salaries_data = {}  # Dictionary to store DFS salaries data with Sleeper IDs
 tinyurl_data = {}  # Dictionary to store data: {name: {data: str, created_at: str, allowed_names: List[str], user_submissions: Dict[str, {data: str, created_at: str, update_count: int, updated_at: str}]}}
 tournament_data = {}  # Dictionary to store tournament data: {id: {week: int, name: str, games: list, created_at: str}}
+
+
+# ============================================================================
+# Data Persistence Functions
+# ============================================================================
+
+# GitHub Gist configuration (optional - only used if both are set)
+GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
+GIST_ID = os.environ.get('GIST_ID')
+GIST_API_URL = f"https://api.github.com/gists/{GIST_ID}" if GIST_ID else None
+
+# Use Gist if both token and ID are configured, otherwise use local files
+USE_GIST = bool(GITHUB_TOKEN and GIST_ID)
+
+
+def save_tinyurl_data():
+    """Save tinyurl_data to Gist (if configured) or local file"""
+    global tinyurl_data
+    
+    if USE_GIST:
+        _save_tinyurl_data_to_gist()
+    else:
+        _save_tinyurl_data_to_file()
+
+
+def _save_tinyurl_data_to_gist():
+    """Save tinyurl_data to GitHub Gist"""
+    global tinyurl_data
+    try:
+        # Convert data to JSON string
+        json_content = json.dumps(tinyurl_data, indent=2)
+        
+        # Update Gist file
+        headers = {
+            'Authorization': f'token {GITHUB_TOKEN}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+        
+        data = {
+            'files': {
+                'tinyurl_data.json': {
+                    'content': json_content
+                }
+            }
+        }
+        
+        response = requests.patch(GIST_API_URL, headers=headers, json=data, timeout=10)
+        response.raise_for_status()
+        
+        print(f"{datetime.datetime.now()} - Saved tinyurl_data to Gist ({len(tinyurl_data)} entries)")
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error saving tinyurl_data to Gist: {e}")
+        # Fallback to local file on error
+        _save_tinyurl_data_to_file()
+
+
+def _save_tinyurl_data_to_file():
+    """Save tinyurl_data to local JSON file"""
+    global tinyurl_data
+    try:
+        filepath = DATA_DIR / 'tinyurl_data.json'
+        with open(filepath, 'w') as f:
+            json.dump(tinyurl_data, f, indent=2)
+        print(f"{datetime.datetime.now()} - Saved tinyurl_data to {filepath} ({len(tinyurl_data)} entries)")
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error saving tinyurl_data: {e}")
+
+
+def load_tinyurl_data():
+    """Load tinyurl_data from Gist (if configured) or local file"""
+    global tinyurl_data
+    
+    if USE_GIST:
+        _load_tinyurl_data_from_gist()
+    else:
+        _load_tinyurl_data_from_file()
+
+
+def _load_tinyurl_data_from_gist():
+    """Load tinyurl_data from GitHub Gist"""
+    global tinyurl_data
+    try:
+        # Fetch Gist (use token for private Gists)
+        headers = {
+            'Accept': 'application/vnd.github.v3+json'
+        }
+        if GITHUB_TOKEN:
+            headers['Authorization'] = f'token {GITHUB_TOKEN}'
+        
+        response = requests.get(GIST_API_URL, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        gist_data = response.json()
+        files = gist_data.get('files', {})
+        
+        if 'tinyurl_data.json' in files:
+            content = files['tinyurl_data.json']['content']
+            tinyurl_data = json.loads(content)
+            print(f"{datetime.datetime.now()} - Loaded tinyurl_data from Gist ({len(tinyurl_data)} entries)")
+        else:
+            print(f"{datetime.datetime.now()} - No tinyurl_data.json found in Gist, starting with empty data")
+            tinyurl_data = {}
+            
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error loading tinyurl_data from Gist: {e}, falling back to local file")
+        # Fallback to local file on error
+        _load_tinyurl_data_from_file()
+
+
+def _load_tinyurl_data_from_file():
+    """Load tinyurl_data from local JSON file"""
+    global tinyurl_data
+    try:
+        filepath = DATA_DIR / 'tinyurl_data.json'
+        if filepath.exists():
+            with open(filepath, 'r') as f:
+                tinyurl_data = json.load(f)
+            print(f"{datetime.datetime.now()} - Loaded tinyurl_data from {filepath} ({len(tinyurl_data)} entries)")
+        else:
+            print(f"{datetime.datetime.now()} - No existing tinyurl_data file found at {filepath}")
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error loading tinyurl_data: {e}")
+
+
+def save_tournament_data():
+    """Save tournament_data to Gist (if configured) or local file"""
+    global tournament_data
+    
+    if USE_GIST:
+        _save_tournament_data_to_gist()
+    else:
+        _save_tournament_data_to_file()
+
+
+def _save_tournament_data_to_gist():
+    """Save tournament_data to GitHub Gist"""
+    global tournament_data
+    try:
+        # Convert data to JSON string
+        json_content = json.dumps(tournament_data, indent=2)
+        
+        # Update Gist file
+        headers = {
+            'Authorization': f'token {GITHUB_TOKEN}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+        
+        data = {
+            'files': {
+                'tournament_data.json': {
+                    'content': json_content
+                }
+            }
+        }
+        
+        response = requests.patch(GIST_API_URL, headers=headers, json=data, timeout=10)
+        response.raise_for_status()
+        
+        print(f"{datetime.datetime.now()} - Saved tournament_data to Gist ({len(tournament_data)} entries)")
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error saving tournament_data to Gist: {e}")
+        # Fallback to local file on error
+        _save_tournament_data_to_file()
+
+
+def _save_tournament_data_to_file():
+    """Save tournament_data to local JSON file"""
+    global tournament_data
+    try:
+        filepath = DATA_DIR / 'tournament_data.json'
+        with open(filepath, 'w') as f:
+            json.dump(tournament_data, f, indent=2)
+        print(f"{datetime.datetime.now()} - Saved tournament_data to {filepath} ({len(tournament_data)} entries)")
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error saving tournament_data: {e}")
+
+
+def load_tournament_data():
+    """Load tournament_data from Gist (if configured) or local file"""
+    global tournament_data
+    
+    if USE_GIST:
+        _load_tournament_data_from_gist()
+    else:
+        _load_tournament_data_from_file()
+
+
+def _load_tournament_data_from_gist():
+    """Load tournament_data from GitHub Gist"""
+    global tournament_data
+    try:
+        # Fetch Gist (use token for private Gists)
+        headers = {
+            'Accept': 'application/vnd.github.v3+json'
+        }
+        if GITHUB_TOKEN:
+            headers['Authorization'] = f'token {GITHUB_TOKEN}'
+        
+        response = requests.get(GIST_API_URL, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        gist_data = response.json()
+        files = gist_data.get('files', {})
+        
+        if 'tournament_data.json' in files:
+            content = files['tournament_data.json']['content']
+            tournament_data = json.loads(content)
+            print(f"{datetime.datetime.now()} - Loaded tournament_data from Gist ({len(tournament_data)} entries)")
+        else:
+            print(f"{datetime.datetime.now()} - No tournament_data.json found in Gist, starting with empty data")
+            tournament_data = {}
+            
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error loading tournament_data from Gist: {e}, falling back to local file")
+        # Fallback to local file on error
+        _load_tournament_data_from_file()
+
+
+def _load_tournament_data_from_file():
+    """Load tournament_data from local JSON file"""
+    global tournament_data
+    try:
+        filepath = DATA_DIR / 'tournament_data.json'
+        if filepath.exists():
+            with open(filepath, 'r') as f:
+                tournament_data = json.load(f)
+            print(f"{datetime.datetime.now()} - Loaded tournament_data from {filepath} ({len(tournament_data)} entries)")
+        else:
+            print(f"{datetime.datetime.now()} - No existing tournament_data file found at {filepath}")
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error loading tournament_data: {e}")
 
 # Global variables to track the last update times
 last_players_update = None
@@ -446,21 +682,21 @@ def update_dfs_salaries_data():
         # Get current week from the scraped data
         current_week = parsed_salaries[0].get('week', 0) if parsed_salaries else 0
         
-        # Clean up old data (keep only current and previous week)
-        weeks_to_keep = {current_week, current_week - 1}
+        # Clean up old data (keep current week and all future weeks, delete only older weeks)
         keys_to_delete = []
         
         for key in list(dfs_salaries_data.keys()):
             # Extract week from existing entries
             existing_week = dfs_salaries_data[key].get('week', 0)
-            if existing_week not in weeks_to_keep:
+            # Delete only if week is older than current week
+            if existing_week < current_week:
                 keys_to_delete.append(key)
         
         for key in keys_to_delete:
             del dfs_salaries_data[key]
         
         if keys_to_delete:
-            print(f"Cleaned up {len(keys_to_delete)} old entries, keeping weeks {weeks_to_keep}")
+            print(f"Cleaned up {len(keys_to_delete)} old entries, keeping week {current_week} and future weeks")
         
         # Add new data with week in the key (supports multi-week storage)
         # Note: Scheduled updates do NOT update salaries - they only log differences
@@ -469,9 +705,10 @@ def update_dfs_salaries_data():
         updated_count = 0
         
         for player in parsed_salaries:
-            # Use sleeper_id + week as composite key if available, otherwise use name+team+week
-            if player.get("sleeper_id"):
-                key = f"{player['sleeper_id']}_W{player.get('week', 0)}"
+            # Use sleeper_id + week as composite key if sleeper_id is numeric, otherwise use name+team+week
+            sleeper_id = player.get("sleeper_id")
+            if sleeper_id and str(sleeper_id).isdigit():
+                key = f"{sleeper_id}_W{player.get('week', 0)}"
             else:
                 key = f"{player['name']}_{player['team']}_W{player.get('week', 0)}"
             
@@ -516,8 +753,8 @@ def update_dfs_salaries_data():
         
         last_dfs_salaries_update = datetime.datetime.now()
         
-        # Count matched players
-        matched_count = sum(1 for p in dfs_salaries_data.values() if p.get("sleeper_id") is not None)
+        # Count matched players (those with numeric sleeper_id, not player name)
+        matched_count = sum(1 for p in dfs_salaries_data.values() if p.get("sleeper_id") and str(p.get("sleeper_id")).isdigit())
         
         print(f"DFS salaries updated at {last_dfs_salaries_update}")
         print(f"Added {added_count} new players, updated {updated_count} existing players (salaries preserved) for week {current_week}")
@@ -918,6 +1155,10 @@ def clear_tinyurl_data():
         for name in entries_to_delete:
             del tinyurl_data[name]
         
+        # Save the cleaned data to persistent storage
+        if entries_to_delete:
+            save_tinyurl_data()
+        
         print(f"{datetime.datetime.now()} - TinyURL data cleared: removed {len(entries_to_delete)} entries older than week {current_week} (kept {len(tinyurl_data)} entries for week {current_week} and future weeks)")
         if entries_to_keep:
             kept_weeks = [week for _, week in entries_to_keep]
@@ -928,10 +1169,11 @@ def clear_tinyurl_data():
         traceback.print_exc()
         # Fallback: clear all if we can't get current week
         tinyurl_data.clear()
+        save_tinyurl_data()  # Save even on fallback
         print(f"{datetime.datetime.now()} - TinyURL data cleared (fallback: all entries)")
 
 def clear_tournament_data():
-    """Clear tournament_data entries for weeks that are older than the previous week (keep current and previous week)"""
+    """Clear tournament_data entries for weeks that are older than the current week (keep current week and all future weeks)"""
     global tournament_data
     
     try:
@@ -946,26 +1188,46 @@ def clear_tournament_data():
         
         current_week = int(current_week)
         
-        # Keep current and previous week, delete older weeks (same logic as DFS)
-        weeks_to_keep = {current_week, current_week - 1}
-        keys_to_delete = []
+        # Keep current week and all future weeks, delete only weeks older than current
+        entries_to_delete = []
+        entries_to_keep = []
         
         for tour_id, tour in tournament_data.items():
             tour_week = tour.get('week')
+            tour_name = tour.get('name', tour_id)
+            
+            # Convert tour_week to int if it's not None
             if tour_week is not None:
                 try:
                     tour_week = int(tour_week)
-                    if tour_week not in weeks_to_keep:
-                        keys_to_delete.append(tour_id)
                 except (ValueError, TypeError):
-                    print(f"{datetime.datetime.now()} - Warning: Tournament '{tour_id}' has invalid week value: {tour_week}")
+                    print(f"{datetime.datetime.now()} - Warning: Tournament '{tour_name}' has invalid week value: {tour_week}. Treating as None.")
+                    tour_week = None
+            
+            # If tournament doesn't have a week field or week is older than current week, mark for deletion
+            if tour_week is None:
+                print(f"{datetime.datetime.now()} - Marking tournament '{tour_name}' for deletion (no week field)")
+                entries_to_delete.append(tour_id)
+            elif tour_week < current_week:
+                print(f"{datetime.datetime.now()} - Marking tournament '{tour_name}' (week {tour_week}) for deletion (older than current week {current_week})")
+                entries_to_delete.append(tour_id)
+            else:
+                # tour_week >= current_week, so keep it
+                print(f"{datetime.datetime.now()} - Keeping tournament '{tour_name}' (week {tour_week}) (current week: {current_week}, condition: {tour_week} >= {current_week})")
+                entries_to_keep.append((tour_id, tour_week))
         
-        # Delete old tournaments
-        for key in keys_to_delete:
-            del tournament_data[key]
+        # Delete tournaments that are older than current week
+        for tour_id in entries_to_delete:
+            del tournament_data[tour_id]
         
-        if keys_to_delete:
-            print(f"{datetime.datetime.now()} - Tournament data cleared: removed {len(keys_to_delete)} tournaments older than week {current_week - 1} (kept {len(tournament_data)} tournaments for weeks {weeks_to_keep})")
+        # Save the cleaned data to persistent storage
+        if entries_to_delete:
+            save_tournament_data()
+        
+        print(f"{datetime.datetime.now()} - Tournament data cleared: removed {len(entries_to_delete)} tournaments older than week {current_week} (kept {len(tournament_data)} tournaments for week {current_week} and future weeks)")
+        if entries_to_keep:
+            kept_weeks = [week for _, week in entries_to_keep]
+            print(f"{datetime.datetime.now()} - Kept tournaments with weeks: {kept_weeks}")
     except Exception as e:
         print(f"{datetime.datetime.now()} - Error clearing tournament data: {e}")
         import traceback
@@ -1538,9 +1800,10 @@ def admin_scrape_specific_slate():
         salary_differences = []
         
         for player in players:
-            # Use sleeper_id + week as composite key if available, otherwise use name+team+week
-            if player.get("sleeper_id"):
-                key = f"{player['sleeper_id']}_W{player.get('week', 0)}"
+            # Use sleeper_id + week as composite key if sleeper_id is numeric, otherwise use name+team+week
+            sleeper_id = player.get("sleeper_id")
+            if sleeper_id and str(sleeper_id).isdigit():
+                key = f"{sleeper_id}_W{player.get('week', 0)}"
             else:
                 key = f"{player['name']}_{player['team']}_W{player.get('week', 0)}"
             
@@ -2179,6 +2442,9 @@ def create_tinyurl():
         # Store the entry
         tinyurl_data[normalized_name] = tinyurl_entry
         
+        # Save to persistent storage
+        save_tinyurl_data()
+        
         # Build response
         response = {
             "name": name,
@@ -2665,6 +2931,9 @@ def create_empty_tinyurl():
         
         tinyurl_data[normalized_name] = entry_data
         
+        # Save to persistent storage
+        save_tinyurl_data()
+        
         response = {
             "name": name,
             "allowed_names": allowed_names,
@@ -2695,7 +2964,8 @@ def add_to_tinyurl(tinyurl_name):
     {
         "name": "username",
         "data": "8|MIQwTgdi...",
-        "pin": "1234"  # Optional: 2-8 digit PIN code (numbers only)
+        "pin": "1234",  # Optional: 2-8 digit PIN code (numbers only)
+        "skip_validation": false  # Optional: If true, bypasses lineup validation (e.g., for adding lineups after games have started)
     }
     
     Args:
@@ -2714,6 +2984,7 @@ def add_to_tinyurl(tinyurl_name):
         username = data.get('name')
         url_data = data.get('data')
         pin = data.get('pin')
+        skip_validation = data.get('skip_validation', False)
         
         if not username:
             return jsonify({"error": "name is required"}), 400
@@ -2762,7 +3033,7 @@ def add_to_tinyurl(tinyurl_name):
         # Check if this is an overwrite (user already has submitted data)
         if normalized_username in entry['user_submissions']:
             existing_data = entry['user_submissions'][normalized_username].get('data')
-            if existing_data:
+            if existing_data and not skip_validation:
                 # Validate that no players in the EXISTING lineup have started their games yet
                 # This prevents overwriting a lineup that has players whose games have started
                 is_valid_existing, error_msg_existing, players_started_existing = validate_lineup_players_not_started(existing_data)
@@ -2773,13 +3044,14 @@ def add_to_tinyurl(tinyurl_name):
                         "message": "The existing lineup contains players whose games have already started. You cannot overwrite it."
                     }), 400
         
-        # Validate that no players in the NEW lineup have started their games yet
-        is_valid, error_msg, players_started = validate_lineup_players_not_started(url_data)
-        if not is_valid:
-            return jsonify({
-                "error": error_msg,
-                "players_started": players_started
-            }), 400
+        # Validate that no players in the NEW lineup have started their games yet (unless skip_validation is true)
+        if not skip_validation:
+            is_valid, error_msg, players_started = validate_lineup_players_not_started(url_data)
+            if not is_valid:
+                return jsonify({
+                    "error": error_msg,
+                    "players_started": players_started
+                }), 400
         
         current_time = datetime.datetime.now().isoformat()
         
@@ -2814,6 +3086,9 @@ def add_to_tinyurl(tinyurl_name):
         entry['data'] = url_data
         entry['updated_at'] = current_time
         entry['updated_by'] = username  # Keep original case for display
+        
+        # Save to persistent storage
+        save_tinyurl_data()
         
         return jsonify({
             "message": f"Data added to '{tinyurl_name}' successfully",
@@ -3076,25 +3351,30 @@ def create_tournament():
         
         # Check max limit (10 tournaments)
         if len(tournament_data) >= 10:
-            # Clean up old tournaments first (keep current and previous week)
+            # Clean up old tournaments first (keep current week and all future weeks)
             scraper = FantasyDataScraper()
             current_week = scraper.get_current_week()
             if current_week is not None:
                 current_week = int(current_week)
-                weeks_to_keep = {current_week, current_week - 1}
                 
-                # Delete tournaments older than previous week
+                # Delete tournaments older than current week (keep current and future weeks)
                 keys_to_delete = []
                 for tour_id, tour in tournament_data.items():
                     tour_week = tour.get('week')
-                    if tour_week is not None and tour_week not in weeks_to_keep:
-                        keys_to_delete.append(tour_id)
+                    if tour_week is not None:
+                        try:
+                            tour_week = int(tour_week)
+                            if tour_week < current_week:
+                                keys_to_delete.append(tour_id)
+                        except (ValueError, TypeError):
+                            # Invalid week, skip
+                            pass
                 
                 for key in keys_to_delete:
                     del tournament_data[key]
                 
                 if keys_to_delete:
-                    print(f"{datetime.datetime.now()} - Cleaned up {len(keys_to_delete)} old tournaments, keeping weeks {weeks_to_keep}")
+                    print(f"{datetime.datetime.now()} - Cleaned up {len(keys_to_delete)} old tournaments, keeping week {current_week} and future weeks")
             
             # If still at limit after cleanup, return error
             if len(tournament_data) >= 10:
@@ -3119,6 +3399,9 @@ def create_tournament():
         
         # Store tournament
         tournament_data[tournament_id] = tournament_entry
+        
+        # Save to persistent storage
+        save_tournament_data()
         
         # Log creation
         if tournament_type == 'h2h':
@@ -3224,6 +3507,9 @@ def admin_delete_tournament(id):
         
         # Delete the tournament
         del tournament_data[id]
+        
+        # Save to persistent storage
+        save_tournament_data()
         
         print(f"{datetime.datetime.now()} - Admin deleted tournament {id}: {tournament_name} (week {tournament_week})")
         

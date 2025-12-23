@@ -669,10 +669,10 @@ paths:
             schema:
               type: object
               required:
-                - username
+                - name
                 - data
               properties:
-                username:
+                name:
                   type: string
                   description: Username to add/update data for
                 data:
@@ -682,6 +682,10 @@ paths:
                   type: string
                   pattern: "^[0-9]{2,8}$"
                   description: Optional PIN code (2-8 digits, numbers only). Stored with the user's submission data.
+                skip_validation:
+                  type: boolean
+                  default: false
+                  description: Optional flag to bypass lineup validation (e.g., for adding lineups after games have started). Defaults to false.
       responses:
         "200":
           description: Data added/updated successfully
