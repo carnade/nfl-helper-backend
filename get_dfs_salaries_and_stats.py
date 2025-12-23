@@ -771,17 +771,9 @@ class DFFSalariesScraper:
             game_date = None
             showdown_info = None
             
-            # Log for DET and GB players specifically
-            is_det_gb = team in ['DET', 'GB'] or opponent in ['DET', 'GB']
-            if is_det_gb:
-                logger.info(f"🔍 Processing {team} vs {opponent} (player: {player.get('name')})")
-                logger.info(f"  Scraped start_date: '{scraped_start_date}'")
-            
             # Use start_date from scraped data if available
             if scraped_start_date:
                 game_date = scraped_start_date
-                if is_det_gb:
-                    logger.info(f"  ✅ Using scraped start_date as game_date: {game_date}")
                 
                 # Fetch showdown data for this date if not already fetched
                 if game_date not in showdown_data:
@@ -793,30 +785,21 @@ class DFFSalariesScraper:
                         slates = data.get('slates', [])
                         showdowns = [s for s in slates if s.get('showdown_flag', 0) == 1]
                         showdown_data[game_date] = showdowns
-                        if is_det_gb:
-                            logger.info(f"  Fetched {len(showdowns)} showdowns for {game_date}")
                     except Exception as e:
                         logger.debug(f"Error fetching showdowns for {game_date}: {e}")
                         showdown_data[game_date] = []
                 
                 # Try to find showdown info for this date
                 showdowns_for_date = showdown_data.get(game_date, [])
-                if is_det_gb:
-                    logger.info(f"  Looking for showdown on {game_date}: {len(showdowns_for_date)} showdowns available")
                 
                 for showdown in showdowns_for_date:
                     slate_type = showdown.get('slate_type', '')
                     if (team in slate_type and opponent in slate_type) or \
                        (opponent in slate_type and team in slate_type):
                         showdown_info = showdown
-                        if is_det_gb:
-                            logger.info(f"    ✅ Found showdown match: '{slate_type}'")
                         break
             else:
                 # Fallback: Try to find showdown by matching (old method)
-                if is_det_gb:
-                    logger.info(f"  ⚠️ No start_date in scraped data, falling back to showdown matching")
-                
                 for game_date_str in main_slate_dates:
                     showdowns = showdown_data.get(game_date_str, [])
                     for showdown in showdowns:
@@ -825,21 +808,9 @@ class DFFSalariesScraper:
                            (opponent in slate_type and team in slate_type):
                             game_date = game_date_str
                             showdown_info = showdown
-                            if is_det_gb:
-                                logger.info(f"    ✅ Found showdown match: '{slate_type}' on {game_date_str}")
                             break
                     if showdown_info:
                         break
-            
-            if is_det_gb:
-                if game_date:
-                    logger.info(f"  ✅ Final game_date: {game_date}")
-                    if showdown_info:
-                        logger.info(f"  ✅ Final game_day: {showdown_info.get('long_dow_name', 'Unknown')}")
-                    else:
-                        logger.warning(f"  ⚠️ No showdown found, will infer game_day from game_date")
-                else:
-                    logger.warning(f"  ❌ NO game_date found!")
             
             # Update player data with game date and showdown info
             if game_date:
@@ -854,8 +825,6 @@ class DFFSalariesScraper:
                         day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
                         player['game_day'] = day_names[game_datetime.weekday()]
                         player['game_month_day'] = game_datetime.strftime('%b %d')
-                        if is_det_gb:
-                            logger.info(f"  ✅ Inferred game_day: {player['game_day']}")
                     except Exception as e:
                         logger.debug(f"Error inferring game_day from game_date {game_date}: {e}")
                 
@@ -873,11 +842,12 @@ class DFFSalariesScraper:
                     player['team'],
                     filtered_players
                 )
-                player['sleeper_id'] = sleeper_id
+                # Store player's full name if sleeper_id not found, otherwise store the sleeper_id
+                player['sleeper_id'] = sleeper_id if sleeper_id else player['name']
         
-        # Count matched players
-        matched_count = sum(1 for p in players if p.get('sleeper_id'))
-        logger.info(f"Matched {matched_count}/{len(players)} players to Sleeper IDs")
+        # Count matched players (those with numeric sleeper_id, not name)
+        matched_count = sum(1 for p in players if p.get('sleeper_id') and p.get('sleeper_id').isdigit())
+        logger.info(f"Matched {matched_count}/{len(players)} players to Sleeper IDs (others stored with player name)")
         
         return players
 
