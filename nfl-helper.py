@@ -687,8 +687,24 @@ def update_dfs_salaries_data():
             print(f"No DFS salary data scraped for {today}. Aborting DFS salaries update.")
             return
         
-        # Get current week from the scraped data
-        current_week = parsed_salaries[0].get('week', 0) if parsed_salaries else 0
+        # Get current week - find the first player with a valid week (> 0), or fetch from Sleeper API
+        current_week = 0
+        for player in parsed_salaries:
+            week = player.get('week', 0)
+            if week > 0:
+                current_week = week
+                break
+        
+        # If no valid week found in data, fetch from Sleeper API
+        if current_week == 0:
+            try:
+                from fantasydatascraper import FantasyDataScraper
+                week_scraper = FantasyDataScraper()
+                current_week = week_scraper.get_current_week()
+                print(f"No valid week found in scraped data, using current week from Sleeper API: {current_week}")
+            except Exception as e:
+                print(f"Warning: Could not fetch current week from Sleeper API: {e}")
+                current_week = 0
         
         # Clean up old data (keep current week and all future weeks, delete only older weeks)
         keys_to_delete = []
@@ -713,12 +729,22 @@ def update_dfs_salaries_data():
         updated_count = 0
         
         for player in parsed_salaries:
-            # Use sleeper_id + week as composite key if sleeper_id is numeric, otherwise use name+team+week
+            # Use sleeper_id + week + game_date as composite key if sleeper_id is numeric, otherwise use name+team+week+game_date
+            # Include game_date to differentiate players who play on different days within the same week (e.g., Sat vs Sun)
             sleeper_id = player.get("sleeper_id")
+            game_date = player.get('game_date', player.get('date', ''))
+            week = player.get('week', 0)
+            
             if sleeper_id and str(sleeper_id).isdigit():
-                key = f"{sleeper_id}_W{player.get('week', 0)}"
+                if game_date:
+                    key = f"{sleeper_id}_W{week}_D{game_date}"
+                else:
+                    key = f"{sleeper_id}_W{week}"
             else:
-                key = f"{player['name']}_{player['team']}_W{player.get('week', 0)}"
+                if game_date:
+                    key = f"{player['name']}_{player['team']}_W{week}_D{game_date}"
+                else:
+                    key = f"{player['name']}_{player['team']}_W{week}"
             
             # Check if player already exists
             existing_player = dfs_salaries_data.get(key)
@@ -1163,9 +1189,8 @@ def clear_tinyurl_data():
         for name in entries_to_delete:
             del tinyurl_data[name]
         
-        # Save the cleaned data to persistent storage
-        if entries_to_delete:
-            save_tinyurl_data()
+        # Save the cleaned data to persistent storage (always save, even if nothing was deleted)
+        save_tinyurl_data()
         
         print(f"{datetime.datetime.now()} - TinyURL data cleared: removed {len(entries_to_delete)} entries older than week {current_week} (kept {len(tinyurl_data)} entries for week {current_week} and future weeks)")
         if entries_to_keep:
@@ -1228,9 +1253,8 @@ def clear_tournament_data():
         for tour_id in entries_to_delete:
             del tournament_data[tour_id]
         
-        # Save the cleaned data to persistent storage
-        if entries_to_delete:
-            save_tournament_data()
+        # Save the cleaned data to persistent storage (always save, even if nothing was deleted)
+        save_tournament_data()
         
         print(f"{datetime.datetime.now()} - Tournament data cleared: removed {len(entries_to_delete)} tournaments older than week {current_week} (kept {len(tournament_data)} tournaments for week {current_week} and future weeks)")
         if entries_to_keep:
@@ -1241,13 +1265,13 @@ def clear_tournament_data():
         import traceback
         traceback.print_exc()
 
-# Schedule TinyURL data clearing every Thursday at 19:00 CET
+# Schedule TinyURL data clearing every Thursday at 09:00 UTC (10:00 CET / 11:00 CEST)
 scheduler.add_job(
     func=clear_tinyurl_data,
     trigger=CronTrigger(day_of_week="thu", hour=9, minute=0)
 )
 
-# Schedule tournament data clearing every Thursday at 19:00 CET (same as TinyURL)
+# Schedule tournament data clearing every Thursday at 09:00 UTC (10:00 CET / 11:00 CEST) (same as TinyURL)
 scheduler.add_job(
     func=clear_tournament_data,
     trigger=CronTrigger(day_of_week="thu", hour=9, minute=0)
@@ -3488,6 +3512,52 @@ def list_tournaments():
         
     except Exception as e:
         print(f"Error listing tournaments: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/tinyurl/cleanup', methods=['POST'])
+def admin_trigger_tinyurl_cleanup():
+    """
+    Admin endpoint to manually trigger TinyURL data cleanup.
+    This runs the same cleanup logic as the scheduled job.
+    
+    Returns:
+        JSON response indicating success or error
+    """
+    try:
+        print(f"{datetime.datetime.now()} - Manual TinyURL cleanup triggered via admin endpoint")
+        clear_tinyurl_data()
+        return jsonify({
+            "message": "TinyURL cleanup completed successfully",
+            "timestamp": str(datetime.datetime.now())
+        }), 200
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error in manual TinyURL cleanup: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/tournament/cleanup', methods=['POST'])
+def admin_trigger_tournament_cleanup():
+    """
+    Admin endpoint to manually trigger Tournament data cleanup.
+    This runs the same cleanup logic as the scheduled job.
+    
+    Returns:
+        JSON response indicating success or error
+    """
+    try:
+        print(f"{datetime.datetime.now()} - Manual Tournament cleanup triggered via admin endpoint")
+        clear_tournament_data()
+        return jsonify({
+            "message": "Tournament cleanup completed successfully",
+            "timestamp": str(datetime.datetime.now())
+        }), 200
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error in manual Tournament cleanup: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 

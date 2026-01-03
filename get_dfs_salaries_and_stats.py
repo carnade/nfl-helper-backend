@@ -289,12 +289,18 @@ class DFFSalariesScraper:
             
             data = response.json()
             slates = data.get('slates', [])
+            dates_array = data.get('dates', [])  # Get all dates covered by slates in this response
             
             if not slates:
                 logger.warning(f"No slates found for date {date}")
                 return []
             
-            # Filter to get all non-showdown slates that match the target date's month_daynum
+            # Extract all dates from the dates array to check if target date is covered
+            covered_dates = {d.get('start_date') for d in dates_array if d.get('start_date')}
+            
+            # Filter to get all non-showdown slates that either:
+            # 1. Match the target date's month_daynum (single-day slates)
+            # 2. Are part of a multi-day slate that covers the target date
             relevant_slates = []
             for slate in slates:
                 # Skip showdown slates
@@ -304,10 +310,19 @@ class DFFSalariesScraper:
                 slate_month_day = slate.get('month_daynum', '')
                 slate_url = slate.get('url')
                 
-                # Check if this slate's month_daynum matches our target date
-                if slate_month_day == target_month_day and slate_url:
+                if not slate_url:
+                    continue
+                
+                # Check if this slate matches by month_daynum (single-day or first day of multi-day)
+                matches_month_day = slate_month_day == target_month_day
+                
+                # Check if target date is in the covered dates (multi-day slates)
+                date_in_slate = date in covered_dates
+                
+                # Include if either condition is true
+                if matches_month_day or date_in_slate:
                     relevant_slates.append(slate_url)
-                    logger.info(f"Found relevant slate for {date}: {slate_url} ({slate.get('slate_type', 'Unknown')})")
+                    logger.info(f"Found relevant slate for {date}: {slate_url} ({slate.get('slate_type', 'Unknown')}) - month_day match: {matches_month_day}, date in slate: {date_in_slate}")
             
             if not relevant_slates:
                 logger.warning(f"No relevant non-showdown slates found for {date} matching {target_month_day}")
@@ -667,19 +682,14 @@ class DFFSalariesScraper:
         slate_date = slate_date_info.get('date', date)
         logger.info(f"Slate date (filter reference): {slate_date}")
         
+        # Get all dates from the main slate (include all dates in the slate, not just >= slate_date)
+        # This ensures we get Saturday games that are part of multi-day slates like "Sun-Mon"
         main_slate_dates = []
         for date_info in slate_dates:
             date_str = date_info.get('start_date')
             if date_str:
-                # Only include dates that are >= the slate date (current week)
-                from datetime import datetime
-                slate_datetime = datetime.strptime(slate_date, '%Y-%m-%d')
-                date_datetime = datetime.strptime(date_str, '%Y-%m-%d')
-                if date_datetime >= slate_datetime:
-                    main_slate_dates.append(date_str)
-                    logger.info(f"  Including date {date_str} (>= {slate_date})")
-                else:
-                    logger.info(f"  Excluding date {date_str} (< {slate_date})")
+                main_slate_dates.append(date_str)
+                logger.info(f"  Including date {date_str} (from main slate)")
         
         logger.info(f"Final main_slate_dates: {main_slate_dates}")
         
@@ -708,6 +718,9 @@ class DFFSalariesScraper:
                 slate_players = self.scrape_dff_projections(slate_url, game_date)
                 if slate_players:
                     logger.info(f"✅ Found {len(slate_players)} players from slate {slate_url}")
+                    # Tag each player with the date they were scraped from (for fallback if start_date is missing)
+                    for player in slate_players:
+                        player['_scraped_from_date'] = game_date
                     date_players.extend(slate_players)
                 else:
                     logger.warning(f"⚠️ No players found for slate {slate_url} on {game_date}")
@@ -757,12 +770,27 @@ class DFFSalariesScraper:
             for showdown in showdowns:
                 logger.info(f"  - {showdown.get('slate_type', 'Unknown')} (day: {showdown.get('long_dow_name', 'Unknown')})")
         
+        # Fetch current week from Sleeper API to use as fallback if week is missing
+        current_week = None
+        try:
+            response = self.session.get("https://api.sleeper.com/v1/state/nfl", timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            current_week = data.get('week', None)
+        except Exception as e:
+            logger.debug(f"Could not fetch current week from Sleeper API: {e}")
+        
         for player in players:
             player['slate_date'] = slate_date_info.get('date', date)
             player['slate_type'] = slate_date_info.get('slate_type', 'Unknown')
             player['slate_start_time'] = slate_date_info.get('start_hhmm', 'Unknown')
             player['slate_day'] = slate_date_info.get('long_dow_name', 'Unknown')
             player['slate_month_day'] = slate_date_info.get('month_daynum', 'Unknown')
+            
+            # Fix week if it's missing or 0 - use current week as fallback
+            if player.get('week', 0) == 0 and current_week:
+                player['week'] = current_week
+                logger.debug(f"Fixed week for {player.get('name')} from 0 to {current_week}")
             
             # Get start_date from scraped data (this is the game date)
             scraped_start_date = player.get('start_date', '')
@@ -799,7 +827,8 @@ class DFFSalariesScraper:
                         showdown_info = showdown
                         break
             else:
-                # Fallback: Try to find showdown by matching (old method)
+                # Fallback: Try to find game_date by matching team/opponent in showdowns
+                # Check each date in main_slate_dates to see if this player's game is there
                 for game_date_str in main_slate_dates:
                     showdowns = showdown_data.get(game_date_str, [])
                     for showdown in showdowns:
@@ -811,6 +840,18 @@ class DFFSalariesScraper:
                             break
                     if showdown_info:
                         break
+                
+                # If still no game_date found, use the date the player was scraped from as fallback
+                # This ensures every player gets a game_date
+                if not game_date:
+                    scraped_from_date = player.get('_scraped_from_date')
+                    if scraped_from_date:
+                        game_date = scraped_from_date
+                        logger.debug(f"Player {player.get('name')} ({team} vs {opponent}) has no start_date, using scraped_from_date: {game_date}")
+                    elif main_slate_dates:
+                        # Last resort: use first date (shouldn't happen often)
+                        game_date = main_slate_dates[0]
+                        logger.debug(f"Player {player.get('name')} ({team} vs {opponent}) has no start_date or scraped_from_date, using fallback: {game_date}")
             
             # Update player data with game date and showdown info
             if game_date:
