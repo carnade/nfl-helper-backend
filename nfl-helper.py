@@ -82,6 +82,7 @@ fantasy_points_data = {}  # Dictionary to store fantasy points data with Sleeper
 dfs_salaries_data = {}  # Dictionary to store DFS salaries data with Sleeper IDs
 tinyurl_data = {}  # Dictionary to store data: {name: {data: str, created_at: str, allowed_names: List[str], user_submissions: Dict[str, {data: str, created_at: str, update_count: int, updated_at: str}]}}
 tournament_data = {}  # Dictionary to store tournament data: {id: {week: int, name: str, games: list, created_at: str}}
+current_nfl_week = None  # Current NFL week (1-22) from DailyFantasyFuel data, includes playoffs
 
 
 # ============================================================================
@@ -599,8 +600,9 @@ def update_fantasy_points_data():
     """
     Update fantasy points data by scraping FantasyData and matching to Sleeper IDs.
     Stores data with key format: "sleeper_id_week" to support multiple weeks.
+    Uses current_nfl_week (from DailyFantasyFuel) if available, otherwise falls back to Sleeper API.
     """
-    global fantasy_points_data, last_fantasy_points_update
+    global fantasy_points_data, last_fantasy_points_update, current_nfl_week
     
     print(f"{datetime.datetime.now()} - Starting fantasy points data update...")
     
@@ -614,11 +616,21 @@ def update_fantasy_points_data():
         # Initialize scraper
         scraper = FantasyDataScraper()
         
-        # Scrape all positions
-        all_fantasy_data = scraper.scrape_all_positions()
+        # Determine which week to scrape
+        # Prefer current_nfl_week (from DailyFantasyFuel, includes playoffs) over Sleeper API
+        if current_nfl_week is not None and current_nfl_week > 0:
+            target_week = current_nfl_week
+            print(f"Using current_nfl_week {target_week} from DailyFantasyFuel data")
+        else:
+            # Fall back to Sleeper API if current_nfl_week not yet set
+            target_week = scraper.get_current_week()
+            print(f"Using week {target_week} from Sleeper API (current_nfl_week not yet available)")
         
-        # Get current week for this update
-        current_week = scraper.get_current_week()
+        # Scrape all positions for the target week
+        all_fantasy_data = scraper.scrape_all_positions(week_from=target_week, week_to=target_week)
+        
+        # Use target_week as current_week for data storage
+        current_week = target_week
         
         # Process each position
         for position, players in all_fantasy_data.items():
@@ -660,8 +672,9 @@ def update_dfs_salaries_data():
     Update DFS salaries data by fetching from DailyFantasyFuel and matching to Sleeper IDs.
     Uses dynamic slate detection to always get the main slate with the most teams.
     Stores only one entry per player (most recent data).
+    Also updates the current_nfl_week global variable based on DailyFantasyFuel data.
     """
-    global dfs_salaries_data, last_dfs_salaries_update, all_players
+    global dfs_salaries_data, last_dfs_salaries_update, all_players, current_nfl_week
     
     print(f"{datetime.datetime.now()} - Starting DFS salaries data update...")
     
@@ -705,6 +718,11 @@ def update_dfs_salaries_data():
             except Exception as e:
                 print(f"Warning: Could not fetch current week from Sleeper API: {e}")
                 current_week = 0
+        
+        # Update global current_nfl_week variable (from DailyFantasyFuel, includes playoffs)
+        if current_week > 0:
+            current_nfl_week = current_week
+            print(f"Updated current_nfl_week to {current_nfl_week} (from DailyFantasyFuel)")
         
         # Clean up old data (keep current week and all future weeks, delete only older weeks)
         keys_to_delete = []
@@ -1136,6 +1154,257 @@ scheduler.add_job(
     trigger=CronTrigger(day_of_week="wed", hour=19, minute=0)
 )
 
+def fetch_sleeper_matchup_points(week, league_ids=None):
+    """
+    Fetch matchup points from Sleeper API for given leagues and week.
+    Combines players_points from all matchups to create a mapping of Sleeper ID -> points.
+    
+    Args:
+        week: Week number to fetch matchups for
+        league_ids: List of league IDs to fetch from. Defaults to the two main leagues.
+        
+    Returns:
+        dict: Mapping of Sleeper ID (string) -> points (float) for that week
+    """
+    if league_ids is None:
+        league_ids = ["1180214473415516160", "1293242375618957312"]
+    
+    players_points = {}
+    
+    for league_id in league_ids:
+        try:
+            url = f"https://api.sleeper.app/v1/league/{league_id}/matchups/{week}"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            matchups = response.json()
+            
+            league_player_count = 0
+            # Combine all players_points from all matchups
+            for matchup in matchups:
+                matchup_players_points = matchup.get('players_points', {})
+                league_player_count += len(matchup_players_points)
+                # Update our combined dict (later matchups override earlier ones if same player)
+                for sleeper_id, points in matchup_players_points.items():
+                    players_points[sleeper_id] = float(points) if points is not None else 0.0
+            
+            print(f"{datetime.datetime.now()} - Fetched matchup data for league {league_id}, week {week}: {league_player_count} player entries")
+        except Exception as e:
+            print(f"{datetime.datetime.now()} - Error fetching matchup data for league {league_id}, week {week}: {e}")
+    
+    print(f"{datetime.datetime.now()} - Combined matchup points: {len(players_points)} unique players")
+    return players_points
+
+
+def calculate_dfs_points_from_lineup(lineup_data, week, players_points=None):
+    """
+    Calculate total DFS points from a lineup data string for a given week.
+    
+    Args:
+        lineup_data: String in format "week|base64_encoded_string" or just base64 string
+        week: Week number to calculate points for
+        players_points: Optional dict mapping Sleeper ID -> points. If provided, uses this instead of fantasy_points_data.
+        
+    Returns:
+        float: Total points for the lineup, or 0.0 if calculation fails
+    """
+    import base64
+    
+    global fantasy_points_data
+    
+    try:
+        # Extract base64 data (handle format "week|base64_data" or just base64_data)
+        if '|' in lineup_data:
+            parts = lineup_data.split('|', 1)
+            base64_data = parts[1] if len(parts) > 1 else parts[0]
+        else:
+            base64_data = lineup_data
+        
+        # Decode base64
+        original_base64_data = base64_data
+        missing_padding = len(base64_data) % 4
+        if missing_padding:
+            base64_data += '=' * (4 - missing_padding)
+        
+        decoded_string = None
+        try:
+            decoded_bytes = base64.b64decode(base64_data)
+            decoded_string = decoded_bytes.decode('utf-8')
+        except Exception:
+            try:
+                decoded_bytes = base64.urlsafe_b64decode(base64_data)
+                decoded_string = decoded_bytes.decode('utf-8')
+            except Exception:
+                # Try LZString decompression
+                try:
+                    try:
+                        import lzstring
+                        lzs = lzstring.LZString()
+                        decoded_string = lzs.decompressFromBase64(original_base64_data)
+                    except ImportError:
+                        from lz_string import LZString
+                        lzs = LZString()
+                        decoded_string = lzs.decompressFromBase64(original_base64_data)
+                    except Exception:
+                        # Try URL-safe conversion for LZString
+                        if '-' in original_base64_data or '_' in original_base64_data:
+                            standard_base64 = original_base64_data.replace('-', '+').replace('_', '/')
+                            missing_padding = len(standard_base64) % 4
+                            if missing_padding:
+                                standard_base64 += '=' * (4 - missing_padding)
+                            try:
+                                import lzstring
+                                lzs = lzstring.LZString()
+                                decoded_string = lzs.decompressFromBase64(standard_base64)
+                            except ImportError:
+                                from lz_string import LZString
+                                lzs = LZString()
+                                decoded_string = lzs.decompressFromBase64(standard_base64)
+                except Exception:
+                    # Try zlib as last resort
+                    try:
+                        import zlib
+                        decompressed = zlib.decompress(decoded_bytes)
+                        decoded_string = decompressed.decode('utf-8')
+                    except Exception:
+                        pass
+        
+        if not decoded_string:
+            print(f"{datetime.datetime.now()} - Warning: Could not decode lineup data for points calculation")
+            return 0.0
+        
+        # Extract player list (handle username prefix)
+        if ':' in decoded_string:
+            first_colon_idx = decoded_string.index(':')
+            before_colon = decoded_string[:first_colon_idx].strip()
+            if before_colon.isalpha() and len(before_colon) > 0:
+                player_list = decoded_string[first_colon_idx + 1:]
+            else:
+                player_list = decoded_string
+        else:
+            player_list = decoded_string
+        
+        # Extract Sleeper IDs
+        sleeper_ids = []
+        player_pairs = player_list.split(',')
+        for pair in player_pairs:
+            pair = pair.strip()
+            sleeper_id = None
+            
+            # Handle format: "sleeper_id-salary" or "username:sleeper_id-salary"
+            if '-' in pair:
+                # Split by dash and take the first part
+                parts = pair.split('-', 1)
+                potential_id = parts[0].strip()
+                
+                # If there's a colon in the potential_id, it means there's a username prefix
+                # Extract the part after the colon
+                if ':' in potential_id:
+                    sleeper_id = potential_id.split(':')[-1].strip()
+                else:
+                    sleeper_id = potential_id
+            elif ':' in pair:
+                # Handle format: "sleeper_id:something" (less common)
+                parts = pair.split(':', 1)
+                sleeper_id = parts[0].strip()
+            
+            if sleeper_id and sleeper_id.isdigit():
+                sleeper_ids.append(sleeper_id)
+        
+        if not sleeper_ids:
+            print(f"{datetime.datetime.now()} - Warning: No valid Sleeper IDs found in lineup data")
+            return 0.0
+        
+        # Helper function to get player name from Sleeper ID
+        def get_player_name(sleeper_id):
+            """Get player name from sleeper_id using filtered_players or all_players"""
+            global filtered_players, all_players
+            
+            # Try filtered_players first
+            player_data = filtered_players.get(sleeper_id)
+            if player_data:
+                first_name = player_data.get('first_name', '')
+                last_name = player_data.get('last_name', '')
+                return f"{first_name} {last_name}".strip()
+            
+            # Fall back to all_players
+            player_data = all_players.get(sleeper_id)
+            if player_data:
+                first_name = player_data.get('first_name', '')
+                last_name = player_data.get('last_name', '')
+                return f"{first_name} {last_name}".strip()
+            
+            return "Unknown"
+        
+        # Calculate total points
+        total_points = 0.0
+        player_details = []
+        
+        if players_points is not None:
+            # Use provided players_points mapping (from Sleeper matchup data)
+            for sleeper_id in sleeper_ids:
+                points = players_points.get(sleeper_id, 0.0)
+                points_float = float(points)
+                total_points += points_float
+                player_name = get_player_name(sleeper_id)
+                player_details.append({
+                    'sleeper_id': sleeper_id,
+                    'name': player_name,
+                    'points': points_float,
+                    'found': sleeper_id in players_points
+                })
+        else:
+            # Fall back to fantasy_points_data
+            for sleeper_id in sleeper_ids:
+                key = f"{sleeper_id}_{week}"
+                player_points_data = fantasy_points_data.get(key)
+                player_name = get_player_name(sleeper_id)
+                if player_points_data:
+                    points = player_points_data.get('fantasy_points', 0.0)
+                    if points:
+                        points_float = float(points)
+                        total_points += points_float
+                        player_details.append({
+                            'sleeper_id': sleeper_id,
+                            'name': player_name,
+                            'points': points_float,
+                            'found': True
+                        })
+                    else:
+                        player_details.append({
+                            'sleeper_id': sleeper_id,
+                            'name': player_name,
+                            'points': 0.0,
+                            'found': False
+                        })
+                else:
+                    player_details.append({
+                        'sleeper_id': sleeper_id,
+                        'name': player_name,
+                        'points': 0.0,
+                        'found': False
+                    })
+        
+        # Log detailed breakdown
+        print(f"{datetime.datetime.now()} - Lineup calculation breakdown:")
+        print(f"Decoded data: {decoded_string}")
+        print(f"  Total Sleeper IDs found: {len(sleeper_ids)}")
+        for detail in player_details:
+            status = "✓" if detail['found'] else "✗"
+            if detail['found']:
+                print(f"  {status} Sleeper ID {detail['sleeper_id']} Name: {detail['name']}: {detail['points']} points")
+            else:
+                print(f"  {status} Sleeper ID {detail['sleeper_id']} Name: {detail['name']}: Missing pts.")
+        print(f"  Total points: {total_points}")
+        
+        return total_points
+        
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error calculating DFS points from lineup: {e}")
+        import traceback
+        traceback.print_exc()
+        return 0.0
+
+
 def clear_tinyurl_data():
     """Clear tinyurl_data entries for weeks that are older than the current week"""
     global tinyurl_data
@@ -1156,12 +1425,14 @@ def clear_tinyurl_data():
         entries_to_delete = []
         entries_to_keep = []
         
+        # First pass: Identify entries to delete and calculate points for multiweek_dfs entries
         for name, entry in tinyurl_data.items():
             entry_week = entry.get('week')
             entry_name = entry.get('name', name)
+            entry_type = entry.get('type', 'single')  # Default to 'single' for backward compatibility
             
             # Log the raw entry_week value for debugging
-            print(f"{datetime.datetime.now()} - Processing entry '{entry_name}': raw week value = {entry_week} (type: {type(entry_week).__name__})")
+            print(f"{datetime.datetime.now()} - Processing entry '{entry_name}': raw week value = {entry_week} (type: {type(entry_week).__name__}), entry_type: {entry_type}")
             
             # Convert entry_week to int if it's not None
             if entry_week is not None:
@@ -1178,14 +1449,106 @@ def clear_tinyurl_data():
                 print(f"{datetime.datetime.now()} - Marking entry '{entry_name}' for deletion (no week field)")
                 entries_to_delete.append(name)
             elif entry_week < current_week:
-                print(f"{datetime.datetime.now()} - Marking entry '{entry_name}' (week {entry_week}) for deletion (older than current week {current_week})")
-                entries_to_delete.append(name)
+                print(f"{datetime.datetime.now()} - Processing entry '{entry_name}' (week {entry_week}) - older than current week {current_week}")
+                
+                # For multiweek_dfs entries, calculate points and clear lineup data, but KEEP the entry
+                if entry_type == 'multiweek_dfs':
+                    print(f"{datetime.datetime.now()} - Calculating points for multiweek_dfs entry '{entry_name}' (week {entry_week}) and clearing lineup data")
+                    
+                    # Initialize standings if not exists
+                    if 'standings' not in entry:
+                        entry['standings'] = {}
+                    
+                    user_submissions = entry.get('user_submissions', {})
+                    current_time = datetime.datetime.now().isoformat()
+                    
+                    # Fetch matchup points from Sleeper API for this week
+                    players_points = None
+                    try:
+                        players_points = fetch_sleeper_matchup_points(entry_week)
+                    except Exception as e:
+                        print(f"{datetime.datetime.now()} - Error fetching Sleeper matchup data for week {entry_week}: {e}, falling back to fantasy_points_data")
+                    
+                    # Calculate points for each user's lineup for this week
+                    for normalized_username, user_data in user_submissions.items():
+                        username = user_data.get('username', normalized_username)
+                        lineup_data = user_data.get('data')
+                        
+                        if lineup_data:
+                            print(f"{datetime.datetime.now()} - Calculating points for '{username}' in week {entry_week}...")
+                            week_points = calculate_dfs_points_from_lineup(lineup_data, entry_week, players_points)
+                            print(f"{datetime.datetime.now()} - ✓ '{username}' total: {week_points} points")
+                        else:
+                            # No lineup submitted = 0 points
+                            week_points = 0.0
+                            print(f"{datetime.datetime.now()} - User '{username}' had no lineup for week {entry_week} (0 points)")
+                        
+                        # Update standings
+                        if username not in entry['standings']:
+                            entry['standings'][username] = {
+                                'total_points': 0.0,
+                                'week_points': {},
+                                'last_updated': current_time
+                            }
+                        
+                        standings_entry = entry['standings'][username]
+                        
+                        # Add points for this week (update if already exists)
+                        # Convert week to string for JSON compatibility
+                        standings_entry['week_points'][str(entry_week)] = week_points
+                        
+                        # Recalculate total points
+                        standings_entry['total_points'] = sum(standings_entry['week_points'].values())
+                        standings_entry['last_updated'] = current_time
+                        
+                        print(f"{datetime.datetime.now()} - Updated standings for '{username}': total_points={standings_entry['total_points']}, week_points={standings_entry['week_points']}")
+                    
+                    # Clear user_submissions (lineup data) but keep the entry with standings
+                    entry['user_submissions'] = {}
+                    entry['data'] = None
+                    if 'updated_at' in entry:
+                        del entry['updated_at']
+                    if 'updated_by' in entry:
+                        del entry['updated_by']
+                    
+                    # Move reveal time forward by one week if it exists and is in the past
+                    if 'reveal' in entry and entry['reveal']:
+                        try:
+                            from datetime import timedelta
+                            reveal_str = entry['reveal']
+                            # Handle ISO 8601 format with Z suffix (UTC)
+                            if reveal_str.endswith('Z'):
+                                reveal_str = reveal_str[:-1] + '+00:00'
+                            reveal_datetime = datetime.datetime.fromisoformat(reveal_str)
+                            
+                            # Convert to UTC for comparison (if timezone-aware, convert to UTC)
+                            if reveal_datetime.tzinfo:
+                                reveal_datetime_utc = reveal_datetime.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+                            else:
+                                reveal_datetime_utc = reveal_datetime
+                            
+                            now_utc = datetime.datetime.utcnow()
+                            if reveal_datetime_utc < now_utc:
+                                # Reveal time is in the past, move it forward by one week
+                                new_reveal = reveal_datetime_utc + timedelta(weeks=1)
+                                entry['reveal'] = new_reveal.isoformat() + 'Z'
+                                print(f"{datetime.datetime.now()} - Moved reveal time forward by one week for '{entry_name}': {reveal_datetime_utc.isoformat()} -> {new_reveal.isoformat()}")
+                            else:
+                                # Reveal time is in the future, leave it as is
+                                print(f"{datetime.datetime.now()} - Reveal time for '{entry_name}' is in the future, leaving unchanged: {reveal_datetime_utc.isoformat()}")
+                        except Exception as e:
+                            print(f"{datetime.datetime.now()} - Warning: Could not update reveal time for '{entry_name}': {e}")
+                    
+                    print(f"{datetime.datetime.now()} - Cleared lineup data for multiweek_dfs entry '{entry_name}', kept standings")
+                else:
+                    # For single entries, mark for deletion
+                    entries_to_delete.append(name)
             else:
                 # entry_week >= current_week, so keep it
                 print(f"{datetime.datetime.now()} - Keeping entry '{entry_name}' (week {entry_week}) (current week: {current_week}, condition: {entry_week} >= {current_week})")
                 entries_to_keep.append((name, entry_week))
         
-        # Delete entries that are older than current week
+        # Delete entries that are older than current week (points already calculated for multiweek_dfs)
         for name in entries_to_delete:
             del tinyurl_data[name]
         
@@ -1510,6 +1873,22 @@ def get_statistics():
         # Debugging: Log the response data
         print("Response data:", response)
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/currentweek', methods=['GET'])
+def get_current_week():
+    """
+    Get the current NFL week (1-22, includes playoffs) from DailyFantasyFuel data.
+    
+    Returns:
+        JSON response with current week number, or None if not yet determined
+    """
+    global current_nfl_week
+    
+    return jsonify({
+        "week": current_nfl_week,
+        "source": "DailyFantasyFuel" if current_nfl_week else None
+    }), 200
 
 
 @app.route('/admin/rankings/update', methods=['POST'])
@@ -2431,6 +2810,11 @@ def create_tinyurl():
                     'data': entry_data
                 })
         
+        # Get entry type (default to 'single' for backward compatibility)
+        entry_type = data.get('type', 'single')
+        if entry_type not in ['single', 'multiweek_dfs']:
+            return jsonify({"error": "type must be 'single' or 'multiweek_dfs'"}), 400
+        
         # Create the entry
         current_time = datetime.datetime.now().isoformat()
         tinyurl_entry = {
@@ -2439,8 +2823,13 @@ def create_tinyurl():
             'created_at': current_time,
             'allowed_names': allowed_names,
             'week': week,
+            'type': entry_type,
             'user_submissions': {}
         }
+        
+        # Initialize standings for multiweek_dfs entries
+        if entry_type == 'multiweek_dfs':
+            tinyurl_entry['standings'] = {}
         
         # Process entries with data (validation removed for bulk creation)
         entries_added = 0
@@ -2655,6 +3044,10 @@ def get_tinyurl_data(name):
     if 'reveal' in entry:
         response['reveal'] = entry['reveal']
     
+    # Include type if present
+    if 'type' in entry:
+        response['type'] = entry['type']
+    
     # Include update info if present
     if 'updated_at' in entry:
         response['updated_at'] = entry['updated_at']
@@ -2703,6 +3096,10 @@ def get_tinyurl_details(name):
     # Include reveal if present
     if 'reveal' in entry:
         response['reveal'] = entry['reveal']
+    
+    # Include type if present
+    if 'type' in entry:
+        response['type'] = entry['type']
     
     # Get allowed names
     allowed_names = entry.get('allowed_names', [])
@@ -2927,6 +3324,7 @@ def create_empty_tinyurl():
         allowed_names = data.get('names', [])
         week = data.get('week')
         reveal = data.get('reveal')
+        entry_type = data.get('type', 'single')
         
         if not name:
             return jsonify({"error": "name is required"}), 400
@@ -2934,6 +3332,8 @@ def create_empty_tinyurl():
             return jsonify({"error": "names must be a list"}), 400
         if not allowed_names:
             return jsonify({"error": "names list cannot be empty"}), 400
+        if entry_type not in ['single', 'multiweek_dfs']:
+            return jsonify({"error": "type must be 'single' or 'multiweek_dfs'"}), 400
         
         # Normalize name for case-insensitive storage
         normalized_name = normalize_tinyurl_name(name)
@@ -2946,13 +3346,15 @@ def create_empty_tinyurl():
         if normalized_name in tinyurl_data:
             return jsonify({"error": f"Name '{name}' already exists. Use a different name or update the existing entry."}), 400
         
-        # Store empty entry with allowed names, week, and reveal
+        # Store empty entry with allowed names, week, reveal, and type
         # Use normalized name as key, but keep original name and allowed_names in data
         entry_data = {
             'name': name,  # Store original case
             'data': None,  # No data yet
             'created_at': datetime.datetime.now().isoformat(),
-            'allowed_names': allowed_names  # Keep original case for display
+            'allowed_names': allowed_names,  # Keep original case for display
+            'type': entry_type,
+            'user_submissions': {}
         }
         
         if week is not None:
@@ -2960,6 +3362,10 @@ def create_empty_tinyurl():
         
         if reveal is not None:
             entry_data['reveal'] = reveal
+        
+        # Initialize standings for multiweek_dfs entries
+        if entry_type == 'multiweek_dfs':
+            entry_data['standings'] = {}
         
         tinyurl_data[normalized_name] = entry_data
         
@@ -2984,6 +3390,223 @@ def create_empty_tinyurl():
     except Exception as e:
         print(f"Error creating empty TinyURL: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/tinyurl/<name>/standings', methods=['GET'])
+def get_tinyurl_standings(name):
+    """
+    Get standings for a multiweek_dfs TinyURL entry.
+    
+    Args:
+        name: The name of the TinyURL entry
+    
+    Returns:
+        JSON response with standings sorted by total points (descending)
+    """
+    global tinyurl_data
+    
+    normalized_name = normalize_tinyurl_name(name)
+    
+    if normalized_name not in tinyurl_data:
+        return jsonify({"error": f"TinyURL entry '{name}' not found"}), 404
+    
+    entry = tinyurl_data[normalized_name]
+    entry_type = entry.get('type', 'single')
+    
+    if entry_type != 'multiweek_dfs':
+        return jsonify({"error": f"Entry '{name}' is not a multiweek_dfs type entry"}), 400
+    
+    standings = entry.get('standings', {})
+    
+    # Convert to list and sort by total_points (descending)
+    standings_list = []
+    for username, stats in standings.items():
+        standings_list.append({
+            'username': username,
+            'total_points': stats.get('total_points', 0.0),
+            'week_points': stats.get('week_points', {}),
+            'last_updated': stats.get('last_updated')
+        })
+    
+    # Sort by total_points descending
+    standings_list.sort(key=lambda x: x['total_points'], reverse=True)
+    
+    return jsonify({
+        'name': entry.get('name', name),
+        'type': entry_type,
+        'standings': standings_list,
+        'count': len(standings_list)
+    }), 200
+
+
+@app.route('/tinyurl/<name>/recalc', methods=['POST'])
+def recalc_tinyurl_standings(name):
+    """
+    Recalculate standings for a multiweek_dfs TinyURL entry.
+    This recalculates points for all users and all weeks based on current lineup data.
+    
+    Args:
+        name: The name of the TinyURL entry
+    
+    Returns:
+        JSON response indicating success or error
+    """
+    global tinyurl_data
+    
+    normalized_name = normalize_tinyurl_name(name)
+    
+    if normalized_name not in tinyurl_data:
+        return jsonify({"error": f"TinyURL entry '{name}' not found"}), 404
+    
+    entry = tinyurl_data[normalized_name]
+    entry_type = entry.get('type', 'single')
+    
+    if entry_type != 'multiweek_dfs':
+        return jsonify({"error": f"Entry '{name}' is not a multiweek_dfs type entry"}), 400
+    
+    # Initialize standings if not exists
+    if 'standings' not in entry:
+        entry['standings'] = {}
+    
+    user_submissions = entry.get('user_submissions', {})
+    entry_week = entry.get('week')
+    current_time = datetime.datetime.now().isoformat()
+    
+    # Fetch matchup points from Sleeper API for this week
+    players_points = None
+    if entry_week is not None:
+        try:
+            players_points = fetch_sleeper_matchup_points(entry_week)
+        except Exception as e:
+            print(f"{datetime.datetime.now()} - Error fetching Sleeper matchup data for week {entry_week}: {e}")
+            return jsonify({"error": f"Failed to fetch matchup data for week {entry_week}: {str(e)}"}), 500
+    
+    # Recalculate points for all users and all weeks
+    for normalized_username, user_data in user_submissions.items():
+        username = user_data.get('username', normalized_username)
+        lineup_data = user_data.get('data')
+        
+        # Initialize user standings if not exists
+        if username not in entry['standings']:
+            entry['standings'][username] = {
+                'total_points': 0.0,
+                'week_points': {},
+                'last_updated': current_time
+            }
+        
+        standings_entry = entry['standings'][username]
+        
+        # Calculate points for this week if lineup exists and week is set
+        if lineup_data and entry_week is not None:
+            print(f"{datetime.datetime.now()} - Calculating points for '{username}' in week {entry_week}...")
+            week_points = calculate_dfs_points_from_lineup(lineup_data, entry_week, players_points)
+            # Convert week to string for JSON compatibility
+            standings_entry['week_points'][str(entry_week)] = week_points
+            print(f"{datetime.datetime.now()} - ✓ '{username}' total: {week_points} points")
+        else:
+            # No lineup = 0 points for this week
+            if entry_week is not None:
+                standings_entry['week_points'][str(entry_week)] = 0.0
+        
+        # Recalculate total points
+        standings_entry['total_points'] = sum(standings_entry['week_points'].values())
+        standings_entry['last_updated'] = current_time
+    
+    # Save to persistent storage
+    save_tinyurl_data()
+    
+    return jsonify({
+        "message": f"Standings recalculated for '{name}'",
+        "timestamp": current_time
+    }), 200
+
+
+@app.route('/tinyurl/<name>/set-points', methods=['POST'])
+def set_tinyurl_points(name):
+    """
+    Manually set points for a user for a specific week in a multiweek_dfs TinyURL entry.
+    
+    Request body:
+    {
+        "username": "user1",
+        "week": 17,
+        "points": 125.5
+    }
+    
+    Args:
+        name: The name of the TinyURL entry
+    
+    Returns:
+        JSON response indicating success or error
+    """
+    global tinyurl_data
+    
+    normalized_name = normalize_tinyurl_name(name)
+    
+    if normalized_name not in tinyurl_data:
+        return jsonify({"error": f"TinyURL entry '{name}' not found"}), 404
+    
+    entry = tinyurl_data[normalized_name]
+    entry_type = entry.get('type', 'single')
+    
+    if entry_type != 'multiweek_dfs':
+        return jsonify({"error": f"Entry '{name}' is not a multiweek_dfs type entry"}), 400
+    
+    data = request.json
+    if not data:
+        return jsonify({"error": "Request body is required"}), 400
+    
+    username = data.get('username')
+    week = data.get('week')
+    points = data.get('points')
+    
+    if not username:
+        return jsonify({"error": "username is required"}), 400
+    if week is None:
+        return jsonify({"error": "week is required"}), 400
+    if not isinstance(week, int):
+        return jsonify({"error": "week must be an integer"}), 400
+    if points is None:
+        return jsonify({"error": "points is required"}), 400
+    try:
+        points = float(points)
+    except (ValueError, TypeError):
+        return jsonify({"error": "points must be a number"}), 400
+    
+    # Initialize standings if not exists
+    if 'standings' not in entry:
+        entry['standings'] = {}
+    
+    current_time = datetime.datetime.now().isoformat()
+    
+    # Initialize user standings if not exists
+    if username not in entry['standings']:
+        entry['standings'][username] = {
+            'total_points': 0.0,
+            'week_points': {},
+            'last_updated': current_time
+        }
+    
+    standings_entry = entry['standings'][username]
+    
+    # Set points for this week (convert week to string for JSON compatibility)
+    standings_entry['week_points'][str(week)] = points
+    
+    # Recalculate total points
+    standings_entry['total_points'] = sum(standings_entry['week_points'].values())
+    standings_entry['last_updated'] = current_time
+    
+    # Save to persistent storage
+    save_tinyurl_data()
+    
+    return jsonify({
+        "message": f"Points set for user '{username}' for week {week}",
+        "username": username,
+        "week": week,
+        "points": points,
+        "total_points": standings_entry['total_points'],
+        "timestamp": current_time
+    }), 200
 
 
 @app.route('/tinyurl/<tinyurl_name>/add', methods=['POST'])
