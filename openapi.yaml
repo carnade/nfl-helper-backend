@@ -394,6 +394,11 @@ paths:
                 week:
                   type: integer
                   description: Week number
+                type:
+                  type: string
+                  enum: ["single", "multiweek_dfs"]
+                  default: "single"
+                  description: Entry type - 'single' for regular entries, 'multiweek_dfs' for multiweek DFS with standings tracking
                 entries:
                   type: array
                   description: Array of user entries
@@ -443,6 +448,11 @@ paths:
                 week:
                   type: integer
                   description: Optional week number
+                type:
+                  type: string
+                  enum: ["single", "multiweek_dfs"]
+                  default: "single"
+                  description: Entry type - 'single' for regular entries, 'multiweek_dfs' for multiweek DFS with standings tracking
                 reveal:
                   type: string
                   format: date-time
@@ -541,6 +551,152 @@ paths:
       responses:
         "200":
           description: Entry details
+        "404":
+          description: Entry not found
+
+  /tinyurl/{name}/standings:
+    get:
+      summary: Get standings for multiweek_dfs entry
+      description: Returns standings for a multiweek_dfs TinyURL entry, sorted by total points (descending). Only works for entries with type='multiweek_dfs'.
+      operationId: getTinyurlStandings
+      tags:
+        - TinyURL
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of the TinyURL entry
+      responses:
+        "200":
+          description: Standings retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  type:
+                    type: string
+                    enum: ["multiweek_dfs"]
+                  standings:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        username:
+                          type: string
+                        total_points:
+                          type: number
+                          format: float
+                        week_points:
+                          type: object
+                          description: Dictionary mapping week numbers to points for that week
+                        last_updated:
+                          type: string
+                          format: date-time
+                  count:
+                    type: integer
+        "400":
+          description: Entry is not a multiweek_dfs type
+        "404":
+          description: Entry not found
+
+  /tinyurl/{name}/recalc:
+    post:
+      summary: Recalculate standings
+      description: Recalculates standings for a multiweek_dfs TinyURL entry based on current lineup data. Only works for entries with type='multiweek_dfs'.
+      operationId: recalcTinyurlStandings
+      tags:
+        - TinyURL
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of the TinyURL entry
+      responses:
+        "200":
+          description: Standings recalculated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+        "400":
+          description: Entry is not a multiweek_dfs type
+        "404":
+          description: Entry not found
+
+  /tinyurl/{name}/set-points:
+    post:
+      summary: Manually set points for user/week
+      description: Manually set points for a specific user and week in a multiweek_dfs TinyURL entry. Only works for entries with type='multiweek_dfs'.
+      operationId: setTinyurlPoints
+      tags:
+        - TinyURL
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of the TinyURL entry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - username
+                - week
+                - points
+              properties:
+                username:
+                  type: string
+                  description: Username to set points for
+                week:
+                  type: integer
+                  description: Week number
+                points:
+                  type: number
+                  format: float
+                  description: Points to set for this user/week
+      responses:
+        "200":
+          description: Points set successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  username:
+                    type: string
+                  week:
+                    type: integer
+                  points:
+                    type: number
+                    format: float
+                  total_points:
+                    type: number
+                    format: float
+                    description: Updated total points for this user
+                  timestamp:
+                    type: string
+                    format: date-time
+        "400":
+          description: Bad request - validation error or entry is not multiweek_dfs type
         "404":
           description: Entry not found
 
@@ -1146,6 +1302,103 @@ paths:
                         type: integer
         "404":
           description: Tournament not found
+        "500":
+          description: Server error
+
+  /admin/tournament/cleanup:
+    post:
+      summary: Manually trigger tournament cleanup (Admin)
+      description: Admin endpoint to manually trigger tournament data cleanup. This runs the same cleanup logic as the scheduled job (runs automatically every Thursday at 09:00 UTC). Removes tournaments with weeks older than the current week, keeping current week and all future weeks.
+      operationId: adminTriggerTournamentCleanup
+      tags:
+        - Admin
+        - Tournament
+      responses:
+        "200":
+          description: Cleanup completed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Tournament cleanup completed successfully"
+                  timestamp:
+                    type: string
+                    format: date-time
+        "500":
+          description: Server error
+
+  /admin/tinyurl/cleanup:
+    post:
+      summary: Manually trigger TinyURL cleanup (Admin)
+      description: Admin endpoint to manually trigger TinyURL data cleanup. This runs the same cleanup logic as the scheduled job (runs automatically every Thursday at 09:00 UTC). Removes TinyURL entries with weeks older than the current week, keeping current week and all future weeks.
+      operationId: adminTriggerTinyurlCleanup
+      tags:
+        - Admin
+        - TinyURL
+      responses:
+        "200":
+          description: Cleanup completed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "TinyURL cleanup completed successfully"
+                  timestamp:
+                    type: string
+                    format: date-time
+        "500":
+          description: Server error
+
+  /admin/tinyurl/{name}/data:
+    get:
+      summary: Get TinyURL data (Admin, bypasses PIN)
+      description: Admin endpoint to get TinyURL entry data, bypassing all PIN requirements. Returns all data including user_submissions without requiring any PINs. Useful for backups and administrative access.
+      operationId: adminGetTinyurlData
+      tags:
+        - Admin
+        - TinyURL
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of the TinyURL entry
+        - name: username
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Optional - if provided, returns data only for that specific username
+      responses:
+        "200":
+          description: TinyURL data retrieved successfully (PIN bypassed)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  data:
+                    type: string
+                  user_submissions:
+                    type: object
+                    description: All user submissions including PINs (admin access only)
+                  created_at:
+                    type: string
+                    format: date-time
+                  updated_at:
+                    type: string
+                    format: date-time
+        "404":
+          description: TinyURL entry not found
         "500":
           description: Server error
 
