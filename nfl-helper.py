@@ -1136,6 +1136,130 @@ scheduler.add_job(
     trigger=CronTrigger(day_of_week="wed", hour=19, minute=0)
 )
 
+def calculate_dfs_points_from_lineup(lineup_data, week):
+    """
+    Calculate total DFS points from a lineup data string for a given week.
+    
+    Args:
+        lineup_data: String in format "week|base64_encoded_string" or just base64 string
+        week: Week number to calculate points for
+        
+    Returns:
+        float: Total points for the lineup, or 0.0 if calculation fails
+    """
+    import base64
+    
+    global fantasy_points_data
+    
+    try:
+        # Extract base64 data (handle format "week|base64_data" or just base64_data)
+        if '|' in lineup_data:
+            parts = lineup_data.split('|', 1)
+            base64_data = parts[1] if len(parts) > 1 else parts[0]
+        else:
+            base64_data = lineup_data
+        
+        # Decode base64
+        original_base64_data = base64_data
+        missing_padding = len(base64_data) % 4
+        if missing_padding:
+            base64_data += '=' * (4 - missing_padding)
+        
+        decoded_string = None
+        try:
+            decoded_bytes = base64.b64decode(base64_data)
+            decoded_string = decoded_bytes.decode('utf-8')
+        except Exception:
+            try:
+                decoded_bytes = base64.urlsafe_b64decode(base64_data)
+                decoded_string = decoded_bytes.decode('utf-8')
+            except Exception:
+                # Try LZString decompression
+                try:
+                    try:
+                        import lzstring
+                        lzs = lzstring.LZString()
+                        decoded_string = lzs.decompressFromBase64(original_base64_data)
+                    except ImportError:
+                        from lz_string import LZString
+                        lzs = LZString()
+                        decoded_string = lzs.decompressFromBase64(original_base64_data)
+                    except Exception:
+                        # Try URL-safe conversion for LZString
+                        if '-' in original_base64_data or '_' in original_base64_data:
+                            standard_base64 = original_base64_data.replace('-', '+').replace('_', '/')
+                            missing_padding = len(standard_base64) % 4
+                            if missing_padding:
+                                standard_base64 += '=' * (4 - missing_padding)
+                            try:
+                                import lzstring
+                                lzs = lzstring.LZString()
+                                decoded_string = lzs.decompressFromBase64(standard_base64)
+                            except ImportError:
+                                from lz_string import LZString
+                                lzs = LZString()
+                                decoded_string = lzs.decompressFromBase64(standard_base64)
+                except Exception:
+                    # Try zlib as last resort
+                    try:
+                        import zlib
+                        decompressed = zlib.decompress(decoded_bytes)
+                        decoded_string = decompressed.decode('utf-8')
+                    except Exception:
+                        pass
+        
+        if not decoded_string:
+            print(f"{datetime.datetime.now()} - Warning: Could not decode lineup data for points calculation")
+            return 0.0
+        
+        # Extract player list (handle username prefix)
+        if ':' in decoded_string:
+            first_colon_idx = decoded_string.index(':')
+            before_colon = decoded_string[:first_colon_idx].strip()
+            if before_colon.isalpha() and len(before_colon) > 0:
+                player_list = decoded_string[first_colon_idx + 1:]
+            else:
+                player_list = decoded_string
+        else:
+            player_list = decoded_string
+        
+        # Extract Sleeper IDs
+        sleeper_ids = []
+        player_pairs = player_list.split(',')
+        for pair in player_pairs:
+            if ':' in pair:
+                sleeper_id = pair.split(':')[0].strip()
+            elif '-' in pair:
+                sleeper_id = pair.split('-')[0].strip()
+            else:
+                continue
+            
+            if sleeper_id and sleeper_id.isdigit():
+                sleeper_ids.append(sleeper_id)
+        
+        if not sleeper_ids:
+            print(f"{datetime.datetime.now()} - Warning: No valid Sleeper IDs found in lineup data")
+            return 0.0
+        
+        # Calculate total points
+        total_points = 0.0
+        for sleeper_id in sleeper_ids:
+            key = f"{sleeper_id}_{week}"
+            player_points_data = fantasy_points_data.get(key)
+            if player_points_data:
+                points = player_points_data.get('fantasy_points', 0.0)
+                if points:
+                    total_points += float(points)
+        
+        return total_points
+        
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error calculating DFS points from lineup: {e}")
+        import traceback
+        traceback.print_exc()
+        return 0.0
+
+
 def clear_tinyurl_data():
     """Clear tinyurl_data entries for weeks that are older than the current week"""
     global tinyurl_data
@@ -1156,12 +1280,14 @@ def clear_tinyurl_data():
         entries_to_delete = []
         entries_to_keep = []
         
+        # First pass: Identify entries to delete and calculate points for multiweek_dfs entries
         for name, entry in tinyurl_data.items():
             entry_week = entry.get('week')
             entry_name = entry.get('name', name)
+            entry_type = entry.get('type', 'single')  # Default to 'single' for backward compatibility
             
             # Log the raw entry_week value for debugging
-            print(f"{datetime.datetime.now()} - Processing entry '{entry_name}': raw week value = {entry_week} (type: {type(entry_week).__name__})")
+            print(f"{datetime.datetime.now()} - Processing entry '{entry_name}': raw week value = {entry_week} (type: {type(entry_week).__name__}), entry_type: {entry_type}")
             
             # Convert entry_week to int if it's not None
             if entry_week is not None:
@@ -1178,14 +1304,69 @@ def clear_tinyurl_data():
                 print(f"{datetime.datetime.now()} - Marking entry '{entry_name}' for deletion (no week field)")
                 entries_to_delete.append(name)
             elif entry_week < current_week:
-                print(f"{datetime.datetime.now()} - Marking entry '{entry_name}' (week {entry_week}) for deletion (older than current week {current_week})")
-                entries_to_delete.append(name)
+                print(f"{datetime.datetime.now()} - Processing entry '{entry_name}' (week {entry_week}) - older than current week {current_week}")
+                
+                # For multiweek_dfs entries, calculate points and clear lineup data, but KEEP the entry
+                if entry_type == 'multiweek_dfs':
+                    print(f"{datetime.datetime.now()} - Calculating points for multiweek_dfs entry '{entry_name}' (week {entry_week}) and clearing lineup data")
+                    
+                    # Initialize standings if not exists
+                    if 'standings' not in entry:
+                        entry['standings'] = {}
+                    
+                    user_submissions = entry.get('user_submissions', {})
+                    current_time = datetime.datetime.now().isoformat()
+                    
+                    # Calculate points for each user's lineup for this week
+                    for normalized_username, user_data in user_submissions.items():
+                        username = user_data.get('username', normalized_username)
+                        lineup_data = user_data.get('data')
+                        
+                        if lineup_data:
+                            week_points = calculate_dfs_points_from_lineup(lineup_data, entry_week)
+                            print(f"{datetime.datetime.now()} - User '{username}' scored {week_points} points in week {entry_week}")
+                        else:
+                            # No lineup submitted = 0 points
+                            week_points = 0.0
+                            print(f"{datetime.datetime.now()} - User '{username}' had no lineup for week {entry_week} (0 points)")
+                        
+                        # Update standings
+                        if username not in entry['standings']:
+                            entry['standings'][username] = {
+                                'total_points': 0.0,
+                                'week_points': {},
+                                'last_updated': current_time
+                            }
+                        
+                        standings_entry = entry['standings'][username]
+                        
+                        # Add points for this week (update if already exists)
+                        standings_entry['week_points'][entry_week] = week_points
+                        
+                        # Recalculate total points
+                        standings_entry['total_points'] = sum(standings_entry['week_points'].values())
+                        standings_entry['last_updated'] = current_time
+                        
+                        print(f"{datetime.datetime.now()} - Updated standings for '{username}': total_points={standings_entry['total_points']}, week_points={standings_entry['week_points']}")
+                    
+                    # Clear user_submissions (lineup data) but keep the entry with standings
+                    entry['user_submissions'] = {}
+                    entry['data'] = None
+                    if 'updated_at' in entry:
+                        del entry['updated_at']
+                    if 'updated_by' in entry:
+                        del entry['updated_by']
+                    
+                    print(f"{datetime.datetime.now()} - Cleared lineup data for multiweek_dfs entry '{entry_name}', kept standings")
+                else:
+                    # For single entries, mark for deletion
+                    entries_to_delete.append(name)
             else:
                 # entry_week >= current_week, so keep it
                 print(f"{datetime.datetime.now()} - Keeping entry '{entry_name}' (week {entry_week}) (current week: {current_week}, condition: {entry_week} >= {current_week})")
                 entries_to_keep.append((name, entry_week))
         
-        # Delete entries that are older than current week
+        # Delete entries that are older than current week (points already calculated for multiweek_dfs)
         for name in entries_to_delete:
             del tinyurl_data[name]
         
@@ -2431,6 +2612,11 @@ def create_tinyurl():
                     'data': entry_data
                 })
         
+        # Get entry type (default to 'single' for backward compatibility)
+        entry_type = data.get('type', 'single')
+        if entry_type not in ['single', 'multiweek_dfs']:
+            return jsonify({"error": "type must be 'single' or 'multiweek_dfs'"}), 400
+        
         # Create the entry
         current_time = datetime.datetime.now().isoformat()
         tinyurl_entry = {
@@ -2439,8 +2625,13 @@ def create_tinyurl():
             'created_at': current_time,
             'allowed_names': allowed_names,
             'week': week,
+            'type': entry_type,
             'user_submissions': {}
         }
+        
+        # Initialize standings for multiweek_dfs entries
+        if entry_type == 'multiweek_dfs':
+            tinyurl_entry['standings'] = {}
         
         # Process entries with data (validation removed for bulk creation)
         entries_added = 0
@@ -2927,6 +3118,7 @@ def create_empty_tinyurl():
         allowed_names = data.get('names', [])
         week = data.get('week')
         reveal = data.get('reveal')
+        entry_type = data.get('type', 'single')
         
         if not name:
             return jsonify({"error": "name is required"}), 400
@@ -2934,6 +3126,8 @@ def create_empty_tinyurl():
             return jsonify({"error": "names must be a list"}), 400
         if not allowed_names:
             return jsonify({"error": "names list cannot be empty"}), 400
+        if entry_type not in ['single', 'multiweek_dfs']:
+            return jsonify({"error": "type must be 'single' or 'multiweek_dfs'"}), 400
         
         # Normalize name for case-insensitive storage
         normalized_name = normalize_tinyurl_name(name)
@@ -2946,13 +3140,15 @@ def create_empty_tinyurl():
         if normalized_name in tinyurl_data:
             return jsonify({"error": f"Name '{name}' already exists. Use a different name or update the existing entry."}), 400
         
-        # Store empty entry with allowed names, week, and reveal
+        # Store empty entry with allowed names, week, reveal, and type
         # Use normalized name as key, but keep original name and allowed_names in data
         entry_data = {
             'name': name,  # Store original case
             'data': None,  # No data yet
             'created_at': datetime.datetime.now().isoformat(),
-            'allowed_names': allowed_names  # Keep original case for display
+            'allowed_names': allowed_names,  # Keep original case for display
+            'type': entry_type,
+            'user_submissions': {}
         }
         
         if week is not None:
@@ -2960,6 +3156,10 @@ def create_empty_tinyurl():
         
         if reveal is not None:
             entry_data['reveal'] = reveal
+        
+        # Initialize standings for multiweek_dfs entries
+        if entry_type == 'multiweek_dfs':
+            entry_data['standings'] = {}
         
         tinyurl_data[normalized_name] = entry_data
         
@@ -2984,6 +3184,211 @@ def create_empty_tinyurl():
     except Exception as e:
         print(f"Error creating empty TinyURL: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/tinyurl/<name>/standings', methods=['GET'])
+def get_tinyurl_standings(name):
+    """
+    Get standings for a multiweek_dfs TinyURL entry.
+    
+    Args:
+        name: The name of the TinyURL entry
+    
+    Returns:
+        JSON response with standings sorted by total points (descending)
+    """
+    global tinyurl_data
+    
+    normalized_name = normalize_tinyurl_name(name)
+    
+    if normalized_name not in tinyurl_data:
+        return jsonify({"error": f"TinyURL entry '{name}' not found"}), 404
+    
+    entry = tinyurl_data[normalized_name]
+    entry_type = entry.get('type', 'single')
+    
+    if entry_type != 'multiweek_dfs':
+        return jsonify({"error": f"Entry '{name}' is not a multiweek_dfs type entry"}), 400
+    
+    standings = entry.get('standings', {})
+    
+    # Convert to list and sort by total_points (descending)
+    standings_list = []
+    for username, stats in standings.items():
+        standings_list.append({
+            'username': username,
+            'total_points': stats.get('total_points', 0.0),
+            'week_points': stats.get('week_points', {}),
+            'last_updated': stats.get('last_updated')
+        })
+    
+    # Sort by total_points descending
+    standings_list.sort(key=lambda x: x['total_points'], reverse=True)
+    
+    return jsonify({
+        'name': entry.get('name', name),
+        'type': entry_type,
+        'standings': standings_list,
+        'count': len(standings_list)
+    }), 200
+
+
+@app.route('/tinyurl/<name>/recalc', methods=['POST'])
+def recalc_tinyurl_standings(name):
+    """
+    Recalculate standings for a multiweek_dfs TinyURL entry.
+    This recalculates points for all users and all weeks based on current lineup data.
+    
+    Args:
+        name: The name of the TinyURL entry
+    
+    Returns:
+        JSON response indicating success or error
+    """
+    global tinyurl_data
+    
+    normalized_name = normalize_tinyurl_name(name)
+    
+    if normalized_name not in tinyurl_data:
+        return jsonify({"error": f"TinyURL entry '{name}' not found"}), 404
+    
+    entry = tinyurl_data[normalized_name]
+    entry_type = entry.get('type', 'single')
+    
+    if entry_type != 'multiweek_dfs':
+        return jsonify({"error": f"Entry '{name}' is not a multiweek_dfs type entry"}), 400
+    
+    # Initialize standings if not exists
+    if 'standings' not in entry:
+        entry['standings'] = {}
+    
+    user_submissions = entry.get('user_submissions', {})
+    current_time = datetime.datetime.now().isoformat()
+    
+    # Recalculate points for all users and all weeks
+    for normalized_username, user_data in user_submissions.items():
+        username = user_data.get('username', normalized_username)
+        lineup_data = user_data.get('data')
+        entry_week = entry.get('week')
+        
+        # Initialize user standings if not exists
+        if username not in entry['standings']:
+            entry['standings'][username] = {
+                'total_points': 0.0,
+                'week_points': {},
+                'last_updated': current_time
+            }
+        
+        standings_entry = entry['standings'][username]
+        
+        # Calculate points for this week if lineup exists and week is set
+        if lineup_data and entry_week is not None:
+            week_points = calculate_dfs_points_from_lineup(lineup_data, entry_week)
+            standings_entry['week_points'][entry_week] = week_points
+        else:
+            # No lineup = 0 points for this week
+            if entry_week is not None:
+                standings_entry['week_points'][entry_week] = 0.0
+        
+        # Recalculate total points
+        standings_entry['total_points'] = sum(standings_entry['week_points'].values())
+        standings_entry['last_updated'] = current_time
+    
+    # Save to persistent storage
+    save_tinyurl_data()
+    
+    return jsonify({
+        "message": f"Standings recalculated for '{name}'",
+        "timestamp": current_time
+    }), 200
+
+
+@app.route('/tinyurl/<name>/set-points', methods=['POST'])
+def set_tinyurl_points(name):
+    """
+    Manually set points for a user for a specific week in a multiweek_dfs TinyURL entry.
+    
+    Request body:
+    {
+        "username": "user1",
+        "week": 17,
+        "points": 125.5
+    }
+    
+    Args:
+        name: The name of the TinyURL entry
+    
+    Returns:
+        JSON response indicating success or error
+    """
+    global tinyurl_data
+    
+    normalized_name = normalize_tinyurl_name(name)
+    
+    if normalized_name not in tinyurl_data:
+        return jsonify({"error": f"TinyURL entry '{name}' not found"}), 404
+    
+    entry = tinyurl_data[normalized_name]
+    entry_type = entry.get('type', 'single')
+    
+    if entry_type != 'multiweek_dfs':
+        return jsonify({"error": f"Entry '{name}' is not a multiweek_dfs type entry"}), 400
+    
+    data = request.json
+    if not data:
+        return jsonify({"error": "Request body is required"}), 400
+    
+    username = data.get('username')
+    week = data.get('week')
+    points = data.get('points')
+    
+    if not username:
+        return jsonify({"error": "username is required"}), 400
+    if week is None:
+        return jsonify({"error": "week is required"}), 400
+    if not isinstance(week, int):
+        return jsonify({"error": "week must be an integer"}), 400
+    if points is None:
+        return jsonify({"error": "points is required"}), 400
+    try:
+        points = float(points)
+    except (ValueError, TypeError):
+        return jsonify({"error": "points must be a number"}), 400
+    
+    # Initialize standings if not exists
+    if 'standings' not in entry:
+        entry['standings'] = {}
+    
+    current_time = datetime.datetime.now().isoformat()
+    
+    # Initialize user standings if not exists
+    if username not in entry['standings']:
+        entry['standings'][username] = {
+            'total_points': 0.0,
+            'week_points': {},
+            'last_updated': current_time
+        }
+    
+    standings_entry = entry['standings'][username]
+    
+    # Set points for this week
+    standings_entry['week_points'][week] = points
+    
+    # Recalculate total points
+    standings_entry['total_points'] = sum(standings_entry['week_points'].values())
+    standings_entry['last_updated'] = current_time
+    
+    # Save to persistent storage
+    save_tinyurl_data()
+    
+    return jsonify({
+        "message": f"Points set for user '{username}' for week {week}",
+        "username": username,
+        "week": week,
+        "points": points,
+        "total_points": standings_entry['total_points'],
+        "timestamp": current_time
+    }), 200
 
 
 @app.route('/tinyurl/<tinyurl_name>/add', methods=['POST'])
