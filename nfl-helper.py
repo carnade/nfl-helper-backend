@@ -886,9 +886,15 @@ def fetch_and_filter_data():
         if fantasy_positions is None:
             fantasy_positions = []
 
-        # Check if the player is active and has a valid fantasy position
-        if not ((player_data.get("status") == "Inactive")
-                and (player_data.get("injury_status") is None or on_bye)) \
+        # Check if the player is active and has a valid fantasy position.
+        # Exclude Inactive players with no injury/bye, unless active=True
+        # (active=True = current league players e.g. rookies; active=False = retired).
+        is_inactive_no_injury = (
+            player_data.get("status") == "Inactive"
+            and (player_data.get("injury_status") is None or on_bye)
+        )
+        if_active_allow = player_data.get("active") is True
+        if not (is_inactive_no_injury and not if_active_allow) \
                 and any(pos in VALID_FANTASY_POSITIONS for pos in fantasy_positions):
 
             filtered_players[player_id] = {
