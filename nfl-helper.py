@@ -1,5 +1,7 @@
 import argparse
 import requests
+from dotenv import load_dotenv
+load_dotenv()
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -88,6 +90,20 @@ tournament_data = {}  # Dictionary to store tournament data: {id: {week: int, na
 # Data Persistence Functions
 # ============================================================================
 
+# Supabase configuration (optional - only used if both are set)
+SUPABASE_URL = os.environ.get('SUPABASE_URL')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+USE_SUPABASE = bool(SUPABASE_URL and SUPABASE_KEY)
+supabase_client = None
+if USE_SUPABASE:
+    try:
+        from supabase import create_client
+        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print(f"Supabase client initialised (URL: {SUPABASE_URL})")
+    except Exception as e:
+        print(f"Failed to initialise Supabase client: {e}")
+        USE_SUPABASE = False
+
 # GitHub Gist configuration (optional - only used if both are set)
 GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
 GIST_ID = os.environ.get('GIST_ID')
@@ -98,13 +114,33 @@ USE_GIST = bool(GITHUB_TOKEN and GIST_ID)
 
 
 def save_tinyurl_data():
-    """Save tinyurl_data to Gist (if configured) or local file"""
+    """Save tinyurl_data to Supabase (preferred), Gist, or local file"""
     global tinyurl_data
-    
-    if USE_GIST:
+
+    if USE_SUPABASE:
+        _save_tinyurl_data_to_supabase()
+    elif USE_GIST:
         _save_tinyurl_data_to_gist()
     else:
         _save_tinyurl_data_to_file()
+
+
+def _save_tinyurl_data_to_supabase():
+    """Save tinyurl_data to Supabase"""
+    global tinyurl_data
+    try:
+        supabase_client.table('app_data').upsert({
+            'key': 'tinyurl_data',
+            'value': tinyurl_data,
+            'updated_at': datetime.datetime.now(datetime.UTC).isoformat()
+        }).execute()
+        print(f"{datetime.datetime.now()} - Saved tinyurl_data to Supabase ({len(tinyurl_data)} entries)")
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error saving tinyurl_data to Supabase: {e}, falling back to Gist/file")
+        if USE_GIST:
+            _save_tinyurl_data_to_gist()
+        else:
+            _save_tinyurl_data_to_file()
 
 
 def _save_tinyurl_data_to_gist():
@@ -151,14 +187,35 @@ def _save_tinyurl_data_to_file():
 
 
 def load_tinyurl_data():
-    """Load tinyurl_data from Gist (if configured) or local file"""
+    """Load tinyurl_data from Supabase (preferred), Gist, or local file"""
     global tinyurl_data
-    
-    if USE_GIST:
+
+    if USE_SUPABASE:
+        _load_tinyurl_data_from_supabase()
+    elif USE_GIST:
         _load_tinyurl_data_from_gist()
     else:
-        print(f"{datetime.datetime.now()} - USE_GIST is False or not configured; loading tinyurl_data from local file")
+        print(f"{datetime.datetime.now()} - Loading tinyurl_data from local file")
         _load_tinyurl_data_from_file()
+
+
+def _load_tinyurl_data_from_supabase():
+    """Load tinyurl_data from Supabase"""
+    global tinyurl_data
+    try:
+        result = supabase_client.table('app_data').select('value').eq('key', 'tinyurl_data').execute()
+        if result.data:
+            tinyurl_data = result.data[0]['value']
+            print(f"{datetime.datetime.now()} - Loaded tinyurl_data from Supabase ({len(tinyurl_data)} entries)")
+        else:
+            print(f"{datetime.datetime.now()} - No tinyurl_data found in Supabase, starting with empty data")
+            tinyurl_data = {}
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error loading tinyurl_data from Supabase: {e}, falling back to Gist/file")
+        if USE_GIST:
+            _load_tinyurl_data_from_gist()
+        else:
+            _load_tinyurl_data_from_file()
 
 
 def _load_tinyurl_data_from_gist():
@@ -211,13 +268,33 @@ def _load_tinyurl_data_from_file():
 
 
 def save_tournament_data():
-    """Save tournament_data to Gist (if configured) or local file"""
+    """Save tournament_data to Supabase (preferred), Gist, or local file"""
     global tournament_data
-    
-    if USE_GIST:
+
+    if USE_SUPABASE:
+        _save_tournament_data_to_supabase()
+    elif USE_GIST:
         _save_tournament_data_to_gist()
     else:
         _save_tournament_data_to_file()
+
+
+def _save_tournament_data_to_supabase():
+    """Save tournament_data to Supabase"""
+    global tournament_data
+    try:
+        supabase_client.table('app_data').upsert({
+            'key': 'tournament_data',
+            'value': tournament_data,
+            'updated_at': datetime.datetime.now(datetime.UTC).isoformat()
+        }).execute()
+        print(f"{datetime.datetime.now()} - Saved tournament_data to Supabase ({len(tournament_data)} entries)")
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error saving tournament_data to Supabase: {e}, falling back to Gist/file")
+        if USE_GIST:
+            _save_tournament_data_to_gist()
+        else:
+            _save_tournament_data_to_file()
 
 
 def _save_tournament_data_to_gist():
@@ -264,14 +341,35 @@ def _save_tournament_data_to_file():
 
 
 def load_tournament_data():
-    """Load tournament_data from Gist (if configured) or local file"""
+    """Load tournament_data from Supabase (preferred), Gist, or local file"""
     global tournament_data
-    
-    if USE_GIST:
+
+    if USE_SUPABASE:
+        _load_tournament_data_from_supabase()
+    elif USE_GIST:
         _load_tournament_data_from_gist()
     else:
-        print(f"{datetime.datetime.now()} - USE_GIST is False or not configured; loading tournament_data from local file")
+        print(f"{datetime.datetime.now()} - Loading tournament_data from local file")
         _load_tournament_data_from_file()
+
+
+def _load_tournament_data_from_supabase():
+    """Load tournament_data from Supabase"""
+    global tournament_data
+    try:
+        result = supabase_client.table('app_data').select('value').eq('key', 'tournament_data').execute()
+        if result.data:
+            tournament_data = result.data[0]['value']
+            print(f"{datetime.datetime.now()} - Loaded tournament_data from Supabase ({len(tournament_data)} entries)")
+        else:
+            print(f"{datetime.datetime.now()} - No tournament_data found in Supabase, starting with empty data")
+            tournament_data = {}
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error loading tournament_data from Supabase: {e}, falling back to Gist/file")
+        if USE_GIST:
+            _load_tournament_data_from_gist()
+        else:
+            _load_tournament_data_from_file()
 
 
 def _load_tournament_data_from_gist():
@@ -1314,56 +1412,71 @@ def clear_tinyurl_data():
                 
                 # For multiweek_dfs entries, calculate points and clear lineup data, but KEEP the entry
                 if entry_type == 'multiweek_dfs':
-                    print(f"{datetime.datetime.now()} - Calculating points for multiweek_dfs entry '{entry_name}' (week {entry_week}) and clearing lineup data")
-                    
-                    # Initialize standings if not exists
-                    if 'standings' not in entry:
-                        entry['standings'] = {}
-                    
-                    user_submissions = entry.get('user_submissions', {})
-                    current_time = datetime.datetime.now().isoformat()
-                    
-                    # Calculate points for each user's lineup for this week
-                    for normalized_username, user_data in user_submissions.items():
-                        username = user_data.get('username', normalized_username)
-                        lineup_data = user_data.get('data')
-                        
-                        if lineup_data:
-                            week_points = calculate_dfs_points_from_lineup(lineup_data, entry_week)
-                            print(f"{datetime.datetime.now()} - User '{username}' scored {week_points} points in week {entry_week}")
+                    start_week = entry.get('start_week', entry_week)
+                    num_weeks = entry.get('num_weeks')
+                    end_week = (start_week + num_weeks - 1) if num_weeks is not None else None
+
+                    # If this week is past the grace week (end_week + 1), delete the entry
+                    if end_week is not None and entry_week > end_week:
+                        print(f"{datetime.datetime.now()} - Tournament '{entry_name}' grace week passed (end_week={end_week}), marking for deletion")
+                        entries_to_delete.append(name)
+                    else:
+                        print(f"{datetime.datetime.now()} - Calculating points for multiweek_dfs entry '{entry_name}' (week {entry_week}) and clearing lineup data")
+
+                        # Initialize standings if not exists
+                        if 'standings' not in entry:
+                            entry['standings'] = {}
+
+                        user_submissions = entry.get('user_submissions', {})
+                        current_time = datetime.datetime.now().isoformat()
+
+                        # Calculate points for each user's lineup for this week
+                        for normalized_username, user_data in user_submissions.items():
+                            username = user_data.get('username', normalized_username)
+                            lineup_data = user_data.get('data')
+
+                            if lineup_data:
+                                week_points = calculate_dfs_points_from_lineup(lineup_data, entry_week)
+                                print(f"{datetime.datetime.now()} - User '{username}' scored {week_points} points in week {entry_week}")
+                            else:
+                                # No lineup submitted = 0 points
+                                week_points = 0.0
+                                print(f"{datetime.datetime.now()} - User '{username}' had no lineup for week {entry_week} (0 points)")
+
+                            # Update standings
+                            if username not in entry['standings']:
+                                entry['standings'][username] = {
+                                    'total_points': 0.0,
+                                    'week_points': {},
+                                    'last_updated': current_time
+                                }
+
+                            standings_entry = entry['standings'][username]
+
+                            # Add points for this week (update if already exists)
+                            standings_entry['week_points'][entry_week] = week_points
+
+                            # Recalculate total points
+                            standings_entry['total_points'] = sum(standings_entry['week_points'].values())
+                            standings_entry['last_updated'] = current_time
+
+                            print(f"{datetime.datetime.now()} - Updated standings for '{username}': total_points={standings_entry['total_points']}, week_points={standings_entry['week_points']}")
+
+                        # Clear user_submissions (lineup data) but keep the entry with standings
+                        entry['user_submissions'] = {}
+                        entry['data'] = None
+                        if 'updated_at' in entry:
+                            del entry['updated_at']
+                        if 'updated_by' in entry:
+                            del entry['updated_by']
+
+                        # Advance the active week to the next week
+                        entry['week'] = entry_week + 1
+
+                        if end_week is not None and entry_week == end_week:
+                            print(f"{datetime.datetime.now()} - Tournament '{entry_name}' completed after week {end_week}. Keeping for one grace week (week {entry_week + 1}).")
                         else:
-                            # No lineup submitted = 0 points
-                            week_points = 0.0
-                            print(f"{datetime.datetime.now()} - User '{username}' had no lineup for week {entry_week} (0 points)")
-                        
-                        # Update standings
-                        if username not in entry['standings']:
-                            entry['standings'][username] = {
-                                'total_points': 0.0,
-                                'week_points': {},
-                                'last_updated': current_time
-                            }
-                        
-                        standings_entry = entry['standings'][username]
-                        
-                        # Add points for this week (update if already exists)
-                        standings_entry['week_points'][entry_week] = week_points
-                        
-                        # Recalculate total points
-                        standings_entry['total_points'] = sum(standings_entry['week_points'].values())
-                        standings_entry['last_updated'] = current_time
-                        
-                        print(f"{datetime.datetime.now()} - Updated standings for '{username}': total_points={standings_entry['total_points']}, week_points={standings_entry['week_points']}")
-                    
-                    # Clear user_submissions (lineup data) but keep the entry with standings
-                    entry['user_submissions'] = {}
-                    entry['data'] = None
-                    if 'updated_at' in entry:
-                        del entry['updated_at']
-                    if 'updated_by' in entry:
-                        del entry['updated_by']
-                    
-                    print(f"{datetime.datetime.now()} - Cleared lineup data for multiweek_dfs entry '{entry_name}', kept standings")
+                            print(f"{datetime.datetime.now()} - Advanced '{entry_name}' to week {entry_week + 1}")
                 else:
                     # For single entries, mark for deletion
                     entries_to_delete.append(name)
@@ -2896,11 +3009,20 @@ def get_tinyurl_details(name):
     # Include week if present
     if 'week' in entry:
         response['week'] = entry['week']
-    
+
+    # Include type if present
+    response['type'] = entry.get('type', 'single')
+
+    # Include multiweek fields if present
+    if 'num_weeks' in entry:
+        response['num_weeks'] = entry['num_weeks']
+    if 'start_week' in entry:
+        response['start_week'] = entry['start_week']
+
     # Include reveal if present
     if 'reveal' in entry:
         response['reveal'] = entry['reveal']
-    
+
     # Get allowed names
     allowed_names = entry.get('allowed_names', [])
     if allowed_names:
@@ -3125,7 +3247,8 @@ def create_empty_tinyurl():
         week = data.get('week')
         reveal = data.get('reveal')
         entry_type = data.get('type', 'single')
-        
+        num_weeks_raw = data.get('num_weeks')
+
         if not name:
             return jsonify({"error": "name is required"}), 400
         if not isinstance(allowed_names, list):
@@ -3134,6 +3257,17 @@ def create_empty_tinyurl():
             return jsonify({"error": "names list cannot be empty"}), 400
         if entry_type not in ['single', 'multiweek_dfs']:
             return jsonify({"error": "type must be 'single' or 'multiweek_dfs'"}), 400
+
+        num_weeks = None
+        if entry_type == 'multiweek_dfs':
+            if num_weeks_raw is None:
+                return jsonify({"error": "num_weeks is required for multiweek_dfs"}), 400
+            try:
+                num_weeks = int(num_weeks_raw)
+                if not (2 <= num_weeks <= 18):
+                    return jsonify({"error": "num_weeks must be between 2 and 18"}), 400
+            except (ValueError, TypeError):
+                return jsonify({"error": "num_weeks must be an integer"}), 400
         
         # Normalize name for case-insensitive storage
         normalized_name = normalize_tinyurl_name(name)
@@ -3166,27 +3300,33 @@ def create_empty_tinyurl():
         # Initialize standings for multiweek_dfs entries
         if entry_type == 'multiweek_dfs':
             entry_data['standings'] = {}
-        
+            entry_data['num_weeks'] = num_weeks
+            if week is not None:
+                entry_data['start_week'] = week
+
         tinyurl_data[normalized_name] = entry_data
-        
+
         # Save to persistent storage
         save_tinyurl_data()
-        
+
         response = {
             "name": name,
             "allowed_names": allowed_names,
             "created_at": tinyurl_data[normalized_name]['created_at'],
             "total_entries": len(tinyurl_data)
         }
-        
+
         if week is not None:
             response['week'] = week
-        
+
         if reveal is not None:
             response['reveal'] = reveal
-        
+
+        if num_weeks is not None:
+            response['num_weeks'] = num_weeks
+
         return jsonify(response), 200
-            
+
     except Exception as e:
         print(f"Error creating empty TinyURL: {e}")
         return jsonify({"error": str(e)}), 500
