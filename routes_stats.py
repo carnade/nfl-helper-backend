@@ -64,6 +64,15 @@ def player_detail(sleeper_id):
     return jsonify({"sleeper_id": sleeper_id, **player})
 
 
+@stats_bp.route("/player/<string:sleeper_id>/advanced")
+def player_advanced(sleeper_id):
+    """Advanced stats: snap%, expected vs actual fantasy points per week."""
+    adv = ns.nflverse_player_advanced.get(str(sleeper_id))
+    if not adv:
+        return jsonify({"error": "No advanced data for player"}), 404
+    return jsonify({"sleeper_id": sleeper_id, **adv})
+
+
 @stats_bp.route("/week/<int:week>")
 def stats_for_week(week):
     """All players who have stats recorded for a specific week."""
@@ -130,9 +139,10 @@ def team_stats(team):
 def stats_status():
     """Health/status for the nflverse data pipeline."""
     return jsonify({
-        "last_updated": ns.nflverse_last_updated,
-        "current_season": ns.nflverse_current_season,
-        "player_count": len(ns.nflverse_player_stats),
-        "team_count": len(ns.nflverse_team_stats),
-        "schedule_weeks": sorted(ns.nflverse_games.keys()) if ns.nflverse_games else [],
+        "last_updated":    ns.nflverse_last_updated,
+        "current_season":  ns.nflverse_current_season,
+        "player_count":    len(ns.nflverse_player_stats),
+        "advanced_count":  len(ns.nflverse_player_advanced),
+        "team_count":      len(ns.nflverse_team_stats),
+        "schedule_weeks":  sorted(ns.nflverse_games.keys()) if ns.nflverse_games else [],
     })
