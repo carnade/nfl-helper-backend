@@ -15,9 +15,12 @@ from fantasydatascraper import FantasyDataScraper
 from get_dfs_salaries_and_stats import DFFSalariesScraper
 import random  # Import random for generating random deltas
 from pathlib import Path
+from routes_stats import stats_bp
+from nflverse_stats import refresh_nflverse_data
 
 
 app = Flask(__name__)
+app.register_blueprint(stats_bp)
 
 # Data directory for persistence (works locally, ephemeral on Koyeb free tier)
 DATA_DIR = Path(os.environ.get('DATA_DIR', './data'))
@@ -1583,6 +1586,12 @@ scheduler.add_job(
 scheduler.add_job(
     func=clear_tournament_data,
     trigger=CronTrigger(day_of_week="thu", hour=9, minute=0)
+)
+
+# Refresh nflverse player/team/schedule stats every Friday morning (updated weekly after games)
+scheduler.add_job(
+    func=refresh_nflverse_data,
+    trigger=CronTrigger(day_of_week="fri", hour=10, minute=0)
 )
 
 scheduler.start()
@@ -4287,7 +4296,11 @@ def initialize_data_in_background():
         print(f"{datetime.datetime.now()} - filtered_players populated with {len(filtered_players)} players, proceeding with fantasy points and DFS salaries updates")
         update_fantasy_points_data()
         update_dfs_salaries_data()
-        
+
+        # 4. Load nflverse player/team/schedule stats
+        print(f"{datetime.datetime.now()} - Loading nflverse stats data...")
+        refresh_nflverse_data()
+
         print(f"{datetime.datetime.now()} - Background data initialization completed!")
     
     # Start initialization in a background thread
