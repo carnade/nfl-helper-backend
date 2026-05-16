@@ -456,6 +456,14 @@ BYE_WEEKS_2025 = {
     "NYJ": 9, "PHI": 9, "PIT": 5, "SF": 14, "SEA": 8, "TB": 9,
     "TEN": 10, "WAS": 12
 }
+BYE_WEEKS_2026 = {
+    "ARI": 14, "ATL": 11, "BAL": 13, "BUF": 7,  "CAR": 5,  "CHI": 10,
+    "CIN": 6,  "CLE": 11, "DAL": 14, "DEN": 10, "DET": 6,  "GB":  11,
+    "HOU": 8,  "IND": 13, "JAX": 7,  "KC":  5,  "LAC": 7,  "LAR": 11,
+    "LV":  13, "MIA": 6,  "MIN": 6,  "NE":  11, "NO":  8,  "NYG": 8,
+    "NYJ": 13, "PHI": 10, "PIT": 9,  "SF":  8,  "SEA": 11, "TB":  10,
+    "TEN": 9,  "WAS": 7
+}
 
 WIN_OU_2025 = {
     "ARI": 8.5, "ATL": 7.5, "BAL": 11.5, "BUF": 11.5, "CAR": 6.5, "CHI": 8.5,
@@ -511,8 +519,8 @@ request_statistics = {
 
 
 def get_nfl_gameweek(date):
-    # Gameweek 1 started on September 5th, 2024 (a Tuesday)
-    gameweek_1_start = datetime.date(2025, 9, 3)
+    # Gameweek 1 started on September 7th, 2026 (a Monday, first game Wednesday Sept 9)
+    gameweek_1_start = datetime.date(2026, 9, 7)
     days_since_start = (date - gameweek_1_start).days
     # Each gameweek is effectively a 7-day window starting on Tuesdays
     gameweek = (days_since_start // 7) + 1
@@ -975,11 +983,11 @@ def fetch_and_filter_data():
         if player_data.get("team") is not None:
             try:
                 # Compare the player's team bye to today's gameweek
-                if (BYE_WEEKS_2025[player_data.get("team")]
+                if (BYE_WEEKS_2026[player_data.get("team")]
                         == get_nfl_gameweek(datetime.date.today())):
                     on_bye = True
             except:
-                print(f"Team not found in BYE_WEEKS_2025: {player_data.get('team')}")
+                print(f"Team not found in BYE_WEEKS_2026: {player_data.get('team')}")
 
         if fantasy_positions is None:
             fantasy_positions = []
