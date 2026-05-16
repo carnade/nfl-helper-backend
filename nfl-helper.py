@@ -1591,7 +1591,15 @@ scheduler.add_job(
 # Refresh nflverse player/team/schedule stats every Friday morning (updated weekly after games)
 scheduler.add_job(
     func=refresh_nflverse_data,
-    trigger=CronTrigger(day_of_week="fri", hour=10, minute=0)
+    trigger=CronTrigger(day_of_week="tue", hour=6, minute=0)   # full-week stats (MNF done)
+)
+scheduler.add_job(
+    func=refresh_nflverse_data,
+    trigger=CronTrigger(day_of_week="fri", hour=10, minute=0)  # injury reports + lines before weekend
+)
+scheduler.add_job(
+    func=refresh_nflverse_data,
+    trigger=CronTrigger(day_of_week="mon", hour=6, minute=0)   # Sunday + SNF results
 )
 
 scheduler.start()
