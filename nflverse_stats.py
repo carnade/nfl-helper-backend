@@ -249,6 +249,18 @@ def build_schedule_dicts(df: pd.DataFrame) -> tuple:
 
 # ── Refresh orchestrator ──────────────────────────────────────────────────────
 
+def _current_nfl_roster_year() -> int:
+    """
+    Return the roster year to use for ID mapping.
+    NFL seasons start in September, so any month before September means we're
+    in the off-season following the previous calendar year's season.
+    e.g. May 2026 → 2026 season hasn't started → use 2026 roster (already published).
+         October 2026 → 2026 season in progress → use 2026 roster.
+    We always try the current calendar year first; build_id_map falls back to year-1.
+    """
+    return datetime.datetime.utcnow().year
+
+
 def refresh_nflverse_data():
     """Download and rebuild all nflverse in-memory data. Safe to call repeatedly."""
     global nflverse_player_stats, nflverse_team_stats
@@ -258,7 +270,8 @@ def refresh_nflverse_data():
     logger.info("nflverse: starting data refresh")
     print(f"{datetime.datetime.now()} - nflverse: starting data refresh")
     try:
-        id_map = build_id_map(2025)
+        roster_year = _current_nfl_roster_year()
+        id_map = build_id_map(roster_year)
         logger.info("nflverse: id_map built (%d entries)", len(id_map))
 
         stats_df = _fetch_parquet(PLAYER_STATS_URL)
