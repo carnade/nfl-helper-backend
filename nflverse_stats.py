@@ -353,6 +353,22 @@ def build_team_stats_dict(df: pd.DataFrame, player_df: pd.DataFrame) -> dict:
             },
         }
 
+    # Second pass: rank all teams per position (rank 1 = fewest fpts allowed = best defense)
+    for pos in ("qb", "rb", "wr", "te"):
+        season_field = f"def_fpts_allowed_{pos}_per_game"
+        r5_field     = f"def_fpts_allowed_rolling5"
+
+        sorted_season = sorted(result.items(), key=lambda x: x[1].get(season_field, 0))
+        sorted_r5     = sorted(result.items(), key=lambda x: (x[1].get(r5_field) or {}).get(pos, 0))
+
+        for rank, (team, _) in enumerate(sorted_season, 1):
+            result[team].setdefault("def_rank_vs_position", {"season": {}, "rolling5": {}})
+            result[team]["def_rank_vs_position"]["season"][pos] = rank
+
+        for rank, (team, _) in enumerate(sorted_r5, 1):
+            result[team].setdefault("def_rank_vs_position", {"season": {}, "rolling5": {}})
+            result[team]["def_rank_vs_position"]["rolling5"][pos] = rank
+
     return result
 
 
@@ -469,12 +485,53 @@ def refresh_nflverse_data():
 
 # ── Query helpers ─────────────────────────────────────────────────────────────
 
+_POS_DEF_KEY = {"QB": "qb", "RB": "rb", "WR": "wr", "TE": "te", "K": None}
+
+def _matchup_block(team: str, position: str) -> dict:
+    """
+    Return schedule + opponent defensive fpts allowed for the player's position.
+    All data is in-memory so this is a simple dict lookup.
+    """
+    opp_info = nflverse_schedule.get(team, {})
+    opponent = opp_info.get("opponent")
+    pos_key  = _POS_DEF_KEY.get(position)
+
+    def_stats = nflverse_team_stats.get(opponent, {}) if opponent else {}
+
+    ranks = def_stats.get("def_rank_vs_position", {})
+
+    if pos_key:
+        def_fpts_season   = def_stats.get(f"def_fpts_allowed_{pos_key}_per_game")
+        def_fpts_rolling3 = (def_stats.get("def_fpts_allowed_rolling3") or {}).get(pos_key)
+        def_fpts_rolling5 = (def_stats.get("def_fpts_allowed_rolling5") or {}).get(pos_key)
+        opponent_rank_season  = (ranks.get("season")  or {}).get(pos_key)
+        opponent_rank_rolling5 = (ranks.get("rolling5") or {}).get(pos_key)
+    else:
+        def_fpts_season = def_fpts_rolling3 = def_fpts_rolling5 = None
+        opponent_rank_season = opponent_rank_rolling5 = None
+
+    return {
+        "week":                    opp_info.get("week"),
+        "opponent":                opponent,
+        "is_home":                 opp_info.get("is_home"),
+        "spread":                  opp_info.get("spread"),
+        "total":                   opp_info.get("total"),
+        "def_fpts_allowed_season":  def_fpts_season,
+        "def_fpts_allowed_rolling3": def_fpts_rolling3,
+        "def_fpts_allowed_rolling5": def_fpts_rolling5,
+        "opponent_rank_season":    opponent_rank_season,
+        "opponent_rank_rolling5":  opponent_rank_rolling5,
+    }
+
+
 def get_top_players(limit: int = 300, position: str = None, team: str = None) -> list:
     players = [{"sleeper_id": sid, **p} for sid, p in nflverse_player_stats.items()]
     if position:
         players = [p for p in players if p["position"] == position.upper()]
     if team:
         players = [p for p in players if p["team"] == team.upper()]
+    for p in players:
+        p["matchup"] = _matchup_block(p["team"], p["position"])
     players.sort(key=lambda p: p["season_totals"].get("fantasy_points_ppr", 0), reverse=True)
     return players[:limit]
 
@@ -491,7 +548,8 @@ def project_player(sleeper_id: str, week: int) -> dict:
     rolling = player.get("rolling_5") or player.get("rolling_3") or {}
     base_proj = rolling.get("fantasy_points_ppr", 0.0)
 
-    team = player.get("team", "")
+    team     = player.get("team", "")
+    position = player.get("position", "")
     opp_info = nflverse_schedule.get(team, {})
 
     adj = 1.0
@@ -501,12 +559,10 @@ def project_player(sleeper_id: str, week: int) -> dict:
     return {
         "sleeper_id":        sleeper_id,
         "name":              player["name"],
-        "position":          player["position"],
+        "position":          position,
         "team":              team,
         "projected_ppr":     round(base_proj * adj, 2),
         "rolling_5_ppr":     rolling.get("fantasy_points_ppr", 0.0),
         "adjustment_factor": round(adj, 3),
-        "opponent":          opp_info.get("opponent"),
-        "spread":            opp_info.get("spread"),
-        "total":             opp_info.get("total"),
+        "matchup":           _matchup_block(team, position),
     }

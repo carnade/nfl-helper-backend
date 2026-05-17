@@ -1489,6 +1489,23 @@ paths:
                 items:
                   $ref: "#/components/schemas/PlayerSummary"
 
+  /stats/teams:
+    get:
+      summary: All 32 teams with stats and schedule info
+      description: Returns all teams in one call, sorted by abbreviation. Includes offensive stats, defensive allowed stats, and defensive fpts allowed per position with rolling averages.
+      operationId: statsAllTeams
+      tags:
+        - Stats
+      responses:
+        "200":
+          description: List of all teams
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TeamStats"
+
   /stats/players/team/{team}:
     get:
       summary: All players for a team
@@ -1759,6 +1776,45 @@ paths:
 
 components:
   schemas:
+    MatchupBlock:
+      type: object
+      properties:
+        week:
+          type: integer
+          nullable: true
+        opponent:
+          type: string
+          nullable: true
+        is_home:
+          type: boolean
+          nullable: true
+        spread:
+          type: number
+          nullable: true
+        total:
+          type: number
+          nullable: true
+        def_fpts_allowed_season:
+          type: number
+          nullable: true
+          description: Opponent's season avg fpts allowed to this player's position (1 PPR)
+        def_fpts_allowed_rolling3:
+          type: number
+          nullable: true
+          description: Opponent's rolling 3-game avg fpts allowed to this player's position
+        def_fpts_allowed_rolling5:
+          type: number
+          nullable: true
+          description: Opponent's rolling 5-game avg fpts allowed to this player's position
+        opponent_rank_season:
+          type: integer
+          nullable: true
+          description: Opponent's season rank vs this player's position (1 = hardest matchup, 32 = easiest)
+        opponent_rank_rolling5:
+          type: integer
+          nullable: true
+          description: Opponent's rolling 5-game rank vs this player's position
+
     PlayerSummary:
       type: object
       properties:
@@ -1792,6 +1848,8 @@ components:
           type: number
         passing_tds:
           type: integer
+        matchup:
+          $ref: "#/components/schemas/MatchupBlock"
 
     PlayerWeekStats:
       type: object
@@ -1972,6 +2030,24 @@ components:
             rb: { type: number }
             wr: { type: number }
             te: { type: number }
+        def_rank_vs_position:
+          type: object
+          description: Rank vs each position (1 = stingiest defense, 32 = most generous)
+          properties:
+            season:
+              type: object
+              properties:
+                qb: { type: integer }
+                rb: { type: integer }
+                wr: { type: integer }
+                te: { type: integer }
+            rolling5:
+              type: object
+              properties:
+                qb: { type: integer }
+                rb: { type: integer }
+                wr: { type: integer }
+                te: { type: integer }
         schedule:
           type: object
           description: Current week matchup info

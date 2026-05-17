@@ -35,6 +35,7 @@ def list_players():
                 "position": p["position"],
                 "team": p["team"],
                 **week_data,
+                "matchup": ns._matchup_block(p["team"], p["position"]),
             })
         players.sort(key=lambda p: p.get("fantasy_points_ppr", 0), reverse=True)
         return jsonify(players[:limit])
@@ -123,6 +124,17 @@ def schedule_for_week(week):
     if not games:
         return jsonify({"error": f"No schedule data for week {week}"}), 404
     return jsonify({"week": week, "season": ns.nflverse_current_season, "games": games})
+
+
+@stats_bp.route("/teams")
+def all_teams():
+    """All 32 teams with stats and current week schedule info, sorted by team abbreviation."""
+    teams = [
+        {"team": team, **stats, "schedule": ns.nflverse_schedule.get(team, {})}
+        for team, stats in ns.nflverse_team_stats.items()
+    ]
+    teams.sort(key=lambda t: t["team"])
+    return jsonify(teams)
 
 
 @stats_bp.route("/team/<string:team>")
