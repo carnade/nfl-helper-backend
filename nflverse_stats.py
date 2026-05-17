@@ -419,7 +419,7 @@ def refresh_nflverse_data():
 # ── Query helpers ─────────────────────────────────────────────────────────────
 
 def get_top_players(limit: int = 300, position: str = None, team: str = None) -> list:
-    players = list(nflverse_player_stats.values())
+    players = [{"sleeper_id": sid, **p} for sid, p in nflverse_player_stats.items()]
     if position:
         players = [p for p in players if p["position"] == position.upper()]
     if team:
