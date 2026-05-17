@@ -244,13 +244,15 @@ def build_player_advanced_dict(
 
 # ── Team stats (offense + defense) ───────────────────────────────────────────
 
-def build_team_stats_dict(df: pd.DataFrame) -> dict:
+def build_team_stats_dict(df: pd.DataFrame, player_df: pd.DataFrame) -> dict:
     """
     Build nflverse_team_stats from the team_stats DataFrame.
 
     Each row is one team's stats for one game (their offense + their defensive
     counting stats). Defensive allowed stats are derived by flipping perspective:
     how opponents performed when playing against team X.
+
+    Fantasy points allowed per position use player_df (1 PPR = fantasy_points_ppr).
     """
     reg = df[df["season_type"] == "REG"].copy()
     if reg.empty:
@@ -259,13 +261,46 @@ def build_team_stats_dict(df: pd.DataFrame) -> dict:
     latest_season = int(reg["season"].max())
     reg = reg[reg["season"] == latest_season]
 
+    # Player-level: REG rows with opponent_team, for def fpts allowed by position
+    p_reg = player_df[
+        (player_df["season_type"] == "REG") &
+        (player_df["season"] == latest_season) &
+        (player_df["position"].isin(SKILL_POSITIONS))
+    ].copy()
+    if "opponent_team" not in p_reg.columns:
+        p_reg["opponent_team"] = None
+
+    # Per-week fpts allowed per (defending_team, position): used for season avg + rolling
+    def_weekly = (
+        p_reg.groupby(["opponent_team", "week", "position"])["fantasy_points_ppr"]
+        .sum()
+        .reset_index()
+        .rename(columns={"opponent_team": "def_team", "fantasy_points_ppr": "fpts"})
+    )
+
+    def _def_season(team: str, pos: str, n_games: int) -> float:
+        rows = def_weekly[(def_weekly["def_team"] == team) & (def_weekly["position"] == pos)]
+        if rows.empty or n_games == 0:
+            return 0.0
+        return round(_safe_float(rows["fpts"].sum()) / n_games, 1)
+
+    def _def_rolling(team: str, pos: str, n: int) -> float:
+        rows = (
+            def_weekly[(def_weekly["def_team"] == team) & (def_weekly["position"] == pos)]
+            .sort_values("week")
+            .tail(n)
+        )
+        if rows.empty:
+            return 0.0
+        return round(_safe_float(rows["fpts"].mean()), 1)
+
     all_teams = set(reg["team"].dropna()) | set(reg["opponent_team"].dropna())
     result = {}
 
     for team in all_teams:
         team = str(team)
-        off = reg[reg["team"] == team]           # team's own rows (offense + their def stats)
-        opp = reg[reg["opponent_team"] == team]  # opponents' rows when facing this team
+        off = reg[reg["team"] == team]
+        opp = reg[reg["opponent_team"] == team]
 
         n_games = len(off["week"].unique())
         if n_games == 0:
@@ -290,16 +325,32 @@ def build_team_stats_dict(df: pd.DataFrame) -> dict:
             "rushing_tds_per_game":     _pg2(off["rushing_tds"]),
             "passing_epa_per_game":     _pg2(off["passing_epa"]),
             "rushing_epa_per_game":     _pg2(off["rushing_epa"]),
-            # ── Defense (what opponents did against this team) ──
+            # ── Defense (yardage / td / pressure) ──
             "def_pass_yards_allowed_per_game":  _pg(opp["passing_yards"]),
             "def_rush_yards_allowed_per_game":  _pg(opp["rushing_yards"]),
             "def_pass_tds_allowed_per_game":    _pg2(opp["passing_tds"]),
             "def_rush_tds_allowed_per_game":    _pg2(opp["rushing_tds"]),
             "def_targets_allowed_per_game":     _pg(opp["targets"]),
-            # ── Own defensive production (sacks made, INTs made) ──
-            "def_sacks_per_game":         _pg2(off["def_sacks"]),
-            "def_interceptions_per_game": _pg2(off["def_interceptions"]),
-            "def_pass_defended_per_game": _pg2(off["def_pass_defended"]),
+            "def_sacks_per_game":               _pg2(off["def_sacks"]),
+            "def_interceptions_per_game":       _pg2(off["def_interceptions"]),
+            "def_pass_defended_per_game":       _pg2(off["def_pass_defended"]),
+            # ── Defense: fantasy points allowed per position (1 PPR) ──
+            "def_fpts_allowed_qb_per_game": _def_season(team, "QB", n_games),
+            "def_fpts_allowed_rb_per_game": _def_season(team, "RB", n_games),
+            "def_fpts_allowed_wr_per_game": _def_season(team, "WR", n_games),
+            "def_fpts_allowed_te_per_game": _def_season(team, "TE", n_games),
+            "def_fpts_allowed_rolling3": {
+                "qb": _def_rolling(team, "QB", 3),
+                "rb": _def_rolling(team, "RB", 3),
+                "wr": _def_rolling(team, "WR", 3),
+                "te": _def_rolling(team, "TE", 3),
+            },
+            "def_fpts_allowed_rolling5": {
+                "qb": _def_rolling(team, "QB", 5),
+                "rb": _def_rolling(team, "RB", 5),
+                "wr": _def_rolling(team, "WR", 5),
+                "te": _def_rolling(team, "TE", 5),
+            },
         }
 
     return result
@@ -393,7 +444,7 @@ def refresh_nflverse_data():
 
         player_stats    = build_player_stats_dict(stats_df, gsis_map)
         player_advanced = build_player_advanced_dict(snap_df, opp_df, gsis_map, pfr_map)
-        team_stats      = build_team_stats_dict(team_df)
+        team_stats      = build_team_stats_dict(team_df, stats_df)
         schedule, games = build_schedule_dicts(schedule_df)
 
         reg = stats_df[stats_df["season_type"] == "REG"]

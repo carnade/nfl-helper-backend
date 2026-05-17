@@ -1944,6 +1944,34 @@ components:
           type: number
         def_pass_defended_per_game:
           type: number
+        def_fpts_allowed_qb_per_game:
+          type: number
+          description: Season avg fantasy points (1 PPR) allowed to opposing QBs per game
+        def_fpts_allowed_rb_per_game:
+          type: number
+          description: Season avg fantasy points (1 PPR) allowed to opposing RBs per game
+        def_fpts_allowed_wr_per_game:
+          type: number
+          description: Season avg fantasy points (1 PPR) allowed to opposing WRs per game
+        def_fpts_allowed_te_per_game:
+          type: number
+          description: Season avg fantasy points (1 PPR) allowed to opposing TEs per game
+        def_fpts_allowed_rolling3:
+          type: object
+          description: Rolling 3-game avg fantasy points (1 PPR) allowed per position
+          properties:
+            qb: { type: number }
+            rb: { type: number }
+            wr: { type: number }
+            te: { type: number }
+        def_fpts_allowed_rolling5:
+          type: object
+          description: Rolling 5-game avg fantasy points (1 PPR) allowed per position
+          properties:
+            qb: { type: number }
+            rb: { type: number }
+            wr: { type: number }
+            te: { type: number }
         schedule:
           type: object
           description: Current week matchup info
