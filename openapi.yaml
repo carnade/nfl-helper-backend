@@ -1448,6 +1448,818 @@ paths:
                   fantasy_points_count:
                     type: integer
 
+  /stats/players:
+    get:
+      summary: Top players by PPR fantasy points
+      description: Returns top players sorted by season fantasy_points_ppr. Supports filtering by position, team, or a specific week.
+      operationId: statsListPlayers
+      tags:
+        - Stats
+      parameters:
+        - name: position
+          in: query
+          schema:
+            type: string
+            enum: [QB, RB, WR, TE, K]
+          description: Filter by position
+        - name: team
+          in: query
+          schema:
+            type: string
+          description: Filter by team abbreviation (e.g. MIN)
+        - name: week
+          in: query
+          schema:
+            type: integer
+          description: If provided, return stats for that specific week instead of season totals
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 300
+            maximum: 500
+          description: Max number of players to return
+      responses:
+        "200":
+          description: List of players with stats
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PlayerSummary"
+
+  /stats/teams:
+    get:
+      summary: All 32 teams with stats and schedule info
+      description: Returns all teams in one call, sorted by abbreviation. Includes offensive stats, defensive allowed stats, and defensive fpts allowed per position with rolling averages.
+      operationId: statsAllTeams
+      tags:
+        - Stats
+      responses:
+        "200":
+          description: List of all teams
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TeamStats"
+
+  /stats/players/team/{team}:
+    get:
+      summary: All players for a team
+      description: Returns all players on a given team sorted by season fantasy_points_ppr.
+      operationId: statsPlayersByTeam
+      tags:
+        - Stats
+      parameters:
+        - name: team
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Team abbreviation (e.g. MIN)
+      responses:
+        "200":
+          description: List of players on the team
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PlayerDetail"
+
+  /stats/player/{sleeper_id}:
+    get:
+      summary: Full stats for a single player
+      description: Returns season totals, weekly breakdown, and rolling averages for a player.
+      operationId: statsPlayerDetail
+      tags:
+        - Stats
+      parameters:
+        - name: sleeper_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Sleeper platform player ID
+      responses:
+        "200":
+          description: Player stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlayerDetail"
+        "404":
+          description: Player not found
+
+  /stats/player/{sleeper_id}/advanced:
+    get:
+      summary: Advanced stats for a single player
+      description: Returns snap percentage, expected fantasy points, and actual vs expected differentials per week.
+      operationId: statsPlayerAdvanced
+      tags:
+        - Stats
+      parameters:
+        - name: sleeper_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Sleeper platform player ID
+      responses:
+        "200":
+          description: Advanced player stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sleeper_id:
+                    type: string
+                  snap_pct_avg:
+                    type: number
+                    description: Season average snap percentage
+                  expected_fp_avg:
+                    type: number
+                    description: Season average expected fantasy points
+                  fp_diff_avg:
+                    type: number
+                    description: Season average actual minus expected fantasy points
+                  weekly:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        week:
+                          type: integer
+                        snap_pct:
+                          type: number
+                        expected_fp:
+                          type: number
+                        actual_fp:
+                          type: number
+                        fp_diff:
+                          type: number
+        "404":
+          description: No advanced data for player
+
+  /stats/week/{week}:
+    get:
+      summary: All player stats for a specific week
+      description: Returns every player who has stats recorded for the given week.
+      operationId: statsForWeek
+      tags:
+        - Stats
+      parameters:
+        - name: week
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: NFL week number
+      responses:
+        "200":
+          description: Map of sleeper_id to player week stats
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: "#/components/schemas/PlayerWeekStats"
+        "404":
+          description: No data for that week
+
+  /stats/projections/week/{week}:
+    get:
+      summary: Projections for all players for a given week
+      description: Rolling-average projections adjusted for game total (over/under). Supports filtering by position or team.
+      operationId: statsProjectionsForWeek
+      tags:
+        - Stats
+      parameters:
+        - name: week
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: NFL week number to project
+        - name: position
+          in: query
+          schema:
+            type: string
+            enum: [QB, RB, WR, TE, K]
+          description: Filter by position
+        - name: team
+          in: query
+          schema:
+            type: string
+          description: Filter by team abbreviation
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 300
+            maximum: 500
+          description: Max number of players to return
+      responses:
+        "200":
+          description: List of projected players sorted by projected PPR points
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    sleeper_id:
+                      type: string
+                    name:
+                      type: string
+                    position:
+                      type: string
+                    team:
+                      type: string
+                    projected_ppr:
+                      type: number
+                    projected_standard:
+                      type: number
+
+  /stats/schedule/{week}:
+    get:
+      summary: Schedule and Vegas lines for a week
+      description: Returns all matchups for a given week including spread, total, weather, moneylines, and starting QBs.
+      operationId: statsScheduleForWeek
+      tags:
+        - Stats
+      parameters:
+        - name: week
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: NFL week number
+      responses:
+        "200":
+          description: Schedule data for the week
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  week:
+                    type: integer
+                  season:
+                    type: integer
+                  games:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Game"
+        "404":
+          description: No schedule data for that week
+
+  /stats/team/{team}:
+    get:
+      summary: Team-level stats and current week schedule
+      description: Returns offensive pace, scoring, and defensive allowed stats plus the team's current week matchup info.
+      operationId: statsTeam
+      tags:
+        - Stats
+      parameters:
+        - name: team
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Team abbreviation (e.g. MIN)
+      responses:
+        "200":
+          description: Team stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamStats"
+        "404":
+          description: No data for that team
+
+  /stats/status:
+    get:
+      summary: Stats pipeline health
+      description: Returns last update time, current season, and counts for all in-memory data stores.
+      operationId: statsStatus
+      tags:
+        - Stats
+      responses:
+        "200":
+          description: Pipeline status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  last_updated:
+                    type: string
+                    format: date-time
+                  current_season:
+                    type: integer
+                  player_count:
+                    type: integer
+                  advanced_count:
+                    type: integer
+                  team_count:
+                    type: integer
+                  schedule_weeks:
+                    type: array
+                    items:
+                      type: integer
+
+  /picks/data:
+    get:
+      summary: Get all draft picks
+      description: Returns all dynasty draft pick data with values and metadata.
+      operationId: getPicksData
+      tags:
+        - Players
+      responses:
+        "200":
+          description: Draft picks keyed by Pick ID
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: object
+
+  /teams:
+    get:
+      summary: Get team injury data
+      description: Returns players with active injury statuses grouped by NFL team abbreviation.
+      operationId: getTeams
+      tags:
+        - Teams
+      responses:
+        "200":
+          description: Injured players per team
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      first_name:
+                        type: string
+                      last_name:
+                        type: string
+                      injury_status:
+                        type: string
+
+  /teams/schedules:
+    get:
+      summary: Get 2025 NFL team schedules
+      description: Returns the full 2025 NFL regular season schedule for all teams.
+      operationId: getTeamSchedules
+      tags:
+        - Teams
+      responses:
+        "200":
+          description: Schedule data keyed by team abbreviation
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: object
+
+  /admin/rankings/update:
+    post:
+      summary: Trigger rankings update
+      description: Manually triggers a scrape and refresh of dynasty player rankings.
+      operationId: adminUpdateRankings
+      tags:
+        - Admin
+      responses:
+        "200":
+          description: Update triggered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /admin/dfs-salaries/add-test-data:
+    post:
+      summary: Add DFS salary test data
+      description: Manually injects a test player entry into the in-memory DFS salaries store.
+      operationId: adminAddDfsSalariesTestData
+      tags:
+        - Admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sleeper_id
+                - week
+                - data
+              properties:
+                sleeper_id:
+                  type: string
+                  example: "12547"
+                week:
+                  type: integer
+                  example: 11
+                data:
+                  type: object
+                  description: Arbitrary player salary/game data to store
+      responses:
+        "200":
+          description: Test data added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  key:
+                    type: string
+                  data:
+                    type: object
+        "400":
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /admin/assign-random-deltas:
+    post:
+      summary: Assign random KTC/FC deltas
+      description: Assigns random delta values (-50 to 50) to KTC Value and FC Value for all players. Used for testing.
+      operationId: adminAssignRandomDeltas
+      tags:
+        - Admin
+      responses:
+        "200":
+          description: Deltas assigned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+
+  /admin/trigger-fetch:
+    post:
+      summary: Trigger full data fetch
+      description: Manually triggers fetch_and_filter_data to refresh all in-memory player data.
+      operationId: adminTriggerFetch
+      tags:
+        - Admin
+      responses:
+        "200":
+          description: Fetch triggered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+    MatchupBlock:
+      type: object
+      properties:
+        week:
+          type: integer
+          nullable: true
+        opponent:
+          type: string
+          nullable: true
+        is_home:
+          type: boolean
+          nullable: true
+        spread:
+          type: number
+          nullable: true
+        total:
+          type: number
+          nullable: true
+        def_fpts_allowed_season:
+          type: number
+          nullable: true
+          description: Opponent's season avg fpts allowed to this player's position (1 PPR)
+        def_fpts_allowed_rolling3:
+          type: number
+          nullable: true
+          description: Opponent's rolling 3-game avg fpts allowed to this player's position
+        def_fpts_allowed_rolling5:
+          type: number
+          nullable: true
+          description: Opponent's rolling 5-game avg fpts allowed to this player's position
+        opponent_rank_season:
+          type: integer
+          nullable: true
+          description: Opponent's season rank vs this player's position (1 = hardest matchup, 32 = easiest)
+        opponent_rank_rolling5:
+          type: integer
+          nullable: true
+          description: Opponent's rolling 5-game rank vs this player's position
+
+    PlayerSummary:
+      type: object
+      properties:
+        sleeper_id:
+          type: string
+        name:
+          type: string
+        position:
+          type: string
+        team:
+          type: string
+        fantasy_points_ppr:
+          type: number
+        fantasy_points:
+          type: number
+        targets:
+          type: integer
+        receptions:
+          type: integer
+        receiving_yards:
+          type: number
+        receiving_tds:
+          type: integer
+        carries:
+          type: integer
+        rushing_yards:
+          type: number
+        rushing_tds:
+          type: integer
+        passing_yards:
+          type: number
+        passing_tds:
+          type: integer
+        matchup:
+          $ref: "#/components/schemas/MatchupBlock"
+
+    PlayerWeekStats:
+      type: object
+      properties:
+        name:
+          type: string
+        position:
+          type: string
+        team:
+          type: string
+        week:
+          type: integer
+        fantasy_points_ppr:
+          type: number
+        fantasy_points:
+          type: number
+        targets:
+          type: integer
+        receptions:
+          type: integer
+        receiving_yards:
+          type: number
+        receiving_tds:
+          type: integer
+        carries:
+          type: integer
+        rushing_yards:
+          type: number
+        rushing_tds:
+          type: integer
+        passing_yards:
+          type: number
+        passing_tds:
+          type: integer
+        snap_pct:
+          type: number
+        target_share:
+          type: number
+        wopr:
+          type: number
+
+    PlayerDetail:
+      type: object
+      properties:
+        sleeper_id:
+          type: string
+        name:
+          type: string
+        position:
+          type: string
+        team:
+          type: string
+        gsis_id:
+          type: string
+        season_totals:
+          $ref: "#/components/schemas/PlayerSummary"
+        weekly:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlayerWeekStats"
+        rolling_3:
+          type: object
+          description: 3-week rolling averages for key stats
+        rolling_5:
+          type: object
+          description: 5-week rolling averages for key stats
+
+    Game:
+      type: object
+      properties:
+        game_id:
+          type: string
+        gameday:
+          type: string
+          format: date
+        home_team:
+          type: string
+        away_team:
+          type: string
+        spread_line:
+          type: number
+          description: Vegas spread (negative = home favored)
+        total_line:
+          type: number
+          description: Vegas over/under
+        home_moneyline:
+          type: number
+        away_moneyline:
+          type: number
+        home_score:
+          type: integer
+          nullable: true
+        away_score:
+          type: integer
+          nullable: true
+        temp:
+          type: number
+          nullable: true
+        wind:
+          type: number
+          nullable: true
+        roof:
+          type: string
+          nullable: true
+        surface:
+          type: string
+          nullable: true
+        home_qb:
+          type: string
+          nullable: true
+        away_qb:
+          type: string
+          nullable: true
+
+    TeamStats:
+      type: object
+      properties:
+        team:
+          type: string
+        season:
+          type: integer
+        games_played:
+          type: integer
+        pass_attempts_per_game:
+          type: number
+        rush_attempts_per_game:
+          type: number
+        plays_per_game:
+          type: number
+          description: Pass attempts + rush attempts per game
+        targets_per_game:
+          type: number
+        passing_yards_per_game:
+          type: number
+        rushing_yards_per_game:
+          type: number
+        fpts_per_game:
+          type: number
+          description: Total offensive fantasy points scored (1 PPR) per game
+        passing_tds_per_game:
+          type: number
+        rushing_tds_per_game:
+          type: number
+        passing_epa_per_game:
+          type: number
+        rushing_epa_per_game:
+          type: number
+        def_pass_yards_allowed_per_game:
+          type: number
+        def_rush_yards_allowed_per_game:
+          type: number
+        def_pass_tds_allowed_per_game:
+          type: number
+        def_rush_tds_allowed_per_game:
+          type: number
+        def_targets_allowed_per_game:
+          type: number
+        def_sacks_per_game:
+          type: number
+        def_interceptions_per_game:
+          type: number
+        def_pass_defended_per_game:
+          type: number
+        def_fpts_allowed_qb_per_game:
+          type: number
+          description: Season avg fantasy points (1 PPR) allowed to opposing QBs per game
+        def_fpts_allowed_rb_per_game:
+          type: number
+          description: Season avg fantasy points (1 PPR) allowed to opposing RBs per game
+        def_fpts_allowed_wr_per_game:
+          type: number
+          description: Season avg fantasy points (1 PPR) allowed to opposing WRs per game
+        def_fpts_allowed_te_per_game:
+          type: number
+          description: Season avg fantasy points (1 PPR) allowed to opposing TEs per game
+        def_fpts_allowed_rolling3:
+          type: object
+          description: Rolling 3-game avg fantasy points (1 PPR) allowed per position
+          properties:
+            qb: { type: number }
+            rb: { type: number }
+            wr: { type: number }
+            te: { type: number }
+        def_fpts_allowed_rolling5:
+          type: object
+          description: Rolling 5-game avg fantasy points (1 PPR) allowed per position
+          properties:
+            qb: { type: number }
+            rb: { type: number }
+            wr: { type: number }
+            te: { type: number }
+        def_rank_vs_position:
+          type: object
+          description: Rank vs each position (1 = stingiest defense, 32 = most generous)
+          properties:
+            season:
+              type: object
+              properties:
+                qb: { type: integer }
+                rb: { type: integer }
+                wr: { type: integer }
+                te: { type: integer }
+            rolling5:
+              type: object
+              properties:
+                qb: { type: integer }
+                rb: { type: integer }
+                wr: { type: integer }
+                te: { type: integer }
+        schedule:
+          type: object
+          description: Current week matchup info
+          properties:
+            week:
+              type: integer
+            opponent:
+              type: string
+            spread:
+              type: number
+            total:
+              type: number
+            is_home:
+              type: boolean
+
 tags:
   - name: Health
     description: Health check endpoints
@@ -1465,3 +2277,5 @@ tags:
     description: Administrative endpoints
   - name: Statistics
     description: Statistics and monitoring endpoints
+  - name: Stats
+    description: NFL statistics engine — player stats, projections, schedules, and team metrics powered by nflverse data

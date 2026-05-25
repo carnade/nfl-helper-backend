@@ -15,9 +15,12 @@ from fantasydatascraper import FantasyDataScraper
 from get_dfs_salaries_and_stats import DFFSalariesScraper
 import random  # Import random for generating random deltas
 from pathlib import Path
+from routes_stats import stats_bp
+from nflverse_stats import refresh_nflverse_data
 
 
 app = Flask(__name__)
+app.register_blueprint(stats_bp)
 
 # Data directory for persistence (works locally, ephemeral on Koyeb free tier)
 DATA_DIR = Path(os.environ.get('DATA_DIR', './data'))
@@ -456,6 +459,14 @@ BYE_WEEKS_2025 = {
     "NYJ": 9, "PHI": 9, "PIT": 5, "SF": 14, "SEA": 8, "TB": 9,
     "TEN": 10, "WAS": 12
 }
+BYE_WEEKS_2026 = {
+    "ARI": 14, "ATL": 11, "BAL": 13, "BUF": 7,  "CAR": 5,  "CHI": 10,
+    "CIN": 6,  "CLE": 11, "DAL": 14, "DEN": 10, "DET": 6,  "GB":  11,
+    "HOU": 8,  "IND": 13, "JAX": 7,  "KC":  5,  "LAC": 7,  "LAR": 11,
+    "LV":  13, "MIA": 6,  "MIN": 6,  "NE":  11, "NO":  8,  "NYG": 8,
+    "NYJ": 13, "PHI": 10, "PIT": 9,  "SF":  8,  "SEA": 11, "TB":  10,
+    "TEN": 9,  "WAS": 7
+}
 
 WIN_OU_2025 = {
     "ARI": 8.5, "ATL": 7.5, "BAL": 11.5, "BUF": 11.5, "CAR": 6.5, "CHI": 8.5,
@@ -511,8 +522,8 @@ request_statistics = {
 
 
 def get_nfl_gameweek(date):
-    # Gameweek 1 started on September 5th, 2024 (a Tuesday)
-    gameweek_1_start = datetime.date(2025, 9, 3)
+    # Gameweek 1 started on September 7th, 2026 (a Monday, first game Wednesday Sept 9)
+    gameweek_1_start = datetime.date(2026, 9, 7)
     days_since_start = (date - gameweek_1_start).days
     # Each gameweek is effectively a 7-day window starting on Tuesdays
     gameweek = (days_since_start // 7) + 1
@@ -975,11 +986,11 @@ def fetch_and_filter_data():
         if player_data.get("team") is not None:
             try:
                 # Compare the player's team bye to today's gameweek
-                if (BYE_WEEKS_2025[player_data.get("team")]
+                if (BYE_WEEKS_2026[player_data.get("team")]
                         == get_nfl_gameweek(datetime.date.today())):
                     on_bye = True
             except:
-                print(f"Team not found in BYE_WEEKS_2025: {player_data.get('team')}")
+                print(f"Team not found in BYE_WEEKS_2026: {player_data.get('team')}")
 
         if fantasy_positions is None:
             fantasy_positions = []
@@ -1575,6 +1586,20 @@ scheduler.add_job(
 scheduler.add_job(
     func=clear_tournament_data,
     trigger=CronTrigger(day_of_week="thu", hour=9, minute=0)
+)
+
+# Refresh nflverse player/team/schedule stats every Friday morning (updated weekly after games)
+scheduler.add_job(
+    func=refresh_nflverse_data,
+    trigger=CronTrigger(day_of_week="tue", hour=6, minute=0)   # full-week stats (MNF done)
+)
+scheduler.add_job(
+    func=refresh_nflverse_data,
+    trigger=CronTrigger(day_of_week="fri", hour=10, minute=0)  # injury reports + lines before weekend
+)
+scheduler.add_job(
+    func=refresh_nflverse_data,
+    trigger=CronTrigger(day_of_week="mon", hour=6, minute=0)   # Sunday + SNF results
 )
 
 scheduler.start()
@@ -4279,7 +4304,11 @@ def initialize_data_in_background():
         print(f"{datetime.datetime.now()} - filtered_players populated with {len(filtered_players)} players, proceeding with fantasy points and DFS salaries updates")
         update_fantasy_points_data()
         update_dfs_salaries_data()
-        
+
+        # 4. Load nflverse player/team/schedule stats
+        print(f"{datetime.datetime.now()} - Loading nflverse stats data...")
+        refresh_nflverse_data()
+
         print(f"{datetime.datetime.now()} - Background data initialization completed!")
     
     # Start initialization in a background thread
