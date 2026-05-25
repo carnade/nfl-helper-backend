@@ -294,6 +294,16 @@ def build_team_stats_dict(df: pd.DataFrame, player_df: pd.DataFrame) -> dict:
             return 0.0
         return round(_safe_float(rows["fpts"].mean()), 1)
 
+    # Aggregate key offensive stats per (team, week) from player_df — column names
+    # are guaranteed correct here (same source as player stats endpoints).
+    p_team_col = "team" if "team" in p_reg.columns else "recent_team"
+    _src_cols = [c for c in ["passing_yards", "rushing_yards", "attempts", "carries", "fantasy_points_ppr"] if c in p_reg.columns]
+    _off_avgs: dict[str, dict] = {}
+    if _src_cols and p_team_col in p_reg.columns:
+        _wk = p_reg.groupby([p_team_col, "week"])[_src_cols].sum().reset_index()
+        for _t, _grp in _wk.groupby(p_team_col):
+            _off_avgs[str(_t)] = {c: round(_safe_float(_grp[c].mean()), 1) for c in _src_cols}
+
     all_teams = set(reg["team"].dropna()) | set(reg["opponent_team"].dropna())
     result = {}
 
@@ -312,15 +322,19 @@ def build_team_stats_dict(df: pd.DataFrame, player_df: pd.DataFrame) -> dict:
         def _pg2(series, n=n_games):
             return round(_safe_float(series.sum()) / n, 2)
 
+        ta = _off_avgs.get(team, {})
+
         result[team] = {
             "season": latest_season,
             "games_played": n_games,
             # ── Offense ──
-            "pass_attempts_per_game":   _pg(off["attempts"]),
-            "rush_attempts_per_game":   _pg(off["carries"]),
+            "pass_attempts_per_game":   ta.get("attempts", 0.0),
+            "rush_attempts_per_game":   ta.get("carries", 0.0),
+            "plays_per_game":           round(ta.get("attempts", 0.0) + ta.get("carries", 0.0), 1),
             "targets_per_game":         _pg(off["targets"]),
-            "passing_yards_per_game":   _pg(off["passing_yards"]),
-            "rushing_yards_per_game":   _pg(off["rushing_yards"]),
+            "passing_yards_per_game":   ta.get("passing_yards", 0.0),
+            "rushing_yards_per_game":   ta.get("rushing_yards", 0.0),
+            "fpts_per_game":            ta.get("fantasy_points_ppr", 0.0),
             "passing_tds_per_game":     _pg2(off["passing_tds"]),
             "rushing_tds_per_game":     _pg2(off["rushing_tds"]),
             "passing_epa_per_game":     _pg2(off["passing_epa"]),

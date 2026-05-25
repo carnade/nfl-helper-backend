@@ -1774,8 +1774,194 @@ paths:
                     items:
                       type: integer
 
+  /picks/data:
+    get:
+      summary: Get all draft picks
+      description: Returns all dynasty draft pick data with values and metadata.
+      operationId: getPicksData
+      tags:
+        - Players
+      responses:
+        "200":
+          description: Draft picks keyed by Pick ID
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: object
+
+  /teams:
+    get:
+      summary: Get team injury data
+      description: Returns players with active injury statuses grouped by NFL team abbreviation.
+      operationId: getTeams
+      tags:
+        - Teams
+      responses:
+        "200":
+          description: Injured players per team
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      first_name:
+                        type: string
+                      last_name:
+                        type: string
+                      injury_status:
+                        type: string
+
+  /teams/schedules:
+    get:
+      summary: Get 2025 NFL team schedules
+      description: Returns the full 2025 NFL regular season schedule for all teams.
+      operationId: getTeamSchedules
+      tags:
+        - Teams
+      responses:
+        "200":
+          description: Schedule data keyed by team abbreviation
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: object
+
+  /admin/rankings/update:
+    post:
+      summary: Trigger rankings update
+      description: Manually triggers a scrape and refresh of dynasty player rankings.
+      operationId: adminUpdateRankings
+      tags:
+        - Admin
+      responses:
+        "200":
+          description: Update triggered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /admin/dfs-salaries/add-test-data:
+    post:
+      summary: Add DFS salary test data
+      description: Manually injects a test player entry into the in-memory DFS salaries store.
+      operationId: adminAddDfsSalariesTestData
+      tags:
+        - Admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sleeper_id
+                - week
+                - data
+              properties:
+                sleeper_id:
+                  type: string
+                  example: "12547"
+                week:
+                  type: integer
+                  example: 11
+                data:
+                  type: object
+                  description: Arbitrary player salary/game data to store
+      responses:
+        "200":
+          description: Test data added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  key:
+                    type: string
+                  data:
+                    type: object
+        "400":
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /admin/assign-random-deltas:
+    post:
+      summary: Assign random KTC/FC deltas
+      description: Assigns random delta values (-50 to 50) to KTC Value and FC Value for all players. Used for testing.
+      operationId: adminAssignRandomDeltas
+      tags:
+        - Admin
+      responses:
+        "200":
+          description: Deltas assigned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+
+  /admin/trigger-fetch:
+    post:
+      summary: Trigger full data fetch
+      description: Manually triggers fetch_and_filter_data to refresh all in-memory player data.
+      operationId: adminTriggerFetch
+      tags:
+        - Admin
+      responses:
+        "200":
+          description: Fetch triggered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 components:
   schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
     MatchupBlock:
       type: object
       properties:
@@ -1969,22 +2155,33 @@ components:
       properties:
         team:
           type: string
-        pass_rate:
-          type: number
-          description: Fraction of plays that are passes
-        plays_per_game:
-          type: number
-        points_per_game:
-          type: number
+        season:
+          type: integer
+        games_played:
+          type: integer
         pass_attempts_per_game:
           type: number
         rush_attempts_per_game:
           type: number
-        pass_yards_per_game:
+        plays_per_game:
           type: number
-        rush_yards_per_game:
-          type: number
+          description: Pass attempts + rush attempts per game
         targets_per_game:
+          type: number
+        passing_yards_per_game:
+          type: number
+        rushing_yards_per_game:
+          type: number
+        fpts_per_game:
+          type: number
+          description: Total offensive fantasy points scored (1 PPR) per game
+        passing_tds_per_game:
+          type: number
+        rushing_tds_per_game:
+          type: number
+        passing_epa_per_game:
+          type: number
+        rushing_epa_per_game:
           type: number
         def_pass_yards_allowed_per_game:
           type: number
