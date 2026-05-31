@@ -16,11 +16,14 @@ from get_dfs_salaries_and_stats import DFFSalariesScraper
 import random  # Import random for generating random deltas
 from pathlib import Path
 from routes_stats import stats_bp
+from routes_odds import odds_bp
 from nflverse_stats import refresh_nflverse_data
+import odds_api
 
 
 app = Flask(__name__)
 app.register_blueprint(stats_bp)
+app.register_blueprint(odds_bp)
 
 # Data directory for persistence (works locally, ephemeral on Koyeb free tier)
 DATA_DIR = Path(os.environ.get('DATA_DIR', './data'))
@@ -93,6 +96,8 @@ current_nfl_week = None  # Current NFL week (1-22) from DailyFantasyFuel data, i
 # ============================================================================
 # Data Persistence Functions
 # ============================================================================
+
+ODDS_API_KEY = os.environ.get('ODDS_API_KEY')
 
 # Supabase configuration (optional - only used if both are set)
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
@@ -1267,6 +1272,15 @@ scheduler.add_job(
 scheduler.add_job(
     func=update_dfs_salaries_data,
     trigger=CronTrigger(day_of_week="wed", hour=19, minute=0)
+)
+
+# Schedule odds refresh: Thursday 10:00 UTC (props open) + Monday 10:00 UTC (post-week)
+def _refresh_odds():
+    odds_api.refresh_odds_data(ODDS_API_KEY)
+
+scheduler.add_job(
+    func=_refresh_odds,
+    trigger=CronTrigger(day_of_week="thu,mon", hour=10, minute=0)
 )
 
 def fetch_sleeper_matchup_points(week, league_ids=None):
@@ -4371,6 +4385,20 @@ def trigger_fetch_and_filter():
         return jsonify({"error": str(e)}), 500
 """
 
+@app.route('/admin/trigger-odds-fetch', methods=['POST'])
+def admin_trigger_odds_fetch():
+    try:
+        odds_api.refresh_odds_data(ODDS_API_KEY)
+        return jsonify({
+            "message": "Odds refresh triggered successfully.",
+            "games": len(odds_api.odds_games),
+            "players": len(odds_api.odds_props),
+            "credits_remaining": odds_api.odds_credits_remaining,
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/', methods=['GET'])
 def health_check():
     return "Health check passed", 200
@@ -4434,6 +4462,10 @@ def initialize_data_in_background():
         # 4. Load nflverse player/team/schedule stats
         print(f"{datetime.datetime.now()} - Loading nflverse stats data...")
         refresh_nflverse_data()
+
+        # 5. Load betting odds
+        print(f"{datetime.datetime.now()} - Loading odds data...")
+        odds_api.refresh_odds_data(ODDS_API_KEY)
 
         print(f"{datetime.datetime.now()} - Background data initialization completed!")
     
