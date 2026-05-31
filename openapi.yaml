@@ -520,6 +520,10 @@ paths:
                     type: integer
                   reveal:
                     type: string
+                  type:
+                    type: string
+                    enum: ["single", "multiweek_dfs"]
+                    description: Type of TinyURL entry (defaults to "single" if not specified)
                   updated_at:
                     type: string
                   updated_by:
@@ -551,6 +555,180 @@ paths:
       responses:
         "200":
           description: Entry details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  created_at:
+                    type: string
+                  week:
+                    type: integer
+                  reveal:
+                    type: string
+                  type:
+                    type: string
+                    enum: ["single", "multiweek_dfs"]
+                    description: Type of TinyURL entry (defaults to "single" if not specified)
+                  allowed_names:
+                    type: array
+                    items:
+                      type: string
+                  submissions:
+                    type: object
+                    description: Submission status for each allowed name
+                  updated_at:
+                    type: string
+                  updated_by:
+                    type: string
+        "404":
+          description: Entry not found
+
+  /tinyurl/{name}/standings:
+    get:
+      summary: Get standings for multiweek_dfs entry
+      description: Returns standings for a multiweek_dfs TinyURL entry, sorted by total points (descending). Only works for entries with type='multiweek_dfs'.
+      operationId: getTinyurlStandings
+      tags:
+        - TinyURL
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of the TinyURL entry
+      responses:
+        "200":
+          description: Standings retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  type:
+                    type: string
+                    enum: ["multiweek_dfs"]
+                  standings:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        username:
+                          type: string
+                        total_points:
+                          type: number
+                          format: float
+                        week_points:
+                          type: object
+                          description: Dictionary mapping week numbers to points for that week
+                        last_updated:
+                          type: string
+                          format: date-time
+                  count:
+                    type: integer
+        "400":
+          description: Entry is not a multiweek_dfs type
+        "404":
+          description: Entry not found
+
+  /tinyurl/{name}/recalc:
+    post:
+      summary: Recalculate standings
+      description: Recalculates standings for a multiweek_dfs TinyURL entry based on current lineup data. Only works for entries with type='multiweek_dfs'.
+      operationId: recalcTinyurlStandings
+      tags:
+        - TinyURL
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of the TinyURL entry
+      responses:
+        "200":
+          description: Standings recalculated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+        "400":
+          description: Entry is not a multiweek_dfs type
+        "404":
+          description: Entry not found
+
+  /tinyurl/{name}/set-points:
+    post:
+      summary: Manually set points for user/week
+      description: Manually set points for a specific user and week in a multiweek_dfs TinyURL entry. Only works for entries with type='multiweek_dfs'.
+      operationId: setTinyurlPoints
+      tags:
+        - TinyURL
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of the TinyURL entry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - username
+                - week
+                - points
+              properties:
+                username:
+                  type: string
+                  description: Username to set points for
+                week:
+                  type: integer
+                  description: Week number
+                points:
+                  type: number
+                  format: float
+                  description: Points to set for this user/week
+      responses:
+        "200":
+          description: Points set successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  username:
+                    type: string
+                  week:
+                    type: integer
+                  points:
+                    type: number
+                    format: float
+                  total_points:
+                    type: number
+                    format: float
+                    description: Updated total points for this user
+                  timestamp:
+                    type: string
+                    format: date-time
+        "400":
+          description: Bad request - validation error or entry is not multiweek_dfs type
         "404":
           description: Entry not found
 
@@ -1402,6 +1580,34 @@ paths:
         "500":
           description: Server error
 
+<<<<<<< HEAD
+=======
+  /currentweek:
+    get:
+      summary: Get current NFL week
+      description: Returns the current NFL week (1-22, includes playoffs) as determined from DailyFantasyFuel data. This provides the accurate week number including playoff weeks, unlike Sleeper API which resets to week 1 during playoffs.
+      operationId: getCurrentWeek
+      tags:
+        - NFL
+      responses:
+        "200":
+          description: Current NFL week
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  week:
+                    type: integer
+                    nullable: true
+                    description: Current NFL week number (1-22, includes playoffs), or null if not yet determined
+                  source:
+                    type: string
+                    nullable: true
+                    enum: ["DailyFantasyFuel", null]
+                    description: Source of the week data, or null if not yet determined
+
+>>>>>>> multi_week_dfs
   /statistics:
     get:
       summary: Get API statistics
