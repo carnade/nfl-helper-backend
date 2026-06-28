@@ -2381,6 +2381,24 @@ components:
         fpts_per_game:
           type: number
           description: Total offensive fantasy points scored (1 PPR) per game
+        points_per_game:
+          type: number
+          description: Real points scored per game (season average)
+        points_allowed_per_game:
+          type: number
+          description: Real points allowed per game (season average)
+        points_rolling3:
+          type: number
+          description: Real points scored — last 3 games average
+        points_rolling5:
+          type: number
+          description: Real points scored — last 5 games average
+        points_allowed_rolling3:
+          type: number
+          description: Real points allowed — last 3 games average
+        points_allowed_rolling5:
+          type: number
+          description: Real points allowed — last 5 games average
         passing_tds_per_game:
           type: number
         rushing_tds_per_game:

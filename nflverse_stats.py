@@ -19,7 +19,7 @@ SUM_COLS = {
     "carries", "rushing_yards", "rushing_tds",
     "receptions", "targets", "receiving_yards", "receiving_tds",
     "receiving_air_yards", "passing_air_yards",
-    "fantasy_points", "fantasy_points_ppr",
+    "fantasy_points", "fantasy_points_half_ppr", "fantasy_points_ppr",
 }
 AVG_COLS = {
     "target_share", "air_yards_share", "wopr", "racr",
@@ -244,7 +244,7 @@ def build_player_advanced_dict(
 
 # ── Team stats (offense + defense) ───────────────────────────────────────────
 
-def build_team_stats_dict(df: pd.DataFrame, player_df: pd.DataFrame) -> dict:
+def build_team_stats_dict(df: pd.DataFrame, player_df: pd.DataFrame, schedule_df: pd.DataFrame | None = None) -> dict:
     """
     Build nflverse_team_stats from the team_stats DataFrame.
 
@@ -253,6 +253,7 @@ def build_team_stats_dict(df: pd.DataFrame, player_df: pd.DataFrame) -> dict:
     how opponents performed when playing against team X.
 
     Fantasy points allowed per position use player_df (1 PPR = fantasy_points_ppr).
+    Real points scored/allowed use schedule_df (home_score/away_score per game).
     """
     reg = df[df["season_type"] == "REG"].copy()
     if reg.empty:
@@ -304,6 +305,30 @@ def build_team_stats_dict(df: pd.DataFrame, player_df: pd.DataFrame) -> dict:
         for _t, _grp in _wk.groupby(p_team_col):
             _off_avgs[str(_t)] = {c: round(_safe_float(_grp[c].mean()), 1) for c in _src_cols}
 
+    # Build per-team points scored and allowed from schedule (regular season, completed games)
+    _pts_for: dict[str, list[int]] = {}      # team → list of points scored per game (chronological)
+    _pts_against: dict[str, list[int]] = {}  # team → list of points allowed per game (chronological)
+    if schedule_df is not None and not schedule_df.empty:
+        sched_reg = schedule_df[schedule_df["game_type"] == "REG"].copy()
+        sched_reg = sched_reg[sched_reg["season"] == int(reg["season"].max())]
+        sched_reg = sched_reg.dropna(subset=["home_score", "away_score"])
+        sched_reg = sched_reg.sort_values("week")
+        for _, row in sched_reg.iterrows():
+            h, a = str(row["home_team"]), str(row["away_team"])
+            hs, as_ = int(row["home_score"]), int(row["away_score"])
+            _pts_for.setdefault(h, []).append(hs)
+            _pts_against.setdefault(h, []).append(as_)
+            _pts_for.setdefault(a, []).append(as_)
+            _pts_against.setdefault(a, []).append(hs)
+
+    def _score_avg(team: str, data: dict) -> float:
+        vals = data.get(team, [])
+        return round(sum(vals) / len(vals), 1) if vals else 0.0
+
+    def _score_rolling(team: str, data: dict, n: int) -> float:
+        vals = data.get(team, [])[-n:]
+        return round(sum(vals) / len(vals), 1) if vals else 0.0
+
     all_teams = set(reg["team"].dropna()) | set(reg["opponent_team"].dropna())
     result = {}
 
@@ -335,6 +360,12 @@ def build_team_stats_dict(df: pd.DataFrame, player_df: pd.DataFrame) -> dict:
             "passing_yards_per_game":   ta.get("passing_yards", 0.0),
             "rushing_yards_per_game":   ta.get("rushing_yards", 0.0),
             "fpts_per_game":            ta.get("fantasy_points_ppr", 0.0),
+            "points_per_game":          _score_avg(team, _pts_for),
+            "points_allowed_per_game":  _score_avg(team, _pts_against),
+            "points_rolling3":          _score_rolling(team, _pts_for, 3),
+            "points_rolling5":          _score_rolling(team, _pts_for, 5),
+            "points_allowed_rolling3":  _score_rolling(team, _pts_against, 3),
+            "points_allowed_rolling5":  _score_rolling(team, _pts_against, 5),
             "passing_tds_per_game":     _pg2(off["passing_tds"]),
             "rushing_tds_per_game":     _pg2(off["rushing_tds"]),
             "passing_epa_per_game":     _pg2(off["passing_epa"]),
@@ -474,7 +505,7 @@ def refresh_nflverse_data():
 
         player_stats    = build_player_stats_dict(stats_df, gsis_map)
         player_advanced = build_player_advanced_dict(snap_df, opp_df, gsis_map, pfr_map)
-        team_stats      = build_team_stats_dict(team_df, stats_df)
+        team_stats      = build_team_stats_dict(team_df, stats_df, schedule_df)
         schedule, games = build_schedule_dicts(schedule_df)
 
         reg = stats_df[stats_df["season_type"] == "REG"]
