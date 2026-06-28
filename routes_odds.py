@@ -4,8 +4,64 @@ routes_odds.py — Flask Blueprint for /odds/* endpoints backed by The Odds API.
 
 from flask import Blueprint, jsonify, request
 import odds_api as oa
+from nflverse_stats import nflverse_team_stats
 
 odds_bp = Blueprint("odds", __name__, url_prefix="/odds")
+
+
+def _ou_eval(home_abbr: str, away_abbr: str, total_line: float | None):
+    """Return implied total + edge signal using season/rolling team score data."""
+    if total_line is None:
+        return None
+    home = nflverse_team_stats.get(home_abbr, {})
+    away = nflverse_team_stats.get(away_abbr, {})
+
+    h_ppg = home.get("points_per_game") or 0
+    h_apg = home.get("points_allowed_per_game") or 0
+    h_r5  = home.get("points_rolling5") or 0
+    h_ar5 = home.get("points_allowed_rolling5") or 0
+    h_r3  = home.get("points_rolling3") or 0
+    h_ar3 = home.get("points_allowed_rolling3") or 0
+
+    a_ppg = away.get("points_per_game") or 0
+    a_apg = away.get("points_allowed_per_game") or 0
+    a_r5  = away.get("points_rolling5") or 0
+    a_ar5 = away.get("points_allowed_rolling5") or 0
+    a_r3  = away.get("points_rolling3") or 0
+    a_ar3 = away.get("points_allowed_rolling3") or 0
+
+    # Fall back to season-only if rolling data is absent
+    has_r5 = h_r5 or a_r5 or h_ar5 or a_ar5
+    has_r3 = h_r3 or a_r3 or h_ar3 or a_ar3
+    has_season = h_ppg or a_ppg or h_apg or a_apg
+
+    if not has_season:
+        return None
+
+    w_season = 1.0 if not has_r5 else 0.40
+    w_r5     = 0.0 if not has_r5 else (0.60 if not has_r3 else 0.35)
+    w_r3     = 0.0 if not has_r3 else 0.25
+
+    home_season = (h_ppg + a_apg) / 2
+    away_season = (a_ppg + h_apg) / 2
+    home_r5 = (h_r5 + a_ar5) / 2
+    away_r5 = (a_r5 + h_ar5) / 2
+    home_r3 = (h_r3 + a_ar3) / 2
+    away_r3 = (a_r3 + h_ar3) / 2
+
+    implied_home  = w_season * home_season + w_r5 * home_r5 + w_r3 * home_r3
+    implied_away  = w_season * away_season + w_r5 * away_r5 + w_r3 * away_r3
+    implied_total = round(implied_home + implied_away, 1)
+
+    edge_pct = round((implied_total - total_line) / total_line, 4)
+    if edge_pct > 0.05:
+        signal = "over"
+    elif edge_pct < -0.05:
+        signal = "under"
+    else:
+        signal = None
+
+    return {"implied": implied_total, "edge_pct": edge_pct, "signal": signal}
 
 
 @odds_bp.route("/status")
@@ -29,7 +85,13 @@ def odds_status():
 def all_games():
     """All upcoming NFL games with best available moneyline, spread, and total."""
     games = sorted(oa.odds_games.values(), key=lambda g: g.get("commence_time", ""))
-    return jsonify(games)
+    result = []
+    for g in games:
+        entry = dict(g)
+        total_line = (g.get("total") or {}).get("line")
+        entry["ou_eval"] = _ou_eval(g.get("home_abbr", ""), g.get("away_abbr", ""), total_line)
+        result.append(entry)
+    return jsonify(result)
 
 
 @odds_bp.route("/games/<event_id>")
