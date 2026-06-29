@@ -4461,6 +4461,11 @@ def initialize_data_in_background():
         update_dfs_salaries_data()
 
         # 4. Load nflverse player/team/schedule stats
+        # Force GC before the memory-intensive nflverse download so freed heap
+        # space from KTC/DFS scraping is reused rather than growing RSS further.
+        import gc
+        gc.collect()
+        gc.collect()
         print(f"{datetime.datetime.now()} - Loading nflverse stats data...")
         refresh_nflverse_data()
 
