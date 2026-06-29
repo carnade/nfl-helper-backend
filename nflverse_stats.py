@@ -5,6 +5,7 @@ All data is held in in-memory dicts, rebuilt on startup and refreshed weekly.
 No local files — Koyeb has an ephemeral filesystem.
 """
 
+import gc
 import logging
 import datetime
 import pandas as pd
@@ -83,11 +84,16 @@ def build_id_maps(season: int) -> tuple[dict, dict]:
       pfr_map:  pfr_id   → sleeper_id  (used for snap_counts)
     Falls back to season-1 if the requested season isn't published yet.
     """
+    _ROSTER_COLS = {"week", "gsis_id", "sleeper_id", "pfr_id"}
     try:
-        df = nfl.load_rosters([season]).to_pandas()
+        pl_df = nfl.load_rosters([season])
+        df = pl_df.select([c for c in _ROSTER_COLS if c in pl_df.columns]).to_pandas()
+        del pl_df
     except Exception:
         logger.warning("rosters %d unavailable, falling back to %d", season, season - 1)
-        df = nfl.load_rosters([season - 1]).to_pandas()
+        pl_df = nfl.load_rosters([season - 1])
+        df = pl_df.select([c for c in _ROSTER_COLS if c in pl_df.columns]).to_pandas()
+        del pl_df
 
     # One row per player per week — keep the most recent entry per gsis_id
     df = df.sort_values("week").drop_duplicates("gsis_id", keep="last")
@@ -489,27 +495,72 @@ def refresh_nflverse_data():
     logger.info("nflverse: refreshing season %d", season)
 
     try:
+        # 1. ID maps — load rosters, build maps, free immediately
         gsis_map, pfr_map = build_id_maps(season)
+        gc.collect()
         logger.info("nflverse: id maps built (gsis=%d, pfr=%d)", len(gsis_map), len(pfr_map))
 
-        stats_df    = nfl.load_player_stats([season]).to_pandas()
-        team_df     = nfl.load_team_stats([season]).to_pandas()
-        schedule_df = nfl.load_schedules([season]).to_pandas()
-        snap_df     = nfl.load_snap_counts([season]).to_pandas()
-        opp_df      = nfl.load_ff_opportunity([season]).to_pandas()
+        # 2. Player stats — keep in memory until team_stats is built (used by both)
+        _PLAYER_COLS = list({
+            "season_type", "season", "position", "player_id", "week",
+            "player_display_name", "team", "recent_team", "headshot_url",
+            "opponent_team",
+        } | SUM_COLS | AVG_COLS)
+        pl_df = nfl.load_player_stats([season])
+        stats_df = pl_df.select([c for c in _PLAYER_COLS if c in pl_df.columns]).to_pandas()
+        del pl_df; gc.collect()
+        logger.info("nflverse: player_stats loaded (%d rows)", len(stats_df))
 
-        logger.info(
-            "nflverse: downloaded player_stats=%d team=%d sched=%d snaps=%d opp=%d",
-            len(stats_df), len(team_df), len(schedule_df), len(snap_df), len(opp_df),
-        )
+        player_stats = build_player_stats_dict(stats_df, gsis_map)
 
-        player_stats    = build_player_stats_dict(stats_df, gsis_map)
+        # 3. Snap counts — load, build partial advanced, free
+        _SNAP_COLS = ["game_type", "pfr_player_id", "week", "offense_pct"]
+        pl_snap = nfl.load_snap_counts([season])
+        snap_df = pl_snap.select([c for c in _SNAP_COLS if c in pl_snap.columns]).to_pandas()
+        del pl_snap; gc.collect()
+        logger.info("nflverse: snap_counts loaded (%d rows)", len(snap_df))
+
+        # 4. FF opportunity — load, build advanced, free both
+        _OPP_COLS = ["player_id", "week", "total_fantasy_points_exp",
+                     "total_fantasy_points", "total_fantasy_points_diff"]
+        pl_opp = nfl.load_ff_opportunity([season])
+        opp_df = pl_opp.select([c for c in _OPP_COLS if c in pl_opp.columns]).to_pandas()
+        del pl_opp; gc.collect()
+        logger.info("nflverse: ff_opportunity loaded (%d rows)", len(opp_df))
+
         player_advanced = build_player_advanced_dict(snap_df, opp_df, gsis_map, pfr_map)
+        del snap_df, opp_df; gc.collect()
+
+        # 5. Team stats — load, build, free
+        _TEAM_COLS = [
+            "season_type", "season", "team", "opponent_team", "week",
+            "targets", "passing_yards", "rushing_yards", "passing_tds", "rushing_tds",
+            "passing_epa", "rushing_epa", "def_sacks", "def_interceptions", "def_pass_defended",
+        ]
+        pl_team = nfl.load_team_stats([season])
+        team_df = pl_team.select([c for c in _TEAM_COLS if c in pl_team.columns]).to_pandas()
+        del pl_team; gc.collect()
+        logger.info("nflverse: team_stats loaded (%d rows)", len(team_df))
+
+        # 6. Schedules — load, build dicts, free
+        _SCHED_COLS = [
+            "game_type", "season", "week", "home_team", "away_team",
+            "spread_line", "total_line", "gameday", "gametime", "roof", "surface",
+            "temp", "wind", "home_score", "away_score",
+            "home_moneyline", "away_moneyline", "home_qb_name", "away_qb_name",
+        ]
+        pl_sched = nfl.load_schedules([season])
+        schedule_df = pl_sched.select([c for c in _SCHED_COLS if c in pl_sched.columns]).to_pandas()
+        del pl_sched; gc.collect()
+        logger.info("nflverse: schedules loaded (%d rows)", len(schedule_df))
+
         team_stats      = build_team_stats_dict(team_df, stats_df, schedule_df)
         schedule, games = build_schedule_dicts(schedule_df)
 
         reg = stats_df[stats_df["season_type"] == "REG"]
         current_season = int(reg["season"].max()) if not reg.empty else season
+
+        del team_df, stats_df, schedule_df; gc.collect()
 
         nflverse_player_stats.clear();    nflverse_player_stats.update(player_stats)
         nflverse_player_advanced.clear(); nflverse_player_advanced.update(player_advanced)
