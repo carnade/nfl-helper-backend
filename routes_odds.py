@@ -4,7 +4,7 @@ routes_odds.py — Flask Blueprint for /odds/* endpoints backed by The Odds API.
 
 from flask import Blueprint, jsonify, request
 import odds_api as oa
-from nflverse_stats import nflverse_team_stats
+from nflverse_stats import nflverse_team_stats, nflverse_schedule, nflverse_games
 
 odds_bp = Blueprint("odds", __name__, url_prefix="/odds")
 
@@ -90,6 +90,8 @@ def all_games():
         entry = dict(g)
         total_line = (g.get("total") or {}).get("line")
         entry["ou_eval"] = _ou_eval(g.get("home_abbr", ""), g.get("away_abbr", ""), total_line)
+        sched = nflverse_schedule.get(g.get("home_abbr", "")) or nflverse_schedule.get(g.get("away_abbr", ""))
+        entry["nfl_week"] = sched.get("week") if sched else None
         result.append(entry)
     return jsonify(result)
 
@@ -131,9 +133,65 @@ def all_props():
         entry = dict(p)
         if market:
             entry["props"] = {market: props[market]}
+        sched = nflverse_schedule.get(p.get("home_abbr", "")) or nflverse_schedule.get(p.get("away_abbr", ""))
+        entry["nfl_week"] = sched.get("week") if sched else None
         result.append(entry)
 
     return jsonify(result)
+
+
+@odds_bp.route("/results")
+def game_results():
+    """Historical games: stored lines + actual scores from nflverse."""
+    # odds API abbrs → nflverse abbrs
+    ABBR_MAP = {"LAR": "LA", "WSH": "WAS", "JAX": "JAC"}
+
+    def _find_nflverse_game(home_nfl: str, away_nfl: str, gameday: str):
+        for week_games in nflverse_games.values():
+            for g in week_games:
+                if g["home_team"] == home_nfl and g["away_team"] == away_nfl and g["gameday"] == gameday:
+                    return g
+        return None
+
+    results = []
+    for event_id, stored in oa.odds_history.items():
+        home_nfl = ABBR_MAP.get(stored.get("home_abbr", ""), stored.get("home_abbr", ""))
+        away_nfl = ABBR_MAP.get(stored.get("away_abbr", ""), stored.get("away_abbr", ""))
+        gameday = (stored.get("commence_time") or "")[:10]
+
+        game = _find_nflverse_game(home_nfl, away_nfl, gameday)
+
+        entry = dict(stored)
+        if game and game.get("home_score") is not None:
+            h, a = game["home_score"], game["away_score"]
+            actual_total = h + a
+            total_line = (stored.get("total") or {}).get("line")
+            if total_line is not None:
+                if actual_total > total_line:
+                    ou_result = "over"
+                elif actual_total < total_line:
+                    ou_result = "under"
+                else:
+                    ou_result = "push"
+            else:
+                ou_result = None
+            signal = (stored.get("ou_eval") or {}).get("signal")
+            edge_correct = (signal == ou_result) if signal and ou_result and ou_result != "push" else None
+            entry["result"] = {
+                "home_score": h,
+                "away_score": a,
+                "ml_winner": "home" if h > a else "away",
+                "actual_total": actual_total,
+                "ou_result": ou_result,
+                "edge_correct": edge_correct,
+            }
+        else:
+            entry["result"] = None
+
+        results.append(entry)
+
+    results.sort(key=lambda r: r.get("commence_time", ""), reverse=True)
+    return jsonify(results)
 
 
 @odds_bp.route("/props/<sleeper_id>")
