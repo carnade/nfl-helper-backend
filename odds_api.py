@@ -74,6 +74,7 @@ NFL_TEAM_MAP = {
 
 odds_games: dict = {}               # event_id → game dict
 odds_props: list = []               # list of player prop dicts (one per player)
+odds_history: dict = {}             # event_id → snapshotted game dict (persisted before games play)
 odds_credits_remaining: int | None = None
 odds_last_updated: str | None = None
 
@@ -423,6 +424,22 @@ def _compute_value_flags(
         })
 
     return result
+
+
+# ── History snapshot ─────────────────────────────────────────────────────────
+
+def snapshot_current_games(ou_eval_fn) -> int:
+    """Copy current odds_games into odds_history. Idempotent — skips existing event_ids."""
+    added = 0
+    for event_id, game in odds_games.items():
+        if event_id not in odds_history:
+            entry = dict(game)
+            total_line = (game.get("total") or {}).get("line")
+            entry["ou_eval"] = ou_eval_fn(game.get("home_abbr", ""), game.get("away_abbr", ""), total_line)
+            entry["snapshotted_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+            odds_history[event_id] = entry
+            added += 1
+    return added
 
 
 # ── Refresh orchestrator ──────────────────────────────────────────────────────

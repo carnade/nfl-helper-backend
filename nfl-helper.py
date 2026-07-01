@@ -429,6 +429,69 @@ def _load_tournament_data_from_file():
     except Exception as e:
         print(f"{datetime.datetime.now()} - Error loading tournament_data: {e}")
 
+
+# ── Odds history persistence ──────────────────────────────────────────────────
+
+def save_odds_history():
+    """Save odds_history to Supabase (preferred) or local file."""
+    if USE_SUPABASE:
+        try:
+            supabase_client.table('app_data').upsert({
+                'key': 'odds_history',
+                'value': odds_api.odds_history,
+                'updated_at': datetime.datetime.now(datetime.UTC).isoformat()
+            }).execute()
+            print(f"{datetime.datetime.now()} - Saved odds_history to Supabase ({len(odds_api.odds_history)} entries)")
+        except Exception as e:
+            print(f"{datetime.datetime.now()} - Error saving odds_history to Supabase: {e}, falling back to file")
+            _save_odds_history_to_file()
+    else:
+        _save_odds_history_to_file()
+
+
+def _save_odds_history_to_file():
+    try:
+        filepath = DATA_DIR / 'odds_history.json'
+        with open(filepath, 'w') as f:
+            json.dump(odds_api.odds_history, f)
+        print(f"{datetime.datetime.now()} - Saved odds_history to {filepath} ({len(odds_api.odds_history)} entries)")
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error saving odds_history to file: {e}")
+
+
+def load_odds_history():
+    """Load odds_history from Supabase (preferred) or local file."""
+    if USE_SUPABASE:
+        try:
+            result = supabase_client.table('app_data').select('value').eq('key', 'odds_history').execute()
+            if result.data:
+                odds_api.odds_history.clear()
+                odds_api.odds_history.update(result.data[0]['value'])
+                print(f"{datetime.datetime.now()} - Loaded odds_history from Supabase ({len(odds_api.odds_history)} entries)")
+            else:
+                print(f"{datetime.datetime.now()} - No odds_history found in Supabase, starting empty")
+        except Exception as e:
+            print(f"{datetime.datetime.now()} - Error loading odds_history from Supabase: {e}, falling back to file")
+            _load_odds_history_from_file()
+    else:
+        _load_odds_history_from_file()
+
+
+def _load_odds_history_from_file():
+    try:
+        filepath = DATA_DIR / 'odds_history.json'
+        if filepath.exists():
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+            odds_api.odds_history.clear()
+            odds_api.odds_history.update(data)
+            print(f"{datetime.datetime.now()} - Loaded odds_history from {filepath} ({len(odds_api.odds_history)} entries)")
+        else:
+            print(f"{datetime.datetime.now()} - No odds_history file found, starting empty")
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Error loading odds_history from file: {e}")
+
+
 # Global variables to track the last update times
 last_players_update = None
 last_rankings_update = None
@@ -1282,6 +1345,19 @@ def _refresh_odds():
 scheduler.add_job(
     func=_refresh_odds,
     trigger=CronTrigger(day_of_week="thu,mon", hour=10, minute=0)
+)
+
+# Snapshot odds before each game window (Thu/Sun/Mon 12:00 UTC, 2h after refresh)
+def _snapshot_odds():
+    from routes_odds import _ou_eval
+    added = odds_api.snapshot_current_games(_ou_eval)
+    if added:
+        save_odds_history()
+        print(f"{datetime.datetime.now()} - Snapshotted {added} new games into odds_history")
+
+scheduler.add_job(
+    func=_snapshot_odds,
+    trigger=CronTrigger(day_of_week="thu,sun,mon", hour=12, minute=0)
 )
 
 def fetch_sleeper_matchup_points(week, league_ids=None):
@@ -4469,9 +4545,10 @@ def initialize_data_in_background():
         print(f"{datetime.datetime.now()} - Loading nflverse stats data...")
         refresh_nflverse_data()
 
-        # 5. Load betting odds
+        # 5. Load betting odds + history
         print(f"{datetime.datetime.now()} - Loading odds data...")
         odds_api.refresh_odds_data(ODDS_API_KEY)
+        load_odds_history()
 
         print(f"{datetime.datetime.now()} - Background data initialization completed!")
     
