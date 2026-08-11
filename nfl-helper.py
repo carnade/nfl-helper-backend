@@ -1340,7 +1340,7 @@ scheduler.add_job(
 
 # Schedule odds refresh: Thursday 10:00 UTC (props open) + Monday 10:00 UTC (post-week)
 def _refresh_odds():
-    odds_api.refresh_odds_data(ODDS_API_KEY)
+    odds_api.refresh_odds_data(ODDS_API_KEY, filtered_players)
 
 scheduler.add_job(
     func=_refresh_odds,
@@ -4465,7 +4465,7 @@ def trigger_fetch_and_filter():
 @app.route('/admin/trigger-odds-fetch', methods=['POST'])
 def admin_trigger_odds_fetch():
     try:
-        odds_api.refresh_odds_data(ODDS_API_KEY)
+        odds_api.refresh_odds_data(ODDS_API_KEY, filtered_players)
         return jsonify({
             "message": "Odds refresh triggered successfully.",
             "games": len(odds_api.odds_games),
@@ -4547,7 +4547,7 @@ def initialize_data_in_background():
 
         # 5. Load betting odds + history
         print(f"{datetime.datetime.now()} - Loading odds data...")
-        odds_api.refresh_odds_data(ODDS_API_KEY)
+        odds_api.refresh_odds_data(ODDS_API_KEY, filtered_players)
         load_odds_history()
 
         print(f"{datetime.datetime.now()} - Background data initialization completed!")

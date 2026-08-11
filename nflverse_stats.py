@@ -277,29 +277,40 @@ def build_team_stats_dict(df: pd.DataFrame, player_df: pd.DataFrame, schedule_df
     if "opponent_team" not in p_reg.columns:
         p_reg["opponent_team"] = None
 
-    # Per-week fpts allowed per (defending_team, position): used for season avg + rolling
+    # Per-week stats allowed per (defending_team, position): used for season avg +
+    # rolling, both for fpts-allowed (existing) and raw yardage/TD-allowed (new,
+    # feeds the opponent-defense-vs-market-stat column on the Betting page).
+    _DEF_STAT_COLS = ["fantasy_points_ppr", "passing_yards", "rushing_yards", "receiving_yards", "rushing_tds", "receiving_tds"]
+    _def_stat_src_cols = [c for c in _DEF_STAT_COLS if c in p_reg.columns]
     def_weekly = (
-        p_reg.groupby(["opponent_team", "week", "position"])["fantasy_points_ppr"]
+        p_reg.groupby(["opponent_team", "week", "position"])[_def_stat_src_cols]
         .sum()
         .reset_index()
         .rename(columns={"opponent_team": "def_team", "fantasy_points_ppr": "fpts"})
     )
+    def_weekly["rush_rec_tds"] = def_weekly.get("rushing_tds", 0) + def_weekly.get("receiving_tds", 0)
 
     def _def_season(team: str, pos: str, n_games: int) -> float:
-        rows = def_weekly[(def_weekly["def_team"] == team) & (def_weekly["position"] == pos)]
-        if rows.empty or n_games == 0:
-            return 0.0
-        return round(_safe_float(rows["fpts"].sum()) / n_games, 1)
+        return _def_stat_season(team, pos, "fpts", n_games)
 
     def _def_rolling(team: str, pos: str, n: int) -> float:
+        return _def_stat_rolling(team, pos, "fpts", n)
+
+    def _def_stat_season(team: str, pos: str, col: str, n_games: int) -> float:
+        rows = def_weekly[(def_weekly["def_team"] == team) & (def_weekly["position"] == pos)]
+        if rows.empty or n_games == 0 or col not in rows.columns:
+            return 0.0
+        return round(_safe_float(rows[col].sum()) / n_games, 1)
+
+    def _def_stat_rolling(team: str, pos: str, col: str, n: int) -> float:
         rows = (
             def_weekly[(def_weekly["def_team"] == team) & (def_weekly["position"] == pos)]
             .sort_values("week")
             .tail(n)
         )
-        if rows.empty:
+        if rows.empty or col not in rows.columns:
             return 0.0
-        return round(_safe_float(rows["fpts"].mean()), 1)
+        return round(_safe_float(rows[col].mean()), 1)
 
     # Aggregate key offensive stats per (team, week) from player_df — column names
     # are guaranteed correct here (same source as player stats endpoints).
@@ -402,6 +413,18 @@ def build_team_stats_dict(df: pd.DataFrame, player_df: pd.DataFrame, schedule_df
                 "wr": _def_rolling(team, "WR", 5),
                 "te": _def_rolling(team, "TE", 5),
             },
+            # ── Defense: raw yardage/TD allowed per position (feeds Betting page's
+            #    opponent-defense-vs-market-stat column, one stat per prop market) ──
+            "def_stat_allowed": {
+                "season": {
+                    sk: {p: _def_stat_season(team, p.upper(), sk, n_games) for p in ("qb", "rb", "wr", "te")}
+                    for sk in ("passing_yards", "rushing_yards", "receiving_yards", "rush_rec_tds")
+                },
+                "rolling5": {
+                    sk: {p: _def_stat_rolling(team, p.upper(), sk, 5) for p in ("qb", "rb", "wr", "te")}
+                    for sk in ("passing_yards", "rushing_yards", "receiving_yards", "rush_rec_tds")
+                },
+            },
         }
 
     # Second pass: rank all teams per position (rank 1 = fewest fpts allowed = best defense)
@@ -419,6 +442,27 @@ def build_team_stats_dict(df: pd.DataFrame, player_df: pd.DataFrame, schedule_df
         for rank, (team, _) in enumerate(sorted_r5, 1):
             result[team].setdefault("def_rank_vs_position", {"season": {}, "rolling5": {}})
             result[team]["def_rank_vs_position"]["rolling5"][pos] = rank
+
+    # Third pass: rank all teams per (stat, position) for the raw yardage/TD-allowed
+    # stats too (rank 1 = fewest allowed = toughest defense), same convention as above.
+    for sk in ("passing_yards", "rushing_yards", "receiving_yards", "rush_rec_tds"):
+        for pos in ("qb", "rb", "wr", "te"):
+            sorted_season = sorted(
+                result.items(),
+                key=lambda x: (x[1].get("def_stat_allowed", {}).get("season", {}).get(sk) or {}).get(pos, 0),
+            )
+            sorted_r5 = sorted(
+                result.items(),
+                key=lambda x: (x[1].get("def_stat_allowed", {}).get("rolling5", {}).get(sk) or {}).get(pos, 0),
+            )
+
+            for rank, (team, _) in enumerate(sorted_season, 1):
+                result[team].setdefault("def_stat_rank", {"season": {}, "rolling5": {}})
+                result[team]["def_stat_rank"]["season"].setdefault(sk, {})[pos] = rank
+
+            for rank, (team, _) in enumerate(sorted_r5, 1):
+                result[team].setdefault("def_stat_rank", {"season": {}, "rolling5": {}})
+                result[team]["def_stat_rank"]["rolling5"].setdefault(sk, {})[pos] = rank
 
     return result
 

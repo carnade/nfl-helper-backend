@@ -34,6 +34,33 @@ PROP_ROLLING_KEY = {
     "player_reception_yds": "receiving_yards",
 }
 
+# Market key → weekly stat column(s) that make up a single game's value for that
+# market (used for the "Last 5" column). player_anytime_td has no single raw
+# column — a game counts if the player found the end zone rushing or receiving.
+PROP_GAME_STAT_COLS = {
+    "player_pass_yds":      ("passing_yards",),
+    "player_rush_yds":      ("rushing_yards",),
+    "player_reception_yds": ("receiving_yards",),
+    "player_anytime_td":    ("rushing_tds", "receiving_tds"),
+}
+
+# Market key → nflverse_team_stats "def_stat_allowed"/"def_stat_rank" stat key
+# (used for the opponent-defense column — which defense-allowed stat matches
+# the market being displayed)
+MARKET_TO_DEF_STAT = {
+    "player_pass_yds":      "passing_yards",
+    "player_rush_yds":      "rushing_yards",
+    "player_reception_yds": "receiving_yards",
+    "player_anytime_td":    "rush_rec_tds",
+}
+
+# Player position → nflverse_team_stats defense-vs-position dict key
+POS_DEF_KEY = {"QB": "qb", "RB": "rb", "WR": "wr", "TE": "te"}
+
+# Sleeper's team abbreviation → our convention (nflverse/NFL_TEAM_MAP), for the
+# few codes where Sleeper's live roster feed disagrees (only the Rams so far)
+SLEEPER_TEAM_ABBR_FIX = {"LAR": "LA"}
+
 # Full team name → nflverse abbreviation
 NFL_TEAM_MAP = {
     "Arizona Cardinals":    "ARI",
@@ -227,28 +254,49 @@ def fetch_game_odds(api_key: str) -> dict:
 
 # ── Player props ──────────────────────────────────────────────────────────────
 
-PROPS_LOOKAHEAD_DAYS = 14   # only fetch props for games within this window
-PROPS_REGION = "us"         # single region for props to minimise credit use
+PROPS_LOOKAHEAD_DAYS   = 14   # only fetch props for games within this rolling window
+PROPS_OPENER_BUFFER_DAYS = 7  # in the off-season, extend the window to cover the opening week
+PROPS_REGION = "us"           # single region for props to minimise credit use
 
-def fetch_player_props(api_key: str, name_lookup: dict[str, str], games: dict) -> list:
+def fetch_player_props(api_key: str, name_lookup: dict[str, str], games: dict, sleeper_players: dict | None = None) -> list:
     """
     Fetch player props per event (the bulk /odds endpoint does not support prop
-    markets). Only processes games starting within PROPS_LOOKAHEAD_DAYS to
+    markets). Only processes games starting within the lookahead window, to
     avoid burning credits on fixtures that have no lines yet.
+
+    The window is normally a rolling PROPS_LOOKAHEAD_DAYS from now. But deep in
+    the off-season, "now + 14 days" can fall before the season even starts,
+    which would fetch nothing. In that case we extend the cutoff to the first
+    game of the season plus PROPS_OPENER_BUFFER_DAYS, so props for the opening
+    week become available once the book actually posts them.
+
+    sleeper_players (nfl-helper.py's `filtered_players`) is the live Sleeper
+    roster feed, refreshed every 4 hours — used to override nflverse's `team`
+    field, which is frozen at last completed season's roster and goes stale
+    the moment a player is traded in the current offseason.
     """
     import nflverse_stats as ns
+    sleeper_players = sleeper_players or {}
 
-    cutoff = datetime.datetime.utcnow() + datetime.timedelta(days=PROPS_LOOKAHEAD_DAYS)
-    upcoming = []
+    now = datetime.datetime.utcnow()
+    rolling_cutoff = now + datetime.timedelta(days=PROPS_LOOKAHEAD_DAYS)
+
+    dated_games = []  # (game, parsed commence_time)
     for g in games.values():
         try:
             t = datetime.datetime.fromisoformat(g["commence_time"].replace("Z", ""))
-            if t <= cutoff:
-                upcoming.append(g)
+            dated_games.append((g, t))
         except Exception:
             pass
 
-    logger.info("odds: fetching props for %d events within %d days", len(upcoming), PROPS_LOOKAHEAD_DAYS)
+    cutoff = rolling_cutoff
+    if dated_games:
+        opener_cutoff = min(t for _, t in dated_games) + datetime.timedelta(days=PROPS_OPENER_BUFFER_DAYS)
+        cutoff = max(rolling_cutoff, opener_cutoff)
+
+    upcoming = [g for g, t in dated_games if t <= cutoff]
+    lookahead_days = (cutoff - now).days
+    logger.info("odds: fetching props for %d events within %d days", len(upcoming), lookahead_days)
 
     player_data: dict[str, dict] = {}
     player_event: dict[str, dict] = {}
@@ -296,7 +344,7 @@ def fetch_player_props(api_key: str, name_lookup: dict[str, str], games: dict) -
                     if not norm:
                         continue
                     market_outcomes[mkey].setdefault(norm, []).append({
-                        "name":  o.get("name"),   # "Over" / "Under" / player name
+                        "name":  o.get("name"),   # "Over"/"Under" (yardage) or "Yes"/"No" (anytime TD)
                         "point": o.get("point"),
                         "price": o.get("price"),
                         "_book": book_key,
@@ -311,9 +359,12 @@ def fetch_player_props(api_key: str, name_lookup: dict[str, str], games: dict) -
                 # Determine line (use first point value found)
                 line = next((o["point"] for o in outcomes if o.get("point") is not None), None)
 
-                # Best over price (highest = best for bettor)
-                over_outcomes  = [o for o in outcomes if o["name"] == "Over"]
-                under_outcomes = [o for o in outcomes if o["name"] == "Under"]
+                # Best over price (highest = best for bettor).
+                # Line-based markets (pass/rush/rec yds) use "Over"/"Under".
+                # Yes/No markets (anytime TD) have no line — "Yes" maps to the
+                # "over" slot so the UI's existing Over/Under columns still work.
+                over_outcomes  = [o for o in outcomes if o["name"] in ("Over", "Yes")]
+                under_outcomes = [o for o in outcomes if o["name"] in ("Under", "No")]
 
                 best_over_price, best_over_book   = None, None
                 best_under_price, best_under_book = None, None
@@ -355,13 +406,16 @@ def fetch_player_props(api_key: str, name_lookup: dict[str, str], games: dict) -
                         "commence_time": commence,
                     }
 
-                # Store meta from nflverse (authoritative)
+                # Store meta from nflverse, but prefer Sleeper's live team (nflverse's
+                # team is frozen at last completed season and misses offseason trades)
                 if sleeper_id not in player_meta:
                     p = ns.nflverse_player_stats.get(sleeper_id, {})
+                    live_team = sleeper_players.get(sleeper_id, {}).get("team")
+                    live_team = SLEEPER_TEAM_ABBR_FIX.get(live_team, live_team)
                     player_meta[sleeper_id] = {
                         "name":     p.get("name", ""),
                         "position": p.get("position", ""),
-                        "team":     p.get("team", ""),
+                        "team":     live_team or p.get("team", ""),
                     }
 
     # Compute value flags and assemble final list
@@ -373,6 +427,53 @@ def fetch_player_props(api_key: str, name_lookup: dict[str, str], games: dict) -
 # ── Value flags ───────────────────────────────────────────────────────────────
 
 VALUE_THRESHOLD = 0.10  # rolling avg must exceed line by >10% to flag
+
+
+def _market_game_value(week_entry: dict, mkey: str) -> float | None:
+    """Sum the stat column(s) that make up one game's value for this market."""
+    cols = PROP_GAME_STAT_COLS.get(mkey)
+    if not cols:
+        return None
+    return round(sum(week_entry.get(c, 0.0) or 0.0 for c in cols), 1)
+
+
+def _opponent_defense(mkey: str, position: str, team: str, event: dict, team_stats: dict) -> dict | None:
+    """
+    Rank + per-game value the player's opponent allows for this market's stat,
+    to the player's own position. Prefers the last-5-games figure, falling
+    back to season-long when rolling5 has no games yet (mirrors the has_r5
+    fallback pattern in routes_odds.py's _ou_eval).
+    """
+    home_abbr = event.get("home_abbr")
+    away_abbr = event.get("away_abbr")
+    opponent  = away_abbr if team == home_abbr else (home_abbr if team == away_abbr else None)
+    pos_key   = POS_DEF_KEY.get(position)
+    stat_key  = MARKET_TO_DEF_STAT.get(mkey)
+    if not (opponent and pos_key and stat_key):
+        return None
+
+    opp     = team_stats.get(opponent, {})
+    allowed = opp.get("def_stat_allowed", {})
+    rank    = opp.get("def_stat_rank", {})
+
+    season_val  = (allowed.get("season", {}).get(stat_key) or {}).get(pos_key)
+    r5_val      = (allowed.get("rolling5", {}).get(stat_key) or {}).get(pos_key)
+    season_rank = (rank.get("season", {}).get(stat_key) or {}).get(pos_key)
+    r5_rank     = (rank.get("rolling5", {}).get(stat_key) or {}).get(pos_key)
+
+    use_r5 = bool(r5_val)
+    value  = r5_val if use_r5 else season_val
+    display_rank = r5_rank if use_r5 else season_rank
+    if value is None or display_rank is None:
+        return None
+
+    return {
+        "rank":         display_rank,
+        "total_teams":  len(team_stats) or 32,
+        "value":        value,
+        "basis":        "rolling5" if use_r5 else "season",
+    }
+
 
 def _compute_value_flags(
     player_data: dict,
@@ -409,6 +510,21 @@ def _compute_value_flags(
             entry["rolling_avg"] = round(rolling_avg, 1) if rolling_avg is not None else None
             entry["value_flag"]  = value_flag
             entry["value_pct"]   = value_pct
+
+            # Last 5 individual games for this market's stat (oldest → newest)
+            weekly = p.get("weekly") or []
+            last5 = []
+            for w in weekly[-5:]:
+                v = _market_game_value(w, mkey)
+                if v is not None:
+                    last5.append({"week": w.get("week"), "value": v})
+            entry["last5"] = last5
+
+            # Opponent defense vs. this player's position, for this market's stat
+            entry["opp_defense"] = _opponent_defense(
+                mkey, meta.get("position", ""), meta.get("team", ""), event, ns.nflverse_team_stats
+            )
+
             enriched_markets[mkey] = entry
 
         result.append({
@@ -444,8 +560,12 @@ def snapshot_current_games(ou_eval_fn) -> int:
 
 # ── Refresh orchestrator ──────────────────────────────────────────────────────
 
-def refresh_odds_data(api_key: str | None = None) -> None:
-    """Download and rebuild all odds in-memory data. Safe to call repeatedly."""
+def refresh_odds_data(api_key: str | None = None, sleeper_players: dict | None = None) -> None:
+    """
+    Download and rebuild all odds in-memory data. Safe to call repeatedly.
+    sleeper_players (nfl-helper.py's `filtered_players`) is passed through to
+    fetch_player_props to keep the player→team mapping accurate across trades.
+    """
     global odds_games, odds_props, odds_last_updated
 
     if not api_key:
@@ -457,7 +577,7 @@ def refresh_odds_data(api_key: str | None = None) -> None:
         name_lookup = _build_name_lookup()
 
         games = fetch_game_odds(api_key)
-        props = fetch_player_props(api_key, name_lookup, games)
+        props = fetch_player_props(api_key, name_lookup, games, sleeper_players)
 
         odds_games.clear()
         odds_games.update(games)
