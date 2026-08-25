@@ -28,6 +28,11 @@ AVG_COLS = {
 }
 STAT_COLS = sorted(SUM_COLS | AVG_COLS)
 
+# Stat keys exposed per (position) in each team's "def_stat_allowed"/"def_stat_rank"
+# blocks — one per player-prop market the Betting page can display.
+DEF_STAT_KEYS = ("passing_yards", "rushing_yards", "receiving_yards", "rush_rec_tds", "receptions", "carries")
+DEF_POS_KEYS  = ("qb", "rb", "wr", "te")
+
 # ── In-memory storage ─────────────────────────────────────────────────────────
 
 nflverse_player_stats: dict = {}    # sleeper_id → core player stats
@@ -280,7 +285,8 @@ def build_team_stats_dict(df: pd.DataFrame, player_df: pd.DataFrame, schedule_df
     # Per-week stats allowed per (defending_team, position): used for season avg +
     # rolling, both for fpts-allowed (existing) and raw yardage/TD-allowed (new,
     # feeds the opponent-defense-vs-market-stat column on the Betting page).
-    _DEF_STAT_COLS = ["fantasy_points_ppr", "passing_yards", "rushing_yards", "receiving_yards", "rushing_tds", "receiving_tds"]
+    _DEF_STAT_COLS = ["fantasy_points_ppr", "passing_yards", "rushing_yards", "receiving_yards",
+                      "rushing_tds", "receiving_tds", "receptions", "carries"]
     _def_stat_src_cols = [c for c in _DEF_STAT_COLS if c in p_reg.columns]
     def_weekly = (
         p_reg.groupby(["opponent_team", "week", "position"])[_def_stat_src_cols]
@@ -417,12 +423,12 @@ def build_team_stats_dict(df: pd.DataFrame, player_df: pd.DataFrame, schedule_df
             #    opponent-defense-vs-market-stat column, one stat per prop market) ──
             "def_stat_allowed": {
                 "season": {
-                    sk: {p: _def_stat_season(team, p.upper(), sk, n_games) for p in ("qb", "rb", "wr", "te")}
-                    for sk in ("passing_yards", "rushing_yards", "receiving_yards", "rush_rec_tds")
+                    sk: {p: _def_stat_season(team, p.upper(), sk, n_games) for p in DEF_POS_KEYS}
+                    for sk in DEF_STAT_KEYS
                 },
                 "rolling5": {
-                    sk: {p: _def_stat_rolling(team, p.upper(), sk, 5) for p in ("qb", "rb", "wr", "te")}
-                    for sk in ("passing_yards", "rushing_yards", "receiving_yards", "rush_rec_tds")
+                    sk: {p: _def_stat_rolling(team, p.upper(), sk, 5) for p in DEF_POS_KEYS}
+                    for sk in DEF_STAT_KEYS
                 },
             },
         }
@@ -445,8 +451,8 @@ def build_team_stats_dict(df: pd.DataFrame, player_df: pd.DataFrame, schedule_df
 
     # Third pass: rank all teams per (stat, position) for the raw yardage/TD-allowed
     # stats too (rank 1 = fewest allowed = toughest defense), same convention as above.
-    for sk in ("passing_yards", "rushing_yards", "receiving_yards", "rush_rec_tds"):
-        for pos in ("qb", "rb", "wr", "te"):
+    for sk in DEF_STAT_KEYS:
+        for pos in DEF_POS_KEYS:
             sorted_season = sorted(
                 result.items(),
                 key=lambda x: (x[1].get("def_stat_allowed", {}).get("season", {}).get(sk) or {}).get(pos, 0),

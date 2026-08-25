@@ -110,8 +110,11 @@ if USE_SUPABASE:
         supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
         print(f"Supabase client initialised (URL: {SUPABASE_URL})")
     except Exception as e:
-        print(f"Failed to initialise Supabase client: {e}")
         USE_SUPABASE = False
+        print(f"Failed to initialise Supabase client: {e}")
+        print(f"Persistence falls back to "
+              f"{'GitHub Gist' if os.environ.get('GITHUB_TOKEN') and os.environ.get('GIST_ID') else 'LOCAL FILES'}"
+              " — note local files do not survive a redeploy on Koyeb's free tier.")
 
 # GitHub Gist configuration (optional - only used if both are set)
 GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
@@ -432,64 +435,111 @@ def _load_tournament_data_from_file():
 
 # ── Odds history persistence ──────────────────────────────────────────────────
 
-def save_odds_history():
-    """Save odds_history to Supabase (preferred) or local file."""
+def _save_store(key: str, store: dict):
+    """
+    Persist an in-memory dict, in order of durability:
+    Supabase → GitHub Gist → local file.
+
+    The Gist tier matters on Koyeb's free tier, where the filesystem is ephemeral
+    and anything written locally is lost on redeploy.
+    """
     if USE_SUPABASE:
         try:
             supabase_client.table('app_data').upsert({
-                'key': 'odds_history',
-                'value': odds_api.odds_history,
+                'key': key,
+                'value': store,
                 'updated_at': datetime.datetime.now(datetime.UTC).isoformat()
             }).execute()
-            print(f"{datetime.datetime.now()} - Saved odds_history to Supabase ({len(odds_api.odds_history)} entries)")
+            print(f"{datetime.datetime.now()} - Saved {key} to Supabase ({len(store)} entries)")
+            return
         except Exception as e:
-            print(f"{datetime.datetime.now()} - Error saving odds_history to Supabase: {e}, falling back to file")
-            _save_odds_history_to_file()
-    else:
-        _save_odds_history_to_file()
+            print(f"{datetime.datetime.now()} - Error saving {key} to Supabase: {e}, falling back to Gist/file")
 
+    if USE_GIST:
+        try:
+            resp = requests.patch(
+                GIST_API_URL,
+                headers={'Authorization': f'token {GITHUB_TOKEN}',
+                         'Accept': 'application/vnd.github.v3+json'},
+                json={'files': {f'{key}.json': {'content': json.dumps(store, indent=2)}}},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            print(f"{datetime.datetime.now()} - Saved {key} to Gist ({len(store)} entries)")
+            return
+        except Exception as e:
+            print(f"{datetime.datetime.now()} - Error saving {key} to Gist: {e}, falling back to file")
 
-def _save_odds_history_to_file():
     try:
-        filepath = DATA_DIR / 'odds_history.json'
+        filepath = DATA_DIR / f'{key}.json'
         with open(filepath, 'w') as f:
-            json.dump(odds_api.odds_history, f)
-        print(f"{datetime.datetime.now()} - Saved odds_history to {filepath} ({len(odds_api.odds_history)} entries)")
+            json.dump(store, f)
+        print(f"{datetime.datetime.now()} - Saved {key} to {filepath} ({len(store)} entries)")
     except Exception as e:
-        print(f"{datetime.datetime.now()} - Error saving odds_history to file: {e}")
+        print(f"{datetime.datetime.now()} - Error saving {key} to file: {e}")
 
 
-def load_odds_history():
-    """Load odds_history from Supabase (preferred) or local file."""
+def _load_store(key: str, store: dict):
+    """Load an in-memory dict: Supabase → GitHub Gist → local file."""
     if USE_SUPABASE:
         try:
-            result = supabase_client.table('app_data').select('value').eq('key', 'odds_history').execute()
+            result = supabase_client.table('app_data').select('value').eq('key', key).execute()
             if result.data:
-                odds_api.odds_history.clear()
-                odds_api.odds_history.update(result.data[0]['value'])
-                print(f"{datetime.datetime.now()} - Loaded odds_history from Supabase ({len(odds_api.odds_history)} entries)")
+                store.clear()
+                store.update(result.data[0]['value'])
+                print(f"{datetime.datetime.now()} - Loaded {key} from Supabase ({len(store)} entries)")
             else:
-                print(f"{datetime.datetime.now()} - No odds_history found in Supabase, starting empty")
+                print(f"{datetime.datetime.now()} - No {key} found in Supabase, starting empty")
+            return
         except Exception as e:
-            print(f"{datetime.datetime.now()} - Error loading odds_history from Supabase: {e}, falling back to file")
-            _load_odds_history_from_file()
-    else:
-        _load_odds_history_from_file()
+            print(f"{datetime.datetime.now()} - Error loading {key} from Supabase: {e}, falling back to Gist/file")
 
+    if USE_GIST:
+        try:
+            headers = {'Accept': 'application/vnd.github.v3+json'}
+            if GITHUB_TOKEN:
+                headers['Authorization'] = f'token {GITHUB_TOKEN}'
+            resp = requests.get(GIST_API_URL, headers=headers, timeout=15)
+            resp.raise_for_status()
+            files = resp.json().get('files', {})
+            if f'{key}.json' in files:
+                store.clear()
+                store.update(json.loads(files[f'{key}.json']['content']))
+                print(f"{datetime.datetime.now()} - Loaded {key} from Gist ({len(store)} entries)")
+            else:
+                print(f"{datetime.datetime.now()} - No {key}.json in Gist, starting empty")
+            return
+        except Exception as e:
+            print(f"{datetime.datetime.now()} - Error loading {key} from Gist: {e}, falling back to file")
 
-def _load_odds_history_from_file():
     try:
-        filepath = DATA_DIR / 'odds_history.json'
+        filepath = DATA_DIR / f'{key}.json'
         if filepath.exists():
             with open(filepath, 'r') as f:
                 data = json.load(f)
-            odds_api.odds_history.clear()
-            odds_api.odds_history.update(data)
-            print(f"{datetime.datetime.now()} - Loaded odds_history from {filepath} ({len(odds_api.odds_history)} entries)")
+            store.clear()
+            store.update(data)
+            print(f"{datetime.datetime.now()} - Loaded {key} from {filepath} ({len(store)} entries)")
         else:
-            print(f"{datetime.datetime.now()} - No odds_history file found, starting empty")
+            print(f"{datetime.datetime.now()} - No {key} file found, starting empty")
     except Exception as e:
-        print(f"{datetime.datetime.now()} - Error loading odds_history from file: {e}")
+        print(f"{datetime.datetime.now()} - Error loading {key} from file: {e}")
+
+
+def save_odds_history():
+    _save_store('odds_history', odds_api.odds_history)
+
+
+def load_odds_history():
+    _load_store('odds_history', odds_api.odds_history)
+
+
+def save_props_history():
+    _save_store('props_history', odds_api.odds_props_history)
+
+
+def load_props_history():
+    _load_store('props_history', odds_api.odds_props_history)
 
 
 # Global variables to track the last update times
@@ -1354,6 +1404,13 @@ def _snapshot_odds():
     if added:
         save_odds_history()
         print(f"{datetime.datetime.now()} - Snapshotted {added} new games into odds_history")
+
+    # Freeze prop lines + our projections so the calls can be graded after kickoff
+    p_added, p_updated = odds_api.snapshot_current_props()
+    if p_added or p_updated:
+        save_props_history()
+        print(f"{datetime.datetime.now()} - Snapshotted props: {p_added} new, {p_updated} updated "
+              f"({len(odds_api.odds_props_history)} total)")
 
 scheduler.add_job(
     func=_snapshot_odds,
@@ -4476,6 +4533,23 @@ def admin_trigger_odds_fetch():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/admin/snapshot-props', methods=['POST'])
+def admin_snapshot_props():
+    """Capture current prop lines + projections for later grading. Costs no API credits."""
+    try:
+        added, updated = odds_api.snapshot_current_props()
+        if added or updated:
+            save_props_history()
+        return jsonify({
+            "message": "Props snapshotted.",
+            "added": added,
+            "updated": updated,
+            "total": len(odds_api.odds_props_history),
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/', methods=['GET'])
 def health_check():
     return "Health check passed", 200
@@ -4549,6 +4623,7 @@ def initialize_data_in_background():
         print(f"{datetime.datetime.now()} - Loading odds data...")
         odds_api.refresh_odds_data(ODDS_API_KEY, filtered_players)
         load_odds_history()
+        load_props_history()
 
         print(f"{datetime.datetime.now()} - Background data initialization completed!")
     
