@@ -203,6 +203,53 @@ def player_props(sleeper_id: str):
     return jsonify(player)
 
 
+@odds_bp.route("/prop-results")
+def prop_results():
+    """
+    Graded prop history: the line we captured, the projection we made, and what
+    actually happened — plus hit rates so the model can be judged over time.
+
+    Query params:
+      market   — only this market key
+      position — only this position
+      graded   — "true" to drop entries whose game has not been played yet
+    """
+    market   = request.args.get("market", "")
+    position = request.args.get("position", "").upper()
+    only_graded = request.args.get("graded", "").lower() == "true"
+
+    rows = oa.grade_props_history()
+    if market:
+        rows = [r for r in rows if r.get("market") == market]
+    if position:
+        rows = [r for r in rows if r.get("position") == position]
+    if only_graded:
+        rows = [r for r in rows if r.get("result")]
+
+    # Hit rates, overall and per market
+    def _summarise(subset):
+        calls = [r for r in subset if (r.get("result") or {}).get("call_correct") is not None]
+        sides = [r for r in subset if (r.get("result") or {}).get("projection_side_correct") is not None]
+        return {
+            "snapshots":        len(subset),
+            "graded":           len([r for r in subset if r.get("result")]),
+            "flagged_calls":    len(calls),
+            "flagged_hit_rate": round(sum(r["result"]["call_correct"] for r in calls) / len(calls), 3) if calls else None,
+            "all_sides":        len(sides),
+            "side_hit_rate":    round(sum(r["result"]["projection_side_correct"] for r in sides) / len(sides), 3) if sides else None,
+        }
+
+    by_market = {}
+    for r in rows:
+        by_market.setdefault(r.get("market"), []).append(r)
+
+    return jsonify({
+        "summary":   _summarise(rows),
+        "by_market": {k: _summarise(v) for k, v in sorted(by_market.items())},
+        "results":   rows,
+    })
+
+
 @odds_bp.route("/value")
 def value_props():
     """
