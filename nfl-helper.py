@@ -542,6 +542,27 @@ def load_props_history():
     _load_store('props_history', odds_api.odds_props_history)
 
 
+def save_odds_cache():
+    """Persist the odds we are currently serving, so a restart is not blank."""
+    _save_store('odds_cache', odds_api.export_cache())
+
+
+def load_odds_cache():
+    store = {}
+    _load_store('odds_cache', store)
+    return odds_api.import_cache(store)
+
+
+def refresh_odds_and_cache():
+    """Refresh, and persist the result only if the refresh actually succeeded."""
+    odds_api.refresh_odds_data(ODDS_API_KEY, filtered_players)
+    if odds_api.odds_last_error is None:
+        save_odds_cache()
+    else:
+        print(f"{datetime.datetime.now()} - Odds refresh failed ({odds_api.odds_last_error}); "
+              f"keeping cached data ({len(odds_api.odds_games)} games, {len(odds_api.odds_props)} players)")
+
+
 # Global variables to track the last update times
 last_players_update = None
 last_rankings_update = None
@@ -1388,13 +1409,21 @@ scheduler.add_job(
     trigger=CronTrigger(day_of_week="wed", hour=19, minute=0)
 )
 
-# Schedule odds refresh: Thursday 10:00 UTC (props open) + Monday 10:00 UTC (post-week)
+# Schedule odds refresh: Thursday (props open) + Monday (post-week).
+# The spec lives in odds_api so /odds/status can report next/overdue from the
+# same source the scheduler fires on.
 def _refresh_odds():
-    odds_api.refresh_odds_data(ODDS_API_KEY, filtered_players)
+    run, why = odds_api.should_run_scheduled_refresh()
+    if not run:
+        print(f"{datetime.datetime.now()} - Skipping scheduled odds refresh: {why}")
+        return
+    print(f"{datetime.datetime.now()} - Scheduled odds refresh: {why}")
+    refresh_odds_and_cache()
 
 scheduler.add_job(
     func=_refresh_odds,
-    trigger=CronTrigger(day_of_week="thu,mon", hour=10, minute=0)
+    trigger=CronTrigger(day_of_week=",".join(odds_api.REFRESH_CRON_DAYS),
+                        hour=odds_api.REFRESH_HOUR_UTC, minute=0)
 )
 
 # Snapshot odds before each game window (Thu/Sun/Mon 12:00 UTC, 2h after refresh)
@@ -4522,15 +4551,19 @@ def trigger_fetch_and_filter():
 @app.route('/admin/trigger-odds-fetch', methods=['POST'])
 def admin_trigger_odds_fetch():
     try:
-        odds_api.refresh_odds_data(ODDS_API_KEY, filtered_players)
+        refresh_odds_and_cache()
+        failed = odds_api.odds_last_error
         return jsonify({
-            "message": "Odds refresh triggered successfully.",
+            "message": "Odds refresh completed." if not failed
+                       else f"Refresh failed, existing data kept: {failed}",
+            "ok": failed is None,
+            "error": failed,
             "games": len(odds_api.odds_games),
             "players": len(odds_api.odds_props),
             "credits_remaining": odds_api.odds_credits_remaining,
-        }), 200
+        }), 200 if not failed else 502
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "ok": False}), 500
 
 
 @app.route('/admin/snapshot-props', methods=['POST'])
@@ -4619,9 +4652,20 @@ def initialize_data_in_background():
         print(f"{datetime.datetime.now()} - Loading nflverse stats data...")
         refresh_nflverse_data()
 
-        # 5. Load betting odds + history
+        # 5. Load betting odds + history. Restore the last served set first so
+        #    the page has data even if the API is unreachable, then only spend
+        #    credits on a fetch if that data is actually stale.
         print(f"{datetime.datetime.now()} - Loading odds data...")
-        odds_api.refresh_odds_data(ODDS_API_KEY, filtered_players)
+        load_odds_cache()
+        if odds_api.should_refresh_on_startup():
+            age = odds_api.cache_age_hours()
+            print(f"{datetime.datetime.now()} - Cached odds "
+                  f"{'missing' if age is None else f'{age:.1f}h old'}, refreshing...")
+            refresh_odds_and_cache()
+        else:
+            print(f"{datetime.datetime.now()} - Cached odds are "
+                  f"{odds_api.cache_age_hours():.1f}h old, skipping startup refresh "
+                  f"(threshold {odds_api.STARTUP_REFRESH_MAX_AGE_HOURS}h)")
         load_odds_history()
         load_props_history()
 

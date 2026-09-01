@@ -59,6 +59,34 @@ def _current_nfl_season() -> int:
     return now.year - 1 if now.month < 9 else now.year
 
 
+def _season_has_data(season: int) -> bool:
+    """
+    Whether nflverse actually publishes player stats for this season yet.
+
+    The calendar rolls over on 1 September but the weekly stats file is only
+    created once week 1 has been played, so for the first fortnight of a season
+    _current_nfl_season() names a season that 404s. Without this check the whole
+    refresh fails and every downstream consumer — including the player-name
+    lookup the odds props depend on — is left empty.
+    """
+    try:
+        nfl.load_player_stats([season])
+        return True
+    except Exception as e:
+        logger.warning("nflverse: no player stats published for %d yet (%s)", season, e)
+        return False
+
+
+def _resolve_season() -> int:
+    """Current season if its data exists, otherwise fall back to the last completed one."""
+    season = _current_nfl_season()
+    if _season_has_data(season):
+        return season
+    prior = season - 1
+    logger.warning("nflverse: falling back to season %d until %d data is published", prior, season)
+    return prior
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _safe_float(val) -> float:
@@ -540,7 +568,7 @@ def refresh_nflverse_data():
     global nflverse_schedule, nflverse_games
     global nflverse_current_season, nflverse_last_updated
 
-    season = _current_nfl_season()
+    season = _resolve_season()
     print(f"{datetime.datetime.now()} - nflverse: refreshing season {season}")
     logger.info("nflverse: refreshing season %d", season)
 
