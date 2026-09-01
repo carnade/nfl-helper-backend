@@ -72,8 +72,26 @@ def odds_status():
         for m in p.get("props", {}).values()
         if m.get("value_flag")
     )
+    import datetime as _dt
+    _prev, _next = oa._scheduled_runs_around(_dt.datetime.utcnow())
+    _overdue = oa.refresh_overdue_hours()
+    _run, _why = oa.should_run_scheduled_refresh()
+
     return jsonify({
         "last_updated":       oa.odds_last_updated,
+        "last_attempt":       oa.odds_last_attempt,
+        # How stale what we are serving is, when the next scheduled refresh is
+        # due, and whether a scheduled run was actually missed.
+        "data_age_hours":     oa.cache_age_hours(),
+        "next_refresh":       _next.isoformat() + "Z" if _next else None,
+        "overdue_hours":      _overdue or None,
+        # Scheduled refreshes stand down while no games are near, to avoid
+        # spending credits on an opener-week fetch. Manual refresh overrides.
+        "refresh_paused":     not _run,
+        "refresh_note":       _why,
+        # Non-null means the most recent refresh failed and what is being served
+        # is whatever was already in memory (possibly nothing, after a restart).
+        "last_error":         oa.odds_last_error,
         "credits_remaining":  oa.odds_credits_remaining,
         "game_count":         len(oa.odds_games),
         "player_prop_count":  len(oa.odds_props),

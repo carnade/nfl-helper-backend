@@ -13,6 +13,19 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+
+class OddsApiUnavailable(Exception):
+    """
+    The API rejected us for a reason that is not about this particular event —
+    out of monthly credits, bad key, or rate limited. Distinct from "this game
+    has no props posted yet", because the results of such a run must never be
+    used to overwrite good data we already hold.
+    """
+
+
+# Statuses that mean "stop, the whole run is invalid" rather than "skip this event"
+FATAL_STATUSES = {401, 403, 429}
+
 BASE_URL  = "https://api.the-odds-api.com/v4"
 SPORT     = "americanfootball_nfl"
 REGIONS   = "us"   # game lines: one region only — cost is markets × regions
@@ -130,6 +143,8 @@ odds_history: dict = {}             # event_id → snapshotted game dict (persis
 odds_props_history: dict = {}       # "event:player:market" → snapshotted prop line + our projection
 odds_credits_remaining: int | None = None
 odds_last_updated: str | None = None
+odds_last_error: str | None = None       # why the most recent refresh failed, if it did
+odds_last_attempt: str | None = None     # when we last tried, successful or not
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -195,6 +210,10 @@ def fetch_game_odds(api_key: str) -> dict:
     }
     resp = requests.get(url, params=params, timeout=15)
     _extract_headers(resp)
+    if resp.status_code in FATAL_STATUSES:
+        raise OddsApiUnavailable(
+            f"game odds fetch rejected with HTTP {resp.status_code} — aborting refresh"
+        )
     resp.raise_for_status()
     events = resp.json()
 
@@ -361,6 +380,13 @@ def fetch_player_props(api_key: str, name_lookup: dict[str, str], games: dict, s
         try:
             resp = requests.get(url, params=params, timeout=15)
             _extract_headers(resp)
+            if resp.status_code in FATAL_STATUSES:
+                # Out of credits / bad key / rate limited. Abort the whole run —
+                # continuing would return a partial (or empty) list that the
+                # caller would then use to overwrite good data.
+                raise OddsApiUnavailable(
+                    f"props fetch rejected with HTTP {resp.status_code} — aborting refresh"
+                )
             if resp.status_code in (404, 422):
                 # No props available for this event yet
                 continue
@@ -672,6 +698,150 @@ def _compute_value_flags(
     return result
 
 
+# ── Refresh schedule ─────────────────────────────────────────────────────────
+#
+# Defined here rather than at the scheduler so the same spec drives both the
+# cron trigger and the "next / overdue" figures reported on /odds/status.
+
+REFRESH_CRON_DAYS = ("thu", "mon")
+REFRESH_WEEKDAYS  = (3, 0)   # datetime.weekday(): Mon=0 … Thu=3
+REFRESH_HOUR_UTC  = 10
+
+
+def _scheduled_runs_around(now: datetime.datetime) -> tuple[datetime.datetime, datetime.datetime]:
+    """The most recent scheduled refresh at or before `now`, and the next one after."""
+    slots = []
+    for delta in range(-8, 9):
+        d = (now + datetime.timedelta(days=delta)).date()
+        if d.weekday() in REFRESH_WEEKDAYS:
+            slots.append(datetime.datetime.combine(d, datetime.time(REFRESH_HOUR_UTC, 0)))
+    slots.sort()
+    prev = max((s for s in slots if s <= now), default=None)
+    nxt  = min((s for s in slots if s > now), default=None)
+    return prev, nxt
+
+
+# ── Serving-data cache ───────────────────────────────────────────────────────
+#
+# odds_history/odds_props_history are grading records: frozen, written only by
+# the snapshot job, and missing the book prices the UI needs. They cannot stand
+# in for what we serve. This cache is the live data itself, so a restart that
+# cannot reach the API (out of credits, most likely) still serves the last good
+# fetch instead of an empty page.
+#
+# 4 days matches the widest legitimate gap between scheduled refreshes
+# (Thu -> Mon), so a restart only spends credits when we have actually missed a
+# scheduled run rather than on every boot.
+STARTUP_REFRESH_MAX_AGE_HOURS = 96
+
+
+def export_cache() -> dict:
+    """
+    Snapshot the currently-served odds for persistence. The containers are
+    copied: returning the live ones would alias them, so a later refresh
+    clearing them in place would empty the snapshot too.
+    """
+    return {
+        "games":             dict(odds_games),
+        "props":             list(odds_props),
+        "last_updated":      odds_last_updated,
+        "credits_remaining": odds_credits_remaining,
+    }
+
+
+def import_cache(data: dict) -> int:
+    """Restore previously-served odds. Returns how many games were loaded."""
+    global odds_last_updated, odds_credits_remaining
+    if not data:
+        return 0
+    odds_games.clear(); odds_games.update(data.get("games") or {})
+    odds_props.clear(); odds_props.extend(data.get("props") or [])
+    odds_last_updated = data.get("last_updated") or odds_last_updated
+    if data.get("credits_remaining") is not None:
+        odds_credits_remaining = data["credits_remaining"]
+    logger.info("odds: restored cache — %d games, %d players (as of %s)",
+                len(odds_games), len(odds_props), odds_last_updated)
+    return len(odds_games)
+
+
+def cache_age_hours() -> float | None:
+    """How old the odds we are serving are, or None if we have none."""
+    if not odds_last_updated:
+        return None
+    try:
+        then = datetime.datetime.fromisoformat(odds_last_updated.replace("Z", ""))
+    except Exception:
+        return None
+    return round((datetime.datetime.utcnow() - then).total_seconds() / 3600.0, 2)
+
+
+def refresh_overdue_hours() -> float:
+    """
+    How far past a scheduled refresh we are. Non-zero only when the last
+    scheduled slot came and went without the data being updated — i.e. a run
+    was actually missed, not merely that time has passed since the last one.
+    """
+    now = datetime.datetime.utcnow()
+    prev, _ = _scheduled_runs_around(now)
+    if prev is None or not odds_last_updated:
+        return 0.0
+    try:
+        updated = datetime.datetime.fromisoformat(odds_last_updated.replace("Z", ""))
+    except Exception:
+        return 0.0
+    if updated >= prev:
+        return 0.0
+    return round((now - prev).total_seconds() / 3600.0, 2)
+
+
+def games_within_window(within_days: int = PROPS_LOOKAHEAD_DAYS) -> int:
+    """How many known games kick off inside the given window."""
+    now = datetime.datetime.utcnow()
+    cutoff = now + datetime.timedelta(days=within_days)
+    n = 0
+    for g in odds_games.values():
+        try:
+            t = datetime.datetime.fromisoformat((g.get("commence_time") or "").replace("Z", ""))
+        except Exception:
+            continue
+        if now <= t <= cutoff:
+            n += 1
+    return n
+
+
+def should_run_scheduled_refresh() -> tuple[bool, str]:
+    """
+    Whether a scheduled refresh is worth its credits right now.
+
+    Skipped when nothing kicks off inside the normal rolling window. That is
+    exactly the case where the opener buffer would fire and fetch the whole of
+    week 1 — the single most expensive refresh there is, spent on games over a
+    week out whose lines are barely posted and will have moved by kickoff.
+
+    Deliberately self-correcting rather than a manual pause: it resumes on its
+    own as soon as the first game comes into range.
+    """
+    if not odds_games:
+        return True, "no games held yet"
+    n = games_within_window()
+    if n:
+        return True, f"{n} game(s) within {PROPS_LOOKAHEAD_DAYS} days"
+    return False, (f"no games within {PROPS_LOOKAHEAD_DAYS} days — skipping to avoid a "
+                   f"full opener-week fetch; will resume automatically")
+
+
+def should_refresh_on_startup() -> bool:
+    """
+    Skip the boot-time fetch when the restored data is still recent. Every
+    refresh costs credits, and on a host that restarts often this would
+    otherwise re-fetch on every single boot.
+    """
+    if not odds_games and not odds_props:
+        return True                      # nothing to serve, must fetch
+    age = cache_age_hours()
+    return age is None or age >= STARTUP_REFRESH_MAX_AGE_HOURS
+
+
 # ── History snapshot ─────────────────────────────────────────────────────────
 
 def _week_for_commence(commence_time: str) -> int | None:
@@ -845,9 +1015,12 @@ def refresh_odds_data(api_key: str | None = None, sleeper_players: dict | None =
     sleeper_players (nfl-helper.py's `filtered_players`) is passed through to
     fetch_player_props to keep the player→team mapping accurate across trades.
     """
-    global odds_games, odds_props, odds_last_updated
+    global odds_games, odds_props, odds_last_updated, odds_last_error, odds_last_attempt
+
+    odds_last_attempt = datetime.datetime.utcnow().isoformat() + "Z"
 
     if not api_key:
+        odds_last_error = "no ODDS_API_KEY set"
         logger.warning("odds: no ODDS_API_KEY set, skipping refresh")
         return
 
@@ -856,17 +1029,40 @@ def refresh_odds_data(api_key: str | None = None, sleeper_players: dict | None =
         name_lookup = _build_name_lookup()
 
         games = fetch_game_odds(api_key)
-        props = fetch_player_props(api_key, name_lookup, games, sleeper_players)
 
+        # Game lines do not depend on nflverse, so commit them either way.
         odds_games.clear()
         odds_games.update(games)
+        odds_last_updated = datetime.datetime.utcnow().isoformat() + "Z"
+
+        # Props are matched to players by name via nflverse. With no lookup every
+        # response would match nothing, so fetching would spend a credit per event
+        # to build an empty list — and then that list would replace good props.
+        # Keep what we have, and say why. Happens for the first weeks of a season,
+        # before nflverse publishes the new year's stats.
+        if not name_lookup:
+            odds_last_error = ("nflverse player data unavailable — props not refreshed "
+                               "(kept previous set); game lines updated")
+            logger.warning("odds: %s", odds_last_error)
+            return
+
+        # Props are only swapped in once fetched in full, so a failure part-way
+        # leaves the previous set untouched rather than half-replacing it.
+        props = fetch_player_props(api_key, name_lookup, games, sleeper_players)
         odds_props.clear()
         odds_props.extend(props)
-        odds_last_updated = datetime.datetime.utcnow().isoformat() + "Z"
+        odds_last_error = None
 
         logger.info(
             "odds: done — %d games, %d players with props, credits_remaining=%s",
             len(odds_games), len(odds_props), odds_credits_remaining,
         )
-    except Exception:
+    except OddsApiUnavailable as e:
+        odds_last_error = str(e)
+        logger.error(
+            "odds: refresh aborted (%s). Keeping existing data: %d games, %d players.",
+            e, len(odds_games), len(odds_props),
+        )
+    except Exception as e:
+        odds_last_error = f"{type(e).__name__}: {e}"
         logger.exception("odds: refresh failed")
