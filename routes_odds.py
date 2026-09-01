@@ -74,6 +74,10 @@ def odds_status():
     )
     return jsonify({
         "last_updated":       oa.odds_last_updated,
+        "last_attempt":       oa.odds_last_attempt,
+        # Non-null means the most recent refresh failed and what is being served
+        # is whatever was already in memory (possibly nothing, after a restart).
+        "last_error":         oa.odds_last_error,
         "credits_remaining":  oa.odds_credits_remaining,
         "game_count":         len(oa.odds_games),
         "player_prop_count":  len(oa.odds_props),

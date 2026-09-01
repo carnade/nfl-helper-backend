@@ -13,6 +13,19 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+
+class OddsApiUnavailable(Exception):
+    """
+    The API rejected us for a reason that is not about this particular event —
+    out of monthly credits, bad key, or rate limited. Distinct from "this game
+    has no props posted yet", because the results of such a run must never be
+    used to overwrite good data we already hold.
+    """
+
+
+# Statuses that mean "stop, the whole run is invalid" rather than "skip this event"
+FATAL_STATUSES = {401, 403, 429}
+
 BASE_URL  = "https://api.the-odds-api.com/v4"
 SPORT     = "americanfootball_nfl"
 REGIONS   = "us"   # game lines: one region only — cost is markets × regions
@@ -130,6 +143,8 @@ odds_history: dict = {}             # event_id → snapshotted game dict (persis
 odds_props_history: dict = {}       # "event:player:market" → snapshotted prop line + our projection
 odds_credits_remaining: int | None = None
 odds_last_updated: str | None = None
+odds_last_error: str | None = None       # why the most recent refresh failed, if it did
+odds_last_attempt: str | None = None     # when we last tried, successful or not
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -195,6 +210,10 @@ def fetch_game_odds(api_key: str) -> dict:
     }
     resp = requests.get(url, params=params, timeout=15)
     _extract_headers(resp)
+    if resp.status_code in FATAL_STATUSES:
+        raise OddsApiUnavailable(
+            f"game odds fetch rejected with HTTP {resp.status_code} — aborting refresh"
+        )
     resp.raise_for_status()
     events = resp.json()
 
@@ -361,6 +380,13 @@ def fetch_player_props(api_key: str, name_lookup: dict[str, str], games: dict, s
         try:
             resp = requests.get(url, params=params, timeout=15)
             _extract_headers(resp)
+            if resp.status_code in FATAL_STATUSES:
+                # Out of credits / bad key / rate limited. Abort the whole run —
+                # continuing would return a partial (or empty) list that the
+                # caller would then use to overwrite good data.
+                raise OddsApiUnavailable(
+                    f"props fetch rejected with HTTP {resp.status_code} — aborting refresh"
+                )
             if resp.status_code in (404, 422):
                 # No props available for this event yet
                 continue
@@ -845,9 +871,12 @@ def refresh_odds_data(api_key: str | None = None, sleeper_players: dict | None =
     sleeper_players (nfl-helper.py's `filtered_players`) is passed through to
     fetch_player_props to keep the player→team mapping accurate across trades.
     """
-    global odds_games, odds_props, odds_last_updated
+    global odds_games, odds_props, odds_last_updated, odds_last_error, odds_last_attempt
+
+    odds_last_attempt = datetime.datetime.utcnow().isoformat() + "Z"
 
     if not api_key:
+        odds_last_error = "no ODDS_API_KEY set"
         logger.warning("odds: no ODDS_API_KEY set, skipping refresh")
         return
 
@@ -855,6 +884,8 @@ def refresh_odds_data(api_key: str | None = None, sleeper_players: dict | None =
     try:
         name_lookup = _build_name_lookup()
 
+        # Both fetches complete before anything is swapped in. A failure part-way
+        # leaves the previous data untouched rather than half-replacing it.
         games = fetch_game_odds(api_key)
         props = fetch_player_props(api_key, name_lookup, games, sleeper_players)
 
@@ -863,10 +894,18 @@ def refresh_odds_data(api_key: str | None = None, sleeper_players: dict | None =
         odds_props.clear()
         odds_props.extend(props)
         odds_last_updated = datetime.datetime.utcnow().isoformat() + "Z"
+        odds_last_error = None
 
         logger.info(
             "odds: done — %d games, %d players with props, credits_remaining=%s",
             len(odds_games), len(odds_props), odds_credits_remaining,
         )
-    except Exception:
+    except OddsApiUnavailable as e:
+        odds_last_error = str(e)
+        logger.error(
+            "odds: refresh aborted (%s). Keeping existing data: %d games, %d players.",
+            e, len(odds_games), len(odds_props),
+        )
+    except Exception as e:
+        odds_last_error = f"{type(e).__name__}: {e}"
         logger.exception("odds: refresh failed")
