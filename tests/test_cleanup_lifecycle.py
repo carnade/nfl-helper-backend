@@ -15,6 +15,20 @@ def mock_week(request):
         yield week
 
 
+@pytest.fixture(autouse=True)
+def sleeper_points():
+    """The cleanup path fetches Sleeper matchup points for the week being scored.
+
+    These tests cover cleanup behaviour, not the Sleeper integration, so stub the
+    call: hitting the live API makes them slow, network-dependent, and sensitive to
+    whichever leagues happen to be configured. Empty by default, so scoring falls
+    through to the fantasy_points_data the tests seed. Set `.return_value` to cover
+    the case where Sleeper does hold points.
+    """
+    with patch.object(nfl_helper, "fetch_sleeper_matchup_points", return_value={}) as stub:
+        yield stub
+
+
 def do_cleanup(client):
     return client.post("/admin/tinyurl/cleanup")
 
@@ -141,13 +155,9 @@ class TestMultiweekDfsLifecycle:
                           "update_count": 1},
             }
 
-        # Sleeper holds no points for these ids; stub it so the test does not
-        # depend on the network and scoring falls through to fantasy_points_data.
-        no_sleeper = patch.object(nfl_helper, "fetch_sleeper_matchup_points", return_value={})
-
         # Cycle 1: score week 7, advance to 8
         submit(7)
-        with no_sleeper, patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=8):
+        with patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=8):
             do_cleanup(client)
 
         entry = nfl_helper.tinyurl_data["tourney"]
@@ -156,7 +166,7 @@ class TestMultiweekDfsLifecycle:
 
         # Cycle 2: score week 8, advance to 9, keeping week 7 in the tally
         submit(8)
-        with no_sleeper, patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=9):
+        with patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=9):
             do_cleanup(client)
 
         entry = nfl_helper.tinyurl_data["tourney"]
@@ -175,8 +185,7 @@ class TestMultiweekDfsLifecycle:
                       "data": make_lineup_string(7, ["11111:QB"]), "update_count": 1},
         }
 
-        with patch.object(nfl_helper, "fetch_sleeper_matchup_points", return_value={}), \
-             patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=8):
+        with patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=8):
             do_cleanup(client)
             do_cleanup(client)
 
@@ -196,11 +205,28 @@ class TestMultiweekDfsLifecycle:
                       "update_count": 1},
         }
 
-        with patch.object(nfl_helper, "fetch_sleeper_matchup_points", return_value={}):
-            do_cleanup(client)
+        do_cleanup(client)
 
         entry = nfl_helper.tinyurl_data["tourney"]
         assert entry["standings"]["alice"]["total_points"] == pytest.approx(28.0)
+
+    def test_sleeper_points_take_precedence_over_fantasy_data(self, client, mock_week, sleeper_points):
+        """Sleeper is the authority for a played week; fantasy_points_data only fills gaps."""
+        create_entry("tourney", week=7, entry_type="multiweek_dfs", num_weeks=4, start_week=7)
+        sleeper_points.return_value = {"11111": 30.0}          # Sleeper has this player
+        nfl_helper.fantasy_points_data["11111_7"] = {"fantasy_points": 20.0}   # stale figure
+        nfl_helper.fantasy_points_data["22222_7"] = {"fantasy_points": 5.0}    # Sleeper lacks this one
+        nfl_helper.tinyurl_data["tourney"]["user_submissions"] = {
+            "alice": {"username": "alice",
+                      "data": make_lineup_string(7, ["11111:QB", "22222:RB"]),
+                      "update_count": 1},
+        }
+
+        do_cleanup(client)
+
+        entry = nfl_helper.tinyurl_data["tourney"]
+        assert entry["standings"]["alice"]["total_points"] == pytest.approx(35.0), \
+            "30.0 from Sleeper (not the stale 20.0) plus 5.0 from the fallback"
 
 
 class TestDstScoring:
