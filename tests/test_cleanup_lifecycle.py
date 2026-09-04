@@ -111,9 +111,10 @@ class TestMultiweekDfsLifecycle:
 
     def test_standings_accumulate_across_weeks(self, client, mock_week):
         create_entry("tourney", week=7, entry_type="multiweek_dfs", num_weeks=4, start_week=7)
-        # Pre-existing standing from a prior week
+        # Pre-existing standing from a prior week. Week keys are strings: that is what
+        # the app writes, and a JSON round-trip through Supabase would stringify them anyway.
         nfl_helper.tinyurl_data["tourney"]["standings"] = {
-            "alice": {"total_points": 30.0, "week_points": {6: 30.0}, "last_updated": ""},
+            "alice": {"total_points": 30.0, "week_points": {"6": 30.0}, "last_updated": ""},
         }
         nfl_helper.fantasy_points_data["11111_7"] = {"fantasy_points": 20.0}
         nfl_helper.tinyurl_data["tourney"]["user_submissions"] = {
@@ -123,5 +124,30 @@ class TestMultiweekDfsLifecycle:
         do_cleanup(client)
 
         entry = nfl_helper.tinyurl_data["tourney"]
-        assert entry["standings"]["alice"]["week_points"][7] == pytest.approx(20.0)
+        assert entry["standings"]["alice"]["week_points"]["7"] == pytest.approx(20.0)
         assert entry["standings"]["alice"]["total_points"] == pytest.approx(50.0)
+
+
+class TestDstScoring:
+    """A DST slot is encoded as a team code ('CHI-2600'), not a numeric Sleeper id."""
+
+    def test_dst_counts_toward_lineup_total(self):
+        lineup = make_lineup_string(7, ["11111-5000", "CHI-2600"])
+        points = nfl_helper.calculate_dfs_points_from_lineup(
+            lineup, 7, {"11111": 10.0, "CHI": 8.0}
+        )
+        assert points == pytest.approx(18.0), "DST points must be included"
+
+    def test_dst_falls_back_to_fantasy_points_data(self):
+        nfl_helper.fantasy_points_data["CHI_7"] = {"fantasy_points": 8.0}
+        lineup = make_lineup_string(7, ["11111-5000", "CHI-2600"])
+        points = nfl_helper.calculate_dfs_points_from_lineup(lineup, 7, {"11111": 10.0})
+        assert points == pytest.approx(18.0), "DST missing from Sleeper must fall back"
+
+    def test_non_team_code_is_still_rejected(self):
+        """An untranslated manual entry must not be mistaken for a team code."""
+        lineup = make_lineup_string(7, ["11111-5000", "Bob-2600"])
+        points = nfl_helper.calculate_dfs_points_from_lineup(
+            lineup, 7, {"11111": 10.0, "Bob": 99.0}
+        )
+        assert points == pytest.approx(10.0)
