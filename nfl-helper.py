@@ -99,16 +99,43 @@ current_nfl_week = None  # Current NFL week (1-22) from DailyFantasyFuel data, i
 
 ODDS_API_KEY = os.environ.get('ODDS_API_KEY')
 
+# Sleeper leagues used to score DFS lineups. These must be leagues for the CURRENT
+# season — a completed prior-season league still answers /matchups/<week> with that
+# season's points, which scores silently and wrongly.
+DFS_SCORING_LEAGUE_IDS = [
+    lid.strip() for lid in os.environ.get(
+        'DFS_SCORING_LEAGUE_IDS',
+        '1312016340290113536,1312016308207906816'
+    ).split(',') if lid.strip()
+]
+
+# Sleeper uses the team code as the player_id for a defense (e.g. 'CHI'), so a DST
+# slot in an encoded lineup is not numeric and must be accepted alongside numeric ids.
+NFL_TEAM_CODES = frozenset({
+    'ARI', 'ATL', 'BAL', 'BUF', 'CAR', 'CHI', 'CIN', 'CLE', 'DAL', 'DEN', 'DET',
+    'GB', 'HOU', 'IND', 'JAX', 'KC', 'LAC', 'LAR', 'LV', 'MIA', 'MIN', 'NE',
+    'NO', 'NYG', 'NYJ', 'PHI', 'PIT', 'SEA', 'SF', 'TB', 'TEN', 'WAS',
+})
+
 # Supabase configuration (optional - only used if both are set)
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 USE_SUPABASE = bool(SUPABASE_URL and SUPABASE_KEY)
+
+# Read-only mode: load from Supabase, but send every write to a local file instead.
+# Lets a local run read production state without writing back to the shared project
+# (Gist is skipped too — it is shared with production just the same).
+SUPABASE_READ_ONLY = os.environ.get('SUPABASE_READ_ONLY', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
 supabase_client = None
 if USE_SUPABASE:
     try:
         from supabase import create_client
         supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
         print(f"Supabase client initialised (URL: {SUPABASE_URL})")
+        if SUPABASE_READ_ONLY:
+            print("SUPABASE_READ_ONLY is set — reads come from Supabase, "
+                  "all writes go to local files (Supabase and Gist are not written).")
     except Exception as e:
         USE_SUPABASE = False
         print(f"Failed to initialise Supabase client: {e}")
@@ -129,7 +156,9 @@ def save_tinyurl_data():
     """Save tinyurl_data to Supabase (preferred), Gist, or local file"""
     global tinyurl_data
 
-    if USE_SUPABASE:
+    if SUPABASE_READ_ONLY:
+        _save_tinyurl_data_to_file()
+    elif USE_SUPABASE:
         _save_tinyurl_data_to_supabase()
     elif USE_GIST:
         _save_tinyurl_data_to_gist()
@@ -283,7 +312,9 @@ def save_tournament_data():
     """Save tournament_data to Supabase (preferred), Gist, or local file"""
     global tournament_data
 
-    if USE_SUPABASE:
+    if SUPABASE_READ_ONLY:
+        _save_tournament_data_to_file()
+    elif USE_SUPABASE:
         _save_tournament_data_to_supabase()
     elif USE_GIST:
         _save_tournament_data_to_gist()
@@ -442,8 +473,11 @@ def _save_store(key: str, store: dict):
 
     The Gist tier matters on Koyeb's free tier, where the filesystem is ephemeral
     and anything written locally is lost on redeploy.
+
+    Under SUPABASE_READ_ONLY both shared tiers are skipped and the write lands
+    in a local file.
     """
-    if USE_SUPABASE:
+    if USE_SUPABASE and not SUPABASE_READ_ONLY:
         try:
             supabase_client.table('app_data').upsert({
                 'key': key,
@@ -455,7 +489,7 @@ def _save_store(key: str, store: dict):
         except Exception as e:
             print(f"{datetime.datetime.now()} - Error saving {key} to Supabase: {e}, falling back to Gist/file")
 
-    if USE_GIST:
+    if USE_GIST and not SUPABASE_READ_ONLY:
         try:
             resp = requests.patch(
                 GIST_API_URL,
@@ -1452,7 +1486,7 @@ def fetch_sleeper_matchup_points(week, league_ids=None):
     Returns a mapping of Sleeper ID -> points for that week.
     """
     if league_ids is None:
-        league_ids = ["1180214473415516160", "1293242375618957312"]
+        league_ids = DFS_SCORING_LEAGUE_IDS
 
     players_points = {}
 
@@ -1586,7 +1620,10 @@ def calculate_dfs_points_from_lineup(lineup_data, week, players_points=None):
             
             if sleeper_id and sleeper_id.isdigit():
                 sleeper_ids.append(sleeper_id)
-        
+            elif sleeper_id and sleeper_id.upper() in NFL_TEAM_CODES:
+                # DST slot: Sleeper keys defenses by team code, not a numeric id
+                sleeper_ids.append(sleeper_id.upper())
+
         if not sleeper_ids:
             print(f"{datetime.datetime.now()} - Warning: No valid Sleeper IDs found in lineup data")
             return 0.0
@@ -1601,36 +1638,45 @@ def calculate_dfs_points_from_lineup(lineup_data, week, players_points=None):
                 return f"{player_data.get('first_name', '')} {player_data.get('last_name', '')}".strip()
             return "Unknown"
 
+        def points_from_fantasy_data(sleeper_id):
+            """Weekly fantasy_points_data lookup. Returns None when we have no figure."""
+            player_points_data = fantasy_points_data.get(f"{sleeper_id}_{week}")
+            if not player_points_data:
+                return None
+            points = player_points_data.get('fantasy_points', 0.0)
+            return float(points) if points else None
+
         total_points = 0.0
         player_details = []
 
-        if players_points is not None:
-            for sleeper_id in sleeper_ids:
-                points = float(players_points.get(sleeper_id, 0.0))
-                total_points += points
-                player_details.append({'sleeper_id': sleeper_id, 'name': get_player_name(sleeper_id), 'points': points, 'found': sleeper_id in players_points})
-        else:
-            for sleeper_id in sleeper_ids:
-                key = f"{sleeper_id}_{week}"
-                player_points_data = fantasy_points_data.get(key)
-                player_name = get_player_name(sleeper_id)
-                if player_points_data:
-                    points = player_points_data.get('fantasy_points', 0.0)
-                    if points:
-                        points_float = float(points)
-                        total_points += points_float
-                        player_details.append({'sleeper_id': sleeper_id, 'name': player_name, 'points': points_float, 'found': True})
-                    else:
-                        player_details.append({'sleeper_id': sleeper_id, 'name': player_name, 'points': 0.0, 'found': False})
-                else:
-                    player_details.append({'sleeper_id': sleeper_id, 'name': player_name, 'points': 0.0, 'found': False})
+        # Sleeper matchup data only covers players rostered in the scoring leagues,
+        # so fall back per player rather than scoring a missing player as 0.
+        for sleeper_id in sleeper_ids:
+            points = None
+            source = None
+
+            if players_points is not None and sleeper_id in players_points:
+                points = float(players_points[sleeper_id])
+                source = 'sleeper'
+
+            if points is None:
+                points = points_from_fantasy_data(sleeper_id)
+                if points is not None:
+                    source = 'fantasy_points_data'
+
+            found = points is not None
+            points = points if found else 0.0
+            total_points += points
+            player_details.append({'sleeper_id': sleeper_id, 'name': get_player_name(sleeper_id),
+                                   'points': points, 'found': found, 'source': source})
 
         print(f"{datetime.datetime.now()} - Lineup calculation breakdown:")
         print(f"Decoded data: {decoded_string}")
         print(f"  Total Sleeper IDs found: {len(sleeper_ids)}")
         for detail in player_details:
             status = "✓" if detail['found'] else "✗"
-            print(f"  {status} Sleeper ID {detail['sleeper_id']} Name: {detail['name']}: {detail['points']} points")
+            via = f" (via {detail['source']})" if detail['source'] else ""
+            print(f"  {status} Sleeper ID {detail['sleeper_id']} Name: {detail['name']}: {detail['points']} points{via}")
         print(f"  Total points: {total_points}")
         
         return total_points
