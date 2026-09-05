@@ -14,6 +14,7 @@ from get_dynasty_ranks import scrape_ktc, scrape_fantasy_calc, tep_adjust
 from fantasydatascraper import FantasyDataScraper
 from get_dfs_salaries_and_stats import DFFSalariesScraper
 import random  # Import random for generating random deltas
+import time
 from pathlib import Path
 from routes_stats import stats_bp
 from routes_odds import odds_bp
@@ -1780,6 +1781,25 @@ def clear_tinyurl_data():
 
                             print(f"{datetime.datetime.now()} - Updated standings for '{username}': total_points={standings_entry['total_points']}, week_points={standings_entry['week_points']}")
 
+                        # An open multiweek tournament is open for its first week only.
+                        # Whoever entered that week becomes the field: from week two
+                        # on it behaves like an ordinary allowlist tournament, so no
+                        # one can join a competition already in progress.
+                        if entry_is_sleeper_open(entry) and entry_week == start_week:
+                            entrants = [user_data.get('username', normalized_username)
+                                        for normalized_username, user_data
+                                        in entry.get('user_submissions', {}).items()]
+                            if entrants:
+                                entry['allowed_names'] = entrants
+                                entry['access_mode'] = 'allowlist'
+                                print(f"{datetime.datetime.now()} - Tournament '{entry_name}' closed to new "
+                                      f"entrants after its first week; field is {entrants}")
+                            else:
+                                # Nobody entered week 1. Locking now would leave a
+                                # tournament no one can ever join, so stay open.
+                                print(f"{datetime.datetime.now()} - Tournament '{entry_name}' had no entrants "
+                                      f"in week {entry_week}; staying open to Sleeper logins")
+
                         entry['user_submissions'] = {}
                         entry['data'] = None
                         if 'updated_at' in entry:
@@ -1805,6 +1825,25 @@ def clear_tinyurl_data():
                                     print(f"{datetime.datetime.now()} - Moved reveal time forward for '{entry_name}': {reveal_datetime_utc.isoformat()} -> {new_reveal.isoformat()}")
                             except Exception as e:
                                 print(f"{datetime.datetime.now()} - Warning: Could not update reveal time for '{entry_name}': {e}")
+
+                        # The submission deadline is a time of week, not a one-off:
+                        # roll it forward with the tournament so the next week has
+                        # its own cutoff without the organiser re-entering one.
+                        if entry.get('deadline'):
+                            parsed_deadline, deadline_err = parse_deadline(entry['deadline'])
+                            if parsed_deadline is None:
+                                print(f"{datetime.datetime.now()} - Warning: Could not update deadline for "
+                                      f"'{entry_name}': {deadline_err}")
+                            else:
+                                now_aware = datetime.datetime.now(datetime.timezone.utc)
+                                new_deadline = parsed_deadline
+                                # Catch up a week at a time in case a cleanup was missed.
+                                while new_deadline < now_aware:
+                                    new_deadline += datetime.timedelta(weeks=1)
+                                if new_deadline != parsed_deadline:
+                                    entry['deadline'] = new_deadline.isoformat().replace('+00:00', 'Z')
+                                    print(f"{datetime.datetime.now()} - Moved deadline forward for '{entry_name}': "
+                                          f"{parsed_deadline.isoformat()} -> {new_deadline.isoformat()}")
 
                         entry['week'] = entry_week + 1
 
@@ -2657,6 +2696,136 @@ def normalize_tinyurl_name(name):
     return name.lower() if name else name
 
 
+# ── Sleeper login verification ───────────────────────────────────────────────
+#
+# A tournament can be opened to "anyone logged into Sleeper" instead of a fixed
+# allowlist. The client holds the JWT that Sleeper's own login flow issued, and
+# we check it with Sleeper rather than trusting what the client claims to be:
+# the posted username is not evidence of anything.
+
+SLEEPER_GRAPHQL_URL = "https://api.sleeper.app/graphql"
+SLEEPER_TOKEN_CACHE_TTL_SECONDS = 300
+
+# token -> (verified_at, {'user_id', 'display_name'} or None for a known-bad token)
+_sleeper_token_cache = {}
+
+
+def _sleeper_token_from_request():
+    """Pull the Sleeper JWT off the request. Header first, body as a fallback."""
+    header = request.headers.get('Authorization', '')
+    if header:
+        return header[7:].strip() if header.lower().startswith('bearer ') else header.strip()
+    if request.is_json:
+        body = request.get_json(silent=True) or {}
+        return (body.get('sleeper_token') or '').strip() or None
+    return None
+
+
+def verify_sleeper_token(token):
+    """
+    Resolve a Sleeper JWT to its owner, or None if it is not valid.
+
+    Sleeper checks the token before resolving any field, so querying `me` both
+    validates it and tells us who it belongs to. Results are cached briefly —
+    this runs on submission and on the available-tournaments listing, and we do
+    not want a Sleeper round-trip on every page load.
+    """
+    if not token:
+        return None
+
+    cached = _sleeper_token_cache.get(token)
+    if cached and (time.time() - cached[0]) < SLEEPER_TOKEN_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    identity = None
+    try:
+        resp = requests.post(
+            SLEEPER_GRAPHQL_URL,
+            json={'query': 'query { me { user_id display_name } }'},
+            headers={'Content-Type': 'application/json',
+                     'x-platform': 'web',
+                     'authorization': token},
+            timeout=10,
+        )
+        if resp.status_code == 401:
+            # Sleeper's verdict, not a failure to reach it: cache the rejection so a
+            # stale token does not cost a round-trip on every request it makes.
+            _sleeper_token_cache[token] = (time.time(), None)
+            return None
+        resp.raise_for_status()
+        me = ((resp.json() or {}).get('data') or {}).get('me')
+        if me and me.get('user_id'):
+            identity = {'user_id': me.get('user_id'),
+                        'display_name': me.get('display_name')}
+    except Exception as e:
+        # Could not get an answer from Sleeper. Deny, because a Sleeper outage must
+        # not silently downgrade an open tournament to "anyone may submit" — but do
+        # not cache it, so the next attempt retries rather than inheriting a blip.
+        print(f"{datetime.datetime.now()} - Sleeper token verification failed: {e}")
+        return None
+
+    _sleeper_token_cache[token] = (time.time(), identity)
+    return identity
+
+
+def entry_is_sleeper_open(entry):
+    """True when the entry admits any verified Sleeper login rather than a list."""
+    return entry.get('access_mode') == 'sleeper'
+
+
+def multiweek_progress(entry):
+    """
+    How far a multiweek tournament has got, as {'week': x, 'num_weeks': y}.
+
+    Returns None for anything that is not a multiweek tournament with the fields
+    needed to place it. The week is 1-based within the tournament, so a tournament
+    starting in NFL week 7 and now on week 8 reads as week 2, not week 8. The final
+    grace week can run one past the end, so clamp rather than report "5 of 4".
+    """
+    if entry.get('type') != 'multiweek_dfs':
+        return None
+    num_weeks = entry.get('num_weeks')
+    current_week = entry.get('week')
+    start_week = entry.get('start_week', current_week)
+    if num_weeks is None or current_week is None or start_week is None:
+        return None
+    try:
+        index = int(current_week) - int(start_week) + 1
+        num_weeks = int(num_weeks)
+    except (TypeError, ValueError):
+        return None
+    return {'week': max(1, min(index, num_weeks)), 'num_weeks': num_weeks}
+
+
+def parse_deadline(value):
+    """
+    Normalize a submission deadline to an aware UTC datetime.
+    Returns (datetime, None) or (None, error_message). Empty input is not an error.
+    """
+    if value in (None, ''):
+        return None, None
+    if not isinstance(value, str):
+        return None, "deadline must be an ISO 8601 string"
+    try:
+        text = value.strip()
+        if text.endswith('Z'):
+            text = text[:-1] + '+00:00'
+        parsed = datetime.datetime.fromisoformat(text)
+    except (ValueError, TypeError):
+        return None, "deadline must be an ISO 8601 datetime (e.g. 2026-09-10T17:00:00Z)"
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc), None
+
+
+def deadline_has_passed(entry):
+    """Whether this entry's submission deadline is in the past."""
+    parsed, _ = parse_deadline(entry.get('deadline'))
+    if parsed is None:
+        return False
+    return datetime.datetime.now(datetime.timezone.utc) > parsed
+
+
 def _localize_datetime(naive_dt, tz):
     """
     Localize a naive datetime to a timezone.
@@ -3395,6 +3564,15 @@ def get_tinyurl_details(name):
     if 'type' in entry:
         response['type'] = entry['type']
 
+    response['access_mode'] = entry.get('access_mode', 'allowlist')
+    progress = multiweek_progress(entry)
+    if progress:
+        response['tournament_week'] = progress['week']
+        response['num_weeks'] = progress['num_weeks']
+    if 'deadline' in entry:
+        response['deadline'] = entry['deadline']
+        response['deadline_passed'] = deadline_has_passed(entry)
+
     # Get allowed names
     allowed_names = entry.get('allowed_names', [])
     if allowed_names:
@@ -3423,6 +3601,19 @@ def get_tinyurl_details(name):
                 }
         
         response['submissions'] = submissions
+    elif entry_is_sleeper_open(entry):
+        # No allowlist to enumerate: the entrants are whoever has actually
+        # submitted, so report them from the submissions themselves.
+        response['allowed_names'] = []
+        response['submissions'] = {
+            user_data.get('username', normalized_username): {
+                "has_submitted": user_data.get('data') is not None,
+                "update_count": user_data.get('update_count', 0),
+                "created_at": user_data.get('created_at'),
+                "updated_at": user_data.get('updated_at'),
+            }
+            for normalized_username, user_data in entry.get('user_submissions', {}).items()
+        }
     else:
         # Entry created via old /create method (no allowed_names)
         response['allowed_names'] = []
@@ -3453,16 +3644,29 @@ def get_tinyurls_by_username(username):
     
     # Normalize username for case-insensitive comparison
     normalized_username = normalize_tinyurl_name(username)
-    
+
+    # Sleeper-gated entries have no allowlist to match on, so they are offered to
+    # any caller presenting a token we can verify. Verified once here rather than
+    # per entry — this runs on every DFS page load.
+    sleeper_identity = verify_sleeper_token(_sleeper_token_from_request())
+
     matching_entries = []
     for entry_name, entry_data in tinyurl_data.items():
             allowed_names = entry_data.get('allowed_names', [])
             # Case-insensitive comparison: normalize all allowed names and compare
             normalized_allowed_names = [normalize_tinyurl_name(n) for n in allowed_names]
-            if normalized_username in normalized_allowed_names:
+            is_sleeper_open = entry_is_sleeper_open(entry_data) and sleeper_identity is not None
+            if is_sleeper_open or normalized_username in normalized_allowed_names:
                 # Use original name from entry if stored, otherwise use entry_name
                 display_name = entry_data.get('name', entry_name)
-                
+
+                # An open entry keys submissions by the verified Sleeper display
+                # name, which need not equal the username in the path.
+                lookup_username = normalized_username
+                if is_sleeper_open:
+                    lookup_username = normalize_tinyurl_name(
+                        sleeper_identity.get('display_name') or username)
+
                 user_submissions = entry_data.get('user_submissions', {})
                 
                 # Check if this specific username has data in user_submissions
@@ -3470,8 +3674,8 @@ def get_tinyurls_by_username(username):
                 # Otherwise, fall back to main entry data
                 user_has_data = False
                 has_pin = False
-                if normalized_username in user_submissions:
-                    user_data = user_submissions[normalized_username]
+                if lookup_username in user_submissions:
+                    user_data = user_submissions[lookup_username]
                     user_has_data = user_data.get('data') is not None
                     # Check if THIS specific username has a PIN
                     has_pin = 'pin' in user_data
@@ -3489,6 +3693,16 @@ def get_tinyurls_by_username(username):
                 # Include week if present
                 if 'week' in entry_data:
                     entry_info['week'] = entry_data['week']
+                if is_sleeper_open:
+                    entry_info['access_mode'] = 'sleeper'
+                    entry_info['submit_as'] = sleeper_identity.get('display_name')
+                progress = multiweek_progress(entry_data)
+                if progress:
+                    entry_info['tournament_week'] = progress['week']
+                    entry_info['num_weeks'] = progress['num_weeks']
+                if 'deadline' in entry_data:
+                    entry_info['deadline'] = entry_data['deadline']
+                    entry_info['deadline_passed'] = deadline_has_passed(entry_data)
                 matching_entries.append(entry_info)
     
     return jsonify({
@@ -3546,6 +3760,15 @@ def list_tinyurls():
         # Include allowed_names if present
         if 'allowed_names' in data:
             entry_info['allowed_names'] = data['allowed_names']
+
+        entry_info['access_mode'] = data.get('access_mode', 'allowlist')
+        progress = multiweek_progress(data)
+        if progress:
+            entry_info['tournament_week'] = progress['week']
+            entry_info['num_weeks'] = progress['num_weeks']
+        if 'deadline' in data:
+            entry_info['deadline'] = data['deadline']
+            entry_info['deadline_passed'] = deadline_has_passed(data)
         
         # Include user_submissions count if present
         if 'user_submissions' in data:
@@ -3562,6 +3785,74 @@ def list_tinyurls():
     return jsonify({
         "total_entries": len(entries),
         "entries": entries
+    }), 200
+
+
+@app.route('/tinyurl/<name>/entrants/<username>', methods=['DELETE'])
+def remove_tinyurl_entrant(name, username):
+    """
+    Remove an entrant from a tournament.
+
+    Covers two cases the organiser has no other way to handle: someone who joined
+    an open tournament and wants out, and a guillotine format where the field
+    shrinks each week. Both need the user gone from the allowlist so they cannot
+    submit again; they differ over the record, so past scores are kept by default.
+
+    Query params:
+        purge_standings: "true" to also erase their accumulated points. Use for a
+                         withdrawal; leave off for an elimination, where the weeks
+                         already played should still show.
+
+    Returns:
+        JSON describing what was removed
+    """
+    global tinyurl_data
+
+    normalized_name = normalize_tinyurl_name(name)
+    normalized_username = normalize_tinyurl_name(username)
+
+    if normalized_name not in tinyurl_data:
+        return jsonify({"error": f"TinyURL '{name}' not found"}), 404
+
+    entry = tinyurl_data[normalized_name]
+    purge_standings = request.args.get('purge_standings', '').strip().lower() in ('1', 'true', 'yes')
+
+    removed_from = []
+
+    # Drop from the allowlist so the tournament no longer appears for them.
+    allowed_names = entry.get('allowed_names', [])
+    remaining = [n for n in allowed_names if normalize_tinyurl_name(n) != normalized_username]
+    if len(remaining) != len(allowed_names):
+        entry['allowed_names'] = remaining
+        removed_from.append('allowed_names')
+
+    # Drop any lineup they have in for the current week.
+    user_submissions = entry.get('user_submissions', {})
+    if normalized_username in user_submissions:
+        del user_submissions[normalized_username]
+        removed_from.append('user_submissions')
+
+    # Standings are keyed by display name rather than the normalized key.
+    standings = entry.get('standings', {})
+    standings_key = next(
+        (k for k in standings if normalize_tinyurl_name(k) == normalized_username), None)
+    if standings_key is not None and purge_standings:
+        del standings[standings_key]
+        removed_from.append('standings')
+
+    if not removed_from:
+        return jsonify({"error": f"'{username}' is not an entrant in '{name}'"}), 404
+
+    save_tinyurl_data()
+    print(f"{datetime.datetime.now()} - Removed entrant '{username}' from '{name}' "
+          f"(removed from: {', '.join(removed_from)})")
+
+    return jsonify({
+        "name": entry.get('name', name),
+        "removed": username,
+        "removed_from": removed_from,
+        "standings_kept": standings_key is not None and not purge_standings,
+        "remaining_entrants": entry.get('allowed_names', []),
     }), 200
 
 
@@ -3594,15 +3885,21 @@ def delete_tinyurl(name):
 @app.route('/tinyurl/create/empty', methods=['POST'])
 def create_empty_tinyurl():
     """
-    Create an empty TinyURL entry with allowed usernames.
+    Create an empty TinyURL entry, open either to a fixed list of usernames or
+    to anyone with a verified Sleeper login.
     
     Request body:
     {
         "name": "unique_name",
-        "names": ["username1", "username2", "username3"],
+        "names": ["username1", "username2", "username3"],  // allowlist mode only
+        "access_mode": "allowlist" | "sleeper",            // Optional, default allowlist
+        "deadline": "2026-09-10T17:00:00.000Z",            // Optional, ISO 8601 UTC
         "week": 8,
         "reveal": "2025-11-10T14:30:00.000Z"  // Optional, ISO 8601 UTC format
     }
+    
+    In "sleeper" mode the names list is not used: entry is gated on a Sleeper
+    token the backend verifies, so no allowlist is stored.
     
     Returns:
         JSON response with created entry or error message
@@ -3620,12 +3917,24 @@ def create_empty_tinyurl():
         reveal = data.get('reveal')
         entry_type = data.get('type', 'single')
         num_weeks_raw = data.get('num_weeks')
+        access_mode = (data.get('access_mode') or 'allowlist').strip().lower()
+        deadline_raw = data.get('deadline')
 
         if not name:
             return jsonify({"error": "name is required"}), 400
-        if not isinstance(allowed_names, list):
+        if access_mode not in ('allowlist', 'sleeper'):
+            return jsonify({"error": "access_mode must be 'allowlist' or 'sleeper'"}), 400
+
+        deadline_dt, deadline_error = parse_deadline(deadline_raw)
+        if deadline_error:
+            return jsonify({"error": deadline_error}), 400
+
+        if access_mode == 'sleeper':
+            # No allowlist to validate: entry is gated on a verified Sleeper login.
+            allowed_names = []
+        elif not isinstance(allowed_names, list):
             return jsonify({"error": "names must be a list"}), 400
-        if not allowed_names:
+        elif not allowed_names:
             return jsonify({"error": "names list cannot be empty"}), 400
         if entry_type not in ['single', 'multiweek_dfs']:
             return jsonify({"error": "type must be 'single' or 'multiweek_dfs'"}), 400
@@ -3659,6 +3968,7 @@ def create_empty_tinyurl():
             'data': None,  # No data yet
             'created_at': datetime.datetime.now().isoformat(),
             'allowed_names': allowed_names,  # Keep original case for display
+            'access_mode': access_mode,
             'type': entry_type,
             'user_submissions': {}
         }
@@ -3668,6 +3978,9 @@ def create_empty_tinyurl():
         
         if reveal is not None:
             entry_data['reveal'] = reveal
+
+        if deadline_dt is not None:
+            entry_data['deadline'] = deadline_dt.isoformat().replace('+00:00', 'Z')
         
         # Initialize standings for multiweek_dfs entries
         if entry_type == 'multiweek_dfs':
@@ -3684,6 +3997,7 @@ def create_empty_tinyurl():
         response = {
             "name": name,
             "allowed_names": allowed_names,
+            "access_mode": access_mode,
             "created_at": tinyurl_data[normalized_name]['created_at'],
             "total_entries": len(tinyurl_data)
         }
@@ -3693,6 +4007,9 @@ def create_empty_tinyurl():
 
         if reveal is not None:
             response['reveal'] = reveal
+
+        if 'deadline' in entry_data:
+            response['deadline'] = entry_data['deadline']
 
         if num_weeks is not None:
             response['num_weeks'] = num_weeks
@@ -3943,8 +4260,9 @@ def add_to_tinyurl(tinyurl_name):
         pin = data.get('pin')
         skip_validation = data.get('skip_validation', False)
         
-        if not username:
-            return jsonify({"error": "name is required"}), 400
+        # `name` is only required for allowlist entries; a Sleeper-gated entry takes
+        # the submitter's identity from the verified token instead, so the check
+        # happens after we know which kind of entry this is.
         if not url_data:
             return jsonify({"error": "data is required"}), 400
         
@@ -3971,17 +4289,41 @@ def add_to_tinyurl(tinyurl_name):
             return jsonify({"error": f"TinyURL '{tinyurl_name}' not found"}), 404
         
         entry = tinyurl_data[normalized_tinyurl_name]
-        
-        # Check if entry has allowed_names (created via /create/empty)
-        allowed_names = entry.get('allowed_names', [])
-        if not allowed_names:
-            # Entry was created via /create (old method), cannot use /add endpoint
-            return jsonify({"error": f"TinyURL '{tinyurl_name}' was not created with allowed names. Use /tinyurl/create to update."}), 400
-        
-        # Check if username is in allowed_names (case-insensitive comparison)
-        normalized_allowed_names = [normalize_tinyurl_name(n) for n in allowed_names]
-        if normalized_username not in normalized_allowed_names:
-            return jsonify({"error": "Not allowed username"}), 401
+
+        # A deadline applies whichever way the entry gates its entrants. This is a
+        # separate, earlier cutoff than the kickoff check further down: it closes
+        # submissions at a time the organiser chose, not when the games start.
+        if deadline_has_passed(entry):
+            return jsonify({
+                "error": "The submission deadline for this tournament has passed",
+                "deadline": entry.get('deadline'),
+            }), 403
+
+        if entry_is_sleeper_open(entry):
+            # Open entry: identity comes from a Sleeper token we verify, never from
+            # the posted name, so the submission is attributed to the real account.
+            identity = verify_sleeper_token(_sleeper_token_from_request())
+            if not identity:
+                return jsonify({
+                    "error": "This tournament is open to Sleeper accounts only. "
+                             "Connect your Sleeper account and try again.",
+                }), 401
+            username = identity.get('display_name') or username
+            normalized_username = normalize_tinyurl_name(username)
+        else:
+            if not username:
+                return jsonify({"error": "name is required"}), 400
+
+            # Check if entry has allowed_names (created via /create/empty)
+            allowed_names = entry.get('allowed_names', [])
+            if not allowed_names:
+                # Entry was created via /create (old method), cannot use /add endpoint
+                return jsonify({"error": f"TinyURL '{tinyurl_name}' was not created with allowed names. Use /tinyurl/create to update."}), 400
+
+            # Check if username is in allowed_names (case-insensitive comparison)
+            normalized_allowed_names = [normalize_tinyurl_name(n) for n in allowed_names]
+            if normalized_username not in normalized_allowed_names:
+                return jsonify({"error": "Not allowed username"}), 401
         
         # Initialize user_submissions if it doesn't exist
         if 'user_submissions' not in entry:
@@ -4128,6 +4470,11 @@ def admin_get_tinyurl_data(name):
     # Include allowed_names if present
     if 'allowed_names' in entry:
         response['allowed_names'] = entry['allowed_names']
+
+    response['access_mode'] = entry.get('access_mode', 'allowlist')
+    if 'deadline' in entry:
+        response['deadline'] = entry['deadline']
+        response['deadline_passed'] = deadline_has_passed(entry)
     
     # Include week if present
     if 'week' in entry:

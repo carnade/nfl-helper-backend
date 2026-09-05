@@ -422,7 +422,11 @@ paths:
   /tinyurl/create/empty:
     post:
       summary: Create an empty TinyURL entry
-      description: Creates an empty TinyURL entry with allowed usernames that can be populated later
+      description: >-
+        Creates an empty TinyURL entry that can be populated later. Entrants are
+        gated either by a fixed username allowlist (access_mode "allowlist", the
+        default) or by a Sleeper login the backend verifies with Sleeper
+        (access_mode "sleeper"), in which case the names list is not used.
       operationId: createEmptyTinyurl
       tags:
         - TinyURL
@@ -434,7 +438,6 @@ paths:
               type: object
               required:
                 - name
-                - names
               properties:
                 name:
                   type: string
@@ -444,7 +447,26 @@ paths:
                   type: array
                   items:
                     type: string
-                  description: List of allowed usernames (cannot be empty)
+                  description: >-
+                    List of allowed usernames. Required and non-empty when
+                    access_mode is "allowlist"; ignored when it is "sleeper".
+                access_mode:
+                  type: string
+                  enum: ["allowlist", "sleeper"]
+                  default: "allowlist"
+                  description: >-
+                    How entrants are admitted. "allowlist" uses the names list.
+                    "sleeper" admits any caller presenting a Sleeper token that
+                    the backend verifies, and files the lineup under that
+                    account's display name rather than a posted name.
+                deadline:
+                  type: string
+                  format: date-time
+                  description: >-
+                    Optional submission cutoff in ISO 8601 UTC. Submissions after
+                    it are rejected with 403. For multiweek_dfs entries it rolls
+                    forward one week each cleanup, giving every week the same
+                    cutoff.
                 week:
                   type: integer
                   description: Optional week number
@@ -462,6 +484,67 @@ paths:
           description: Empty TinyURL entry created successfully
         "400":
           description: Bad request - validation error
+
+  /tinyurl/{name}/entrants/{username}:
+    delete:
+      summary: Remove an entrant from a tournament
+      description: >-
+        Removes a user from a tournament's allowlist and drops any lineup they
+        have in for the current week, so they can neither submit nor see it
+        again. Intended both for a guillotine format, where the field shrinks
+        each week, and for someone who regrets entering an open tournament.
+        Points from weeks already played are kept unless purge_standings is set.
+      operationId: removeTinyurlEntrant
+      tags:
+        - TinyURL
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Tournament name
+        - name: username
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Entrant to remove (case-insensitive)
+        - name: purge_standings
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: >-
+            Also erase their accumulated points. Leave off for an elimination,
+            where the weeks already played should still show; set it for a
+            withdrawal that should leave no trace.
+      responses:
+        "200":
+          description: Entrant removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  removed:
+                    type: string
+                  removed_from:
+                    type: array
+                    items:
+                      type: string
+                    description: Which structures the user was removed from
+                  standings_kept:
+                    type: boolean
+                  remaining_entrants:
+                    type: array
+                    items:
+                      type: string
+        "404":
+          description: Tournament not found, or the user is not an entrant
 
   /tinyurl/{name}/data:
     get:
@@ -1580,8 +1663,6 @@ paths:
         "500":
           description: Server error
 
-<<<<<<< HEAD
-=======
   /currentweek:
     get:
       summary: Get current NFL week
@@ -1607,7 +1688,6 @@ paths:
                     enum: ["DailyFantasyFuel", null]
                     description: Source of the week data, or null if not yet determined
 
->>>>>>> multi_week_dfs
   /statistics:
     get:
       summary: Get API statistics
