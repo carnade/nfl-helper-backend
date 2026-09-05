@@ -124,8 +124,20 @@ USE_SUPABASE = bool(SUPABASE_URL and SUPABASE_KEY)
 
 # Read-only mode: load from Supabase, but send every write to a local file instead.
 # Lets a local run read production state without writing back to the shared project
-# (Gist is skipped too — it is shared with production just the same).
+# (Gist is skipped too — it is shared with production just the same). Note that
+# loads still come from Supabase, so anything written locally is lost on restart —
+# use SUPABASE_KEY_PREFIX instead when dev data needs to survive.
 SUPABASE_READ_ONLY = os.environ.get('SUPABASE_READ_ONLY', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+# Namespace for the rows this instance owns. Set it (e.g. "dev_") to give a local
+# run its own parallel set of rows in the same table, isolated from production but
+# still durable across restarts. Empty in production, which owns the bare keys.
+SUPABASE_KEY_PREFIX = os.environ.get('SUPABASE_KEY_PREFIX', '').strip()
+
+
+def _supabase_key(key):
+    """Row key for this instance, namespaced by SUPABASE_KEY_PREFIX."""
+    return f"{SUPABASE_KEY_PREFIX}{key}"
 
 supabase_client = None
 if USE_SUPABASE:
@@ -133,6 +145,11 @@ if USE_SUPABASE:
         from supabase import create_client
         supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
         print(f"Supabase client initialised (URL: {SUPABASE_URL})")
+        if SUPABASE_KEY_PREFIX:
+            print(f"Supabase rows namespaced with prefix '{SUPABASE_KEY_PREFIX}' "
+                  f"(e.g. '{_supabase_key('tinyurl_data')}') — isolated from production.")
+        else:
+            print("Supabase rows are the PRODUCTION set (no SUPABASE_KEY_PREFIX).")
         if SUPABASE_READ_ONLY:
             print("SUPABASE_READ_ONLY is set — reads come from Supabase, "
                   "all writes go to local files (Supabase and Gist are not written).")
@@ -171,7 +188,7 @@ def _save_tinyurl_data_to_supabase():
     global tinyurl_data
     try:
         supabase_client.table('app_data').upsert({
-            'key': 'tinyurl_data',
+            'key': _supabase_key('tinyurl_data'),
             'value': tinyurl_data,
             'updated_at': datetime.datetime.now(datetime.UTC).isoformat()
         }).execute()
@@ -244,7 +261,7 @@ def _load_tinyurl_data_from_supabase():
     """Load tinyurl_data from Supabase"""
     global tinyurl_data
     try:
-        result = supabase_client.table('app_data').select('value').eq('key', 'tinyurl_data').execute()
+        result = supabase_client.table('app_data').select('value').eq('key', _supabase_key('tinyurl_data')).execute()
         if result.data:
             tinyurl_data = result.data[0]['value']
             print(f"{datetime.datetime.now()} - Loaded tinyurl_data from Supabase ({len(tinyurl_data)} entries)")
@@ -327,7 +344,7 @@ def _save_tournament_data_to_supabase():
     global tournament_data
     try:
         supabase_client.table('app_data').upsert({
-            'key': 'tournament_data',
+            'key': _supabase_key('tournament_data'),
             'value': tournament_data,
             'updated_at': datetime.datetime.now(datetime.UTC).isoformat()
         }).execute()
@@ -400,7 +417,7 @@ def _load_tournament_data_from_supabase():
     """Load tournament_data from Supabase"""
     global tournament_data
     try:
-        result = supabase_client.table('app_data').select('value').eq('key', 'tournament_data').execute()
+        result = supabase_client.table('app_data').select('value').eq('key', _supabase_key('tournament_data')).execute()
         if result.data:
             tournament_data = result.data[0]['value']
             print(f"{datetime.datetime.now()} - Loaded tournament_data from Supabase ({len(tournament_data)} entries)")
@@ -480,7 +497,7 @@ def _save_store(key: str, store: dict):
     if USE_SUPABASE and not SUPABASE_READ_ONLY:
         try:
             supabase_client.table('app_data').upsert({
-                'key': key,
+                'key': _supabase_key(key),
                 'value': store,
                 'updated_at': datetime.datetime.now(datetime.UTC).isoformat()
             }).execute()
@@ -517,7 +534,7 @@ def _load_store(key: str, store: dict):
     """Load an in-memory dict: Supabase → GitHub Gist → local file."""
     if USE_SUPABASE:
         try:
-            result = supabase_client.table('app_data').select('value').eq('key', key).execute()
+            result = supabase_client.table('app_data').select('value').eq('key', _supabase_key(key)).execute()
             if result.data:
                 store.clear()
                 store.update(result.data[0]['value'])
