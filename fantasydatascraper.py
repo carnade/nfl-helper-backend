@@ -24,7 +24,50 @@ class FantasyDataScraper:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
-        
+        self._season_cache = None
+
+    def get_current_season(self) -> str:
+        """
+        FantasyData's season identifier for the season now being played, e.g.
+        "2026_REG". Asking for the wrong one silently returns a full set of
+        plausible numbers from another year rather than failing, so this must not
+        be left to a hardcoded default.
+
+        Returns:
+            str: Season identifier in FantasyData's sp= format
+        """
+        return f"{self.get_current_season_year()}_REG"
+
+    def get_current_season_year(self) -> int:
+        """
+        The year of the season now being played, from Sleeper with a date-derived
+        fallback. Shared by anything that has to name a season in a URL.
+
+        Returns:
+            int: Season year, e.g. 2026
+        """
+        if self._season_cache:
+            return self._season_cache
+
+        season_year = None
+        try:
+            response = self.session.get(self.sleeper_api_url, timeout=10)
+            response.raise_for_status()
+            season_year = (response.json() or {}).get('season')
+            logger.info(f"Sleeper API reports season {season_year}")
+        except Exception as e:
+            logger.error(f"Error fetching current season from Sleeper API: {e}")
+
+        if not season_year:
+            # A season is named for the calendar year it starts in, so January and
+            # February still belong to the season that began the previous autumn.
+            today = datetime.datetime.now()
+            season_year = today.year - 1 if today.month <= 2 else today.year
+            logger.info(f"Falling back to season {season_year} derived from the date")
+
+        self._season_cache = int(season_year)
+        return self._season_cache
+
     def get_current_week(self) -> int:
         """
         Get the current NFL week from Sleeper API.
@@ -362,7 +405,7 @@ class FantasyDataScraper:
             return None
             
     def scrape_position(self, position: str, week_from: Optional[int] = None, week_to: Optional[int] = None, 
-                       season: str = "2025_REG", scoring: str = "fpts_ppr") -> List[Dict]:
+                       season: Optional[str] = None, scoring: str = "fpts_ppr") -> List[Dict]:
         """
         Scrape fantasy data for a specific position.
         
@@ -370,7 +413,7 @@ class FantasyDataScraper:
             position (str): Position to scrape (QB, RB, WR, TE, DST)
             week_from (Optional[int]): Starting week (defaults to current week from Sleeper API)
             week_to (Optional[int]): Ending week (defaults to current week from Sleeper API)
-            season (str): Season identifier
+            season (Optional[str]): Season identifier (defaults to the current season)
             scoring (str): Scoring format
             
         Returns:
@@ -381,11 +424,14 @@ class FantasyDataScraper:
             current_week = self.get_current_week()
             week_from = week_from or current_week
             week_to = week_to or current_week
+
+        if season is None:
+            season = self.get_current_season()
             
         # Build URL based on the pattern from the example
         url = f"{self.base_url}?scope=game&sp={season}&week_from={week_from}&week_to={week_to}&position={position.lower()}&scoring={scoring}&order_by={scoring}&sort_dir=desc"
         
-        logger.info(f"Scraping {position} data from week {week_from} to {week_to}")
+        logger.info(f"Scraping {position} data for {season}, week {week_from} to {week_to}")
         
         soup = self._make_request(url)
         if not soup:
@@ -411,19 +457,24 @@ class FantasyDataScraper:
         return players
         
     def scrape_all_positions(self, week_from: Optional[int] = None, week_to: Optional[int] = None, 
-                           season: str = "2025_REG", scoring: str = "fpts_ppr") -> Dict[str, List[Dict]]:
+                           season: Optional[str] = None, scoring: str = "fpts_ppr") -> Dict[str, List[Dict]]:
         """
         Scrape fantasy data for all positions.
         
         Args:
             week_from (Optional[int]): Starting week (defaults to current week from Sleeper API)
             week_to (Optional[int]): Ending week (defaults to current week from Sleeper API)
-            season (str): Season identifier
+            season (Optional[str]): Season identifier (defaults to the current season)
             scoring (str): Scoring format
             
         Returns:
             Dict[str, List[Dict]]: Dictionary with position as key and player data as value
         """
+        # Resolve once here so every position in this sweep uses the same season,
+        # even if it straddles a rollover.
+        if season is None:
+            season = self.get_current_season()
+
         positions = ['QB', 'RB', 'WR', 'TE', 'DST']
         all_data = {}
         
@@ -442,27 +493,27 @@ class FantasyDataScraper:
         return all_data
         
     def scrape_qb(self, week_from: Optional[int] = None, week_to: Optional[int] = None, 
-                  season: str = "2025_REG", scoring: str = "fpts_ppr") -> List[Dict]:
+                  season: Optional[str] = None, scoring: str = "fpts_ppr") -> List[Dict]:
         """Scrape QB data."""
         return self.scrape_position('QB', week_from, week_to, season, scoring)
         
     def scrape_rb(self, week_from: Optional[int] = None, week_to: Optional[int] = None, 
-                  season: str = "2025_REG", scoring: str = "fpts_ppr") -> List[Dict]:
+                  season: Optional[str] = None, scoring: str = "fpts_ppr") -> List[Dict]:
         """Scrape RB data."""
         return self.scrape_position('RB', week_from, week_to, season, scoring)
         
     def scrape_wr(self, week_from: Optional[int] = None, week_to: Optional[int] = None, 
-                  season: str = "2025_REG", scoring: str = "fpts_ppr") -> List[Dict]:
+                  season: Optional[str] = None, scoring: str = "fpts_ppr") -> List[Dict]:
         """Scrape WR data."""
         return self.scrape_position('WR', week_from, week_to, season, scoring)
         
     def scrape_te(self, week_from: Optional[int] = None, week_to: Optional[int] = None, 
-                  season: str = "2025_REG", scoring: str = "fpts_ppr") -> List[Dict]:
+                  season: Optional[str] = None, scoring: str = "fpts_ppr") -> List[Dict]:
         """Scrape TE data."""
         return self.scrape_position('TE', week_from, week_to, season, scoring)
         
     def scrape_dst(self, week_from: Optional[int] = None, week_to: Optional[int] = None, 
-                   season: str = "2025_REG", scoring: str = "fpts_ppr") -> List[Dict]:
+                   season: Optional[str] = None, scoring: str = "fpts_ppr") -> List[Dict]:
         """Scrape DST data."""
         return self.scrape_position('DST', week_from, week_to, season, scoring)
         

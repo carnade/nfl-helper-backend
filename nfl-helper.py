@@ -643,14 +643,6 @@ BYE_WEEKS_2024 = {
     "NYJ": 12, "PHI": 5, "PIT": 9, "SEA": 10, "SF": 9, "TB": 11,
     "TEN": 5, "WAS": 14
 }
-BYE_WEEKS_2025 = {
-    "ARI": 8, "ATL": 5, "BAL": 7, "BUF": 7, "CAR": 14, "CHI": 5,
-    "CIN": 10, "CLE": 9, "DAL": 10, "DEN": 12, "DET": 8, "GB": 5,
-    "HOU": 6, "IND": 11, "JAX": 8, "KC": 10, "LAC": 12, "LAR": 8,
-    "LV": 8, "MIA": 12, "MIN": 6, "NE": 14, "NO": 11, "NYG": 14,
-    "NYJ": 9, "PHI": 9, "PIT": 5, "SF": 14, "SEA": 8, "TB": 9,
-    "TEN": 10, "WAS": 12
-}
 BYE_WEEKS_2026 = {
     "ARI": 14, "ATL": 11, "BAL": 13, "BUF": 7,  "CAR": 5,  "CHI": 10,
     "CIN": 6,  "CLE": 11, "DAL": 14, "DEN": 10, "DET": 6,  "GB":  11,
@@ -660,49 +652,7 @@ BYE_WEEKS_2026 = {
     "TEN": 9,  "WAS": 7
 }
 
-WIN_OU_2025 = {
-    "ARI": 8.5, "ATL": 7.5, "BAL": 11.5, "BUF": 11.5, "CAR": 6.5, "CHI": 8.5,
-    "CIN": 9.5, "CLE": 5.5, "DAL": 7.5, "DEN": 9.5, "DET": 11.5, "GB": 9.5,
-    "HOU": 9.5, "IND": 7.5, "JAX": 7.5, "KC": 11.5, "LAC": 9.5, "LAR": 9.5,
-    "LV": 6.5, "MIA": 8.5, "MIN": 8.5, "NE": 7.5, "NO": 5.5, "NYG": 5.5,
-    "NYJ": 5.5, "PHI": 11.5, "PIT": 8.5, "SF": 10.5, "SEA": 7.5, "TB": 9.5,
-    "TEN": 5.5, "WAS": 9.5
-}
 
-TEAM_SCHEDULES_2025 = {
-    "ARI": ["@NO", "CAR", "@SF", "SEA", "TEN", "@IND", "GB", "BYE", "@DAL", "@SEA", "SF", "JAX", "@TB", "LAR", "@HOU", "ATL", "@CIN", "@LAR"],
-    "ATL": ["TB", "@MIN", "@CAR", "WSH", "BYE", "BUF", "@SF", "MIA", "@NE", "@IND", "CAR", "@NO", "@NYJ", "SEA", "@TB", "@ARI", "LAR", "NO"],
-    "BAL": ["@BUF", "CLE", "DET", "@KC", "HOU", "LAR", "BYE", "CHI", "@MIA", "@MIN", "@CLE", "NYJ", "CIN", "PIT", "@CIN", "NE", "@GB", "@PIT"],
-    "BUF": ["BAL", "@NYJ", "MIA", "NO", "NE", "@ATL", "BYE", "@CAR", "KC", "@MIA", "TB", "@HOU", "@PIT", "CIN", "@NE", "@CLE", "PHI", "NYJ"],
-    "CAR": ["@JAX", "@ARI", "ATL", "@NE", "MIA", "DAL", "@NYJ", "BUF", "@GB", "NO", "@ATL", "@SF", "LAR", "BYE", "@NO", "TB", "SEA", "@TB"],
-    "CHI": ["MIN", "@DET", "DAL", "@LV", "BYE", "@WSH", "NO", "@BAL", "@CIN", "NYG", "@MIN", "PIT", "@PHI", "@GB", "CLE", "GB", "@SF", "DET"],
-    "CIN": ["@CLE", "JAX", "@MIN", "@DEN", "DET", "@GB", "PIT", "NYJ", "CHI", "BYE", "@PIT", "NE", "@BAL", "@BUF", "BAL", "@MIA", "ARI", "CLE"],
-    "CLE": ["CIN", "@BAL", "GB", "@DET", "MIN", "@PIT", "MIA", "@NE", "BYE", "@NYJ", "BAL", "@LV", "SF", "TEN", "@CHI", "BUF", "PIT", "@CIN"],
-    "DAL": ["@PHI", "NYG", "@CHI", "GB", "@NYJ", "@CAR", "WSH", "@DEN", "ARI", "BYE", "@LV", "PHI", "KC", "@DET", "MIN", "LAC", "@WSH", "@NYG"],
-    "DEN": ["TEN", "@IND", "@LAC", "CIN", "@PHI", "@NYJ", "NYG", "DAL", "@HOU", "LV", "KC", "BYE", "@WSH", "@LV", "GB", "JAX", "@KC", "LAC"],
-    "DET": ["@GB", "CHI", "@BAL", "CLE", "@CIN", "@KC", "TB", "BYE", "MIN", "@WSH", "@PHI", "NYG", "GB", "DAL", "@LAR", "PIT", "@MIN", "@CHI"],
-    "GB": ["DET", "WSH", "@CLE", "@DAL", "BYE", "CIN", "@ARI", "@PIT", "CAR", "PHI", "@NYG", "MIN", "@DET", "CHI", "@DEN", "@CHI", "BAL", "@MIN"],
-    "HOU": ["@LAR", "TB", "@JAX", "TEN", "@BAL", "BYE", "@SEA", "SF", "DEN", "JAX", "@TEN", "BUF", "@IND", "@KC", "ARI", "LV", "@LAC", "IND"],
-    "IND": ["MIA", "DEN", "@TEN", "@LAR", "LV", "ARI", "@LAC", "TEN", "@PIT", "ATL", "BYE", "@KC", "HOU", "@JAX", "@SEA", "SF", "JAX", "@HOU"],
-    "JAX": ["CAR", "@CIN", "HOU", "@SF", "KC", "SEA", "LAR", "BYE", "@LV", "@HOU", "LAC", "@ARI", "@TEN", "IND", "NYJ", "@DEN", "@IND", "TEN"],
-    "KC": ["@LAC", "PHI", "@NYG", "BAL", "@JAX", "DET", "LV", "WSH", "@BUF", "BYE", "@DEN", "IND", "@DAL", "HOU", "LAC", "@TEN", "DEN", "@LV"],
-    "LV": ["@NE", "LAC", "@WSH", "CHI", "@IND", "TEN", "@KC", "BYE", "JAX", "@DEN", "DAL", "CLE", "@LAC", "DEN", "@PHI", "@HOU", "NYG", "KC"],
-    "LAR": ["HOU", "@TEN", "@PHI", "IND", "SF", "@BAL", "@JAX", "BYE", "NO", "@SF", "SEA", "TB", "@CAR", "@ARI", "DET", "@SEA", "@ATL", "ARI"],
-    "LAC": ["KC", "@LV", "DEN", "@NYG", "WSH", "@MIA", "IND", "MIN", "@TEN", "PIT", "@JAX", "BYE", "LV", "PHI", "@KC", "@DAL", "HOU", "@DEN"],
-    "MIA": ["@IND", "NE", "@BUF", "NYJ", "@CAR", "LAC", "@CLE", "@ATL", "BAL", "BUF", "WSH", "BYE", "NO", "@NYJ", "@PIT", "CIN", "TB", "@NE"],
-    "MIN": ["@CHI", "ATL", "CIN", "@PIT", "@CLE", "BYE", "PHI", "@LAC", "@DET", "BAL", "CHI", "@GB", "@SEA", "WSH", "@DAL", "@NYG", "DET", "GB"],
-    "NE": ["LV", "@MIA", "PIT", "CAR", "@BUF", "@NO", "@TEN", "CLE", "ATL", "@TB", "NYJ", "@CIN", "NYG", "BYE", "BUF", "@BAL", "@NYJ", "MIA"],
-    "NO": ["ARI", "SF", "@SEA", "@BUF", "NYG", "NE", "@CHI", "TB", "@LAR", "@CAR", "BYE", "ATL", "@MIA", "@TB", "CAR", "NYJ", "@TEN", "@ATL"],
-    "NYG": ["@WSH", "@DAL", "KC", "LAC", "@NO", "PHI", "@DEN", "@PHI", "SF", "@CHI", "GB", "@DET", "@NE", "BYE", "WSH", "MIN", "@LV", "DAL"],
-    "NYJ": ["PIT", "BUF", "@TB", "@MIA", "DAL", "DEN", "CAR", "@CIN", "BYE", "CLE", "@NE", "@BAL", "ATL", "MIA", "@JAX", "@NO", "NE", "@BUF"],
-    "PHI": ["DAL", "@KC", "LAR", "@TB", "DEN", "@NYG", "@MIN", "NYG", "BYE", "@GB", "DET", "@DAL", "CHI", "@LAC", "LV", "@WSH", "@BUF", "WSH"],
-    "PIT": ["@NYJ", "SEA", "@NE", "MIN", "BYE", "CLE", "@CIN", "GB", "IND", "@LAC", "CIN", "@CHI", "BUF", "@BAL", "MIA", "@DET", "@CLE", "BAL"],
-    "SF": ["@SEA", "@NO", "ARI", "JAX", "@LAR", "@TB", "ATL", "@HOU", "@NYG", "LAR", "@ARI", "CAR", "@CLE", "BYE", "TEN", "@IND", "CHI", "SEA"],
-    "SEA": ["SF", "@PIT", "NO", "@ARI", "TB", "@JAX", "HOU", "BYE", "@WSH", "ARI", "@LAR", "@TEN", "MIN", "@ATL", "IND", "LAR", "@CAR", "@SF"],
-    "TB": ["@ATL", "@HOU", "NYJ", "PHI", "@SEA", "SF", "@DET", "@NO", "BYE", "NE", "@BUF", "@LAR", "ARI", "NO", "ATL", "@CAR", "@MIA", "CAR"],
-    "TEN": ["@DEN", "LAR", "IND", "@HOU", "@ARI", "@LV", "NE", "@IND", "LAC", "BYE", "HOU", "SEA", "JAX", "@CLE", "@SF", "KC", "NO", "@JAX"],
-    "WAS": ["NYG", "@GB", "LV", "@ATL", "@LAC", "CHI", "@DAL", "@KC", "SEA", "DET", "@MIA", "BYE", "DEN", "@MIN", "@NYG", "PHI", "DAL", "@PHI"]
-}
 
 # Global variable to track the startup time
 startup_time = datetime.datetime.now()
@@ -2133,17 +2083,6 @@ def get_fantasy_points_for_player_endpoint(sleeper_id):
 @app.route('/teams', methods=['GET'])
 def get_teams():
     return jsonify(teams_data)
-
-
-@app.route('/teams/schedules', methods=['GET'])
-def get_team_schedules():
-    """
-    Endpoint to return the 2025 NFL team schedules.
-
-    Returns:
-        JSON response containing the team schedules for 2025.
-    """
-    return jsonify(TEAM_SCHEDULES_2025), 200
 
 
 @app.route('/statistics', methods=['GET'])
@@ -4998,27 +4937,67 @@ def health_check():
     return "Health check passed", 200
 
 
+def current_season_year():
+    """
+    The year of the NFL season now being played.
+
+    Sleeper's endpoints name the season in the path, and asking for a past one
+    returns that season's numbers rather than an error, so this must never be a
+    literal — it has been re-pinned by hand at least once already.
+    """
+    return FantasyDataScraper().get_current_season_year()
+
+
 def get_player_projections():
     """
-    Fetch player projections for the 2025 NFL regular season.
+    Fetch player projections for the current NFL regular season.
 
     Returns:
         dict: JSON response containing player projections.
     """
-    url = "https://api.sleeper.com/projections/nfl/2025?season_type=regular&position[]=QB&position[]=RB&position[]=TE&position[]=WR&order_by=adp_2qb"
+    season = current_season_year()
+    url = (f"https://api.sleeper.com/projections/nfl/{season}?season_type=regular"
+           "&position[]=QB&position[]=RB&position[]=TE&position[]=WR&order_by=adp_2qb")
     response = requests.get(url)
     response.raise_for_status()  # Raise an exception for HTTP errors
     return response.json()
 
 
+def season_to_date_stats_year():
+    """
+    Which season's accumulated stats to show.
+
+    Season-to-date figures — games played, positional rank — are only meaningful
+    once some football has been played. In week 1 the new season holds a handful
+    of players, so showing it would blank the ranks for everyone else. Stay on the
+    completed season until the new one has a week behind it, the same rule the
+    nflverse pipeline applies.
+    """
+    season = current_season_year()
+    try:
+        week = FantasyDataScraper().get_current_week()
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Could not read the current week, "
+              f"using season {season} stats: {e}")
+        return season
+    if week and week >= 2:
+        return season
+    print(f"{datetime.datetime.now()} - Week {week} of {season}: using season "
+          f"{season - 1} stats until a week has been completed")
+    return season - 1
+
+
 def get_player_stats():
     """
-    Fetch player stats for the 2024 NFL regular season.
+    Fetch season-to-date player stats.
 
     Returns:
         dict: JSON response containing player stats.
     """
-    url = "https://api.sleeper.com/stats/nfl/2025?season_type=regular&position%5B%5D=QB&position%5B%5D=RB&position%5B%5D=TE&position%5B%5D=WR&order_by=pts_dynasty_2qb"
+    season = season_to_date_stats_year()
+    url = (f"https://api.sleeper.com/stats/nfl/{season}?season_type=regular"
+           "&position%5B%5D=QB&position%5B%5D=RB&position%5B%5D=TE&position%5B%5D=WR"
+           "&order_by=pts_dynasty_2qb")
     response = requests.get(url)
     response.raise_for_status()  # Raise an exception for HTTP errors
     return response.json()
