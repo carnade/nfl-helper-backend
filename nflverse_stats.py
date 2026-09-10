@@ -47,6 +47,7 @@ nflverse_team_stats: dict = {}      # team abbr → offensive + defensive aggreg
 nflverse_schedule: dict = {}        # team abbr → most-recent-week game info
 nflverse_games: dict = {}           # week (int) → list of game dicts
 nflverse_current_season: int | None = None
+nflverse_schedule_season: int | None = None
 nflverse_last_updated: str | None = None
 
 
@@ -63,6 +64,18 @@ def _current_nfl_season() -> int:
     """
     now = datetime.datetime.utcnow()
     return now.year - 1 if now.month < 9 else now.year
+
+
+def _has_schedule(season: int) -> bool:
+    """Whether nflverse publishes a schedule for this season yet."""
+    try:
+        df = nfl.load_schedules([season])
+        ok = len(df) > 0
+        del df; gc.collect()
+        return ok
+    except Exception as e:
+        logger.warning("nflverse: no schedule published for %d (%s)", season, e)
+        return False
 
 
 def _weeks_with_stats(season: int) -> set:
@@ -612,12 +625,23 @@ def build_schedule_dicts(df: pd.DataFrame) -> tuple:
 def refresh_nflverse_data():
     """Download and rebuild all nflverse in-memory data. Safe to call repeatedly."""
     global nflverse_player_stats, nflverse_player_advanced, nflverse_team_stats
-    global nflverse_schedule, nflverse_games
+    global nflverse_schedule, nflverse_games, nflverse_schedule_season
     global nflverse_current_season, nflverse_last_updated
 
+    # Two different questions, two different answers. Player stats accumulate, so
+    # they stay on the last completed season until the new one has a week behind
+    # it. The schedule does not accumulate — it is published in full before kickoff
+    # and is what grades game results and resolves a game's week, so it always
+    # tracks the current season.
     season = _resolve_season()
-    print(f"{datetime.datetime.now()} - nflverse: refreshing season {season}")
-    logger.info("nflverse: refreshing season %d", season)
+    schedule_season = _current_nfl_season()
+    if not _has_schedule(schedule_season):
+        logger.warning("nflverse: no %d schedule published; using %d",
+                       schedule_season, season)
+        schedule_season = season
+    print(f"{datetime.datetime.now()} - nflverse: refreshing stats season {season}, "
+          f"schedule season {schedule_season}")
+    logger.info("nflverse: refreshing stats season %d, schedule season %d", season, schedule_season)
 
     try:
         # 1. ID maps — load rosters, build maps, free immediately
@@ -679,12 +703,26 @@ def refresh_nflverse_data():
         del pl_sched; gc.collect()
         logger.info("nflverse: schedules loaded (%d rows)", len(schedule_df))
 
-        team_stats      = build_team_stats_dict(team_df, stats_df, schedule_df)
-        schedule, games = build_schedule_dicts(schedule_df)
+        # Team aggregates derive points from the same season as the stats, so they
+        # use the schedule loaded above. The schedule dicts serve the current
+        # season and are reloaded when the two differ.
+        team_stats = build_team_stats_dict(team_df, stats_df, schedule_df)
+
+        if schedule_season != season:
+            pl_cur = nfl.load_schedules([schedule_season])
+            current_sched_df = pl_cur.select([c for c in _SCHED_COLS if c in pl_cur.columns]).to_pandas()
+            del pl_cur; gc.collect()
+            logger.info("nflverse: current-season schedules loaded (%d rows)", len(current_sched_df))
+        else:
+            current_sched_df = schedule_df
+
+        schedule, games = build_schedule_dicts(current_sched_df)
 
         reg = stats_df[stats_df["season_type"] == "REG"]
         current_season = int(reg["season"].max()) if not reg.empty else season
 
+        if current_sched_df is not schedule_df:
+            del current_sched_df
         del team_df, stats_df, schedule_df; gc.collect()
 
         nflverse_player_stats.clear();    nflverse_player_stats.update(player_stats)
@@ -693,6 +731,7 @@ def refresh_nflverse_data():
         nflverse_schedule.clear();        nflverse_schedule.update(schedule)
         nflverse_games.clear();           nflverse_games.update(games)
         nflverse_current_season = current_season
+        nflverse_schedule_season = schedule_season
         nflverse_last_updated   = datetime.datetime.utcnow().isoformat() + "Z"
 
         print(
