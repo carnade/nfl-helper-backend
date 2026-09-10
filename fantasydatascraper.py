@@ -493,27 +493,27 @@ class FantasyDataScraper:
         return all_data
         
     def scrape_qb(self, week_from: Optional[int] = None, week_to: Optional[int] = None, 
-                  season: str = "2025_REG", scoring: str = "fpts_ppr") -> List[Dict]:
+                  season: Optional[str] = None, scoring: str = "fpts_ppr") -> List[Dict]:
         """Scrape QB data."""
         return self.scrape_position('QB', week_from, week_to, season, scoring)
         
     def scrape_rb(self, week_from: Optional[int] = None, week_to: Optional[int] = None, 
-                  season: str = "2025_REG", scoring: str = "fpts_ppr") -> List[Dict]:
+                  season: Optional[str] = None, scoring: str = "fpts_ppr") -> List[Dict]:
         """Scrape RB data."""
         return self.scrape_position('RB', week_from, week_to, season, scoring)
         
     def scrape_wr(self, week_from: Optional[int] = None, week_to: Optional[int] = None, 
-                  season: str = "2025_REG", scoring: str = "fpts_ppr") -> List[Dict]:
+                  season: Optional[str] = None, scoring: str = "fpts_ppr") -> List[Dict]:
         """Scrape WR data."""
         return self.scrape_position('WR', week_from, week_to, season, scoring)
         
     def scrape_te(self, week_from: Optional[int] = None, week_to: Optional[int] = None, 
-                  season: str = "2025_REG", scoring: str = "fpts_ppr") -> List[Dict]:
+                  season: Optional[str] = None, scoring: str = "fpts_ppr") -> List[Dict]:
         """Scrape TE data."""
         return self.scrape_position('TE', week_from, week_to, season, scoring)
         
     def scrape_dst(self, week_from: Optional[int] = None, week_to: Optional[int] = None, 
-                   season: str = "2025_REG", scoring: str = "fpts_ppr") -> List[Dict]:
+                   season: Optional[str] = None, scoring: str = "fpts_ppr") -> List[Dict]:
         """Scrape DST data."""
         return self.scrape_position('DST', week_from, week_to, season, scoring)
         

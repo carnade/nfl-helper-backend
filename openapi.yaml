@@ -2103,23 +2103,6 @@ paths:
                       injury_status:
                         type: string
 
-  /teams/schedules:
-    get:
-      summary: Get 2025 NFL team schedules
-      description: Returns the full 2025 NFL regular season schedule for all teams.
-      operationId: getTeamSchedules
-      tags:
-        - Teams
-      responses:
-        "200":
-          description: Schedule data keyed by team abbreviation
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties:
-                  type: object
-
   /admin/rankings/update:
     post:
       summary: Trigger rankings update
