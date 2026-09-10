@@ -36,6 +36,16 @@ class FantasyDataScraper:
         Returns:
             str: Season identifier in FantasyData's sp= format
         """
+        return f"{self.get_current_season_year()}_REG"
+
+    def get_current_season_year(self) -> int:
+        """
+        The year of the season now being played, from Sleeper with a date-derived
+        fallback. Shared by anything that has to name a season in a URL.
+
+        Returns:
+            int: Season year, e.g. 2026
+        """
         if self._season_cache:
             return self._season_cache
 
@@ -55,7 +65,7 @@ class FantasyDataScraper:
             season_year = today.year - 1 if today.month <= 2 else today.year
             logger.info(f"Falling back to season {season_year} derived from the date")
 
-        self._season_cache = f"{season_year}_REG"
+        self._season_cache = int(season_year)
         return self._season_cache
 
     def get_current_week(self) -> int:

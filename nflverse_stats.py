@@ -9,11 +9,17 @@ import gc
 import logging
 import datetime
 import pandas as pd
+import requests
 import nflreadpy as nfl
 
 logger = logging.getLogger(__name__)
 
 SKILL_POSITIONS = {"QB", "RB", "WR", "TE", "K"}
+
+# How many weeks a new season needs before it is preferred over the last completed
+# one. Two means a season is adopted once week 1 is behind us, without having to
+# reason about whether the current week's games have all been played.
+MIN_WEEKS_FOR_NEW_SEASON = 2
 
 SUM_COLS = {
     "completions", "attempts", "passing_yards", "passing_tds", "passing_interceptions",
@@ -59,9 +65,9 @@ def _current_nfl_season() -> int:
     return now.year - 1 if now.month < 9 else now.year
 
 
-def _season_has_data(season: int) -> bool:
+def _weeks_with_stats(season: int) -> set:
     """
-    Whether nflverse actually publishes player stats for this season yet.
+    Which weeks nflverse actually publishes player stats for in this season.
 
     The calendar rolls over on 1 September but the weekly stats file is only
     created once week 1 has been played, so for the first fortnight of a season
@@ -70,20 +76,61 @@ def _season_has_data(season: int) -> bool:
     lookup the odds props depend on — is left empty.
     """
     try:
-        nfl.load_player_stats([season])
-        return True
+        df = nfl.load_player_stats([season])
+        weeks = {int(w) for w in df["week"].unique().to_list() if w is not None}
+        del df; gc.collect()
+        return weeks
     except Exception as e:
         logger.warning("nflverse: no player stats published for %d yet (%s)", season, e)
+        return set()
+
+
+def _sleeper_current_week() -> int | None:
+    """The week the NFL is currently on, or None if Sleeper cannot be reached."""
+    try:
+        resp = requests.get("https://api.sleeper.app/v1/state/nfl", timeout=10)
+        resp.raise_for_status()
+        return int((resp.json() or {}).get("week"))
+    except Exception as e:
+        logger.warning("nflverse: could not read the current week from Sleeper (%s)", e)
+        return None
+
+
+def _season_is_usable(season: int) -> bool:
+    """
+    Whether a season has enough played football to be worth switching to.
+
+    Data existing is not the same as data being useful. On the Friday of week 1 a
+    new season holds a single Thursday game, and moving to it then would replace a
+    full prior season with one game — "last 5" becomes last 1, and every hit rate
+    loses its denominator. So wait for a week that is actually finished, which is
+    the case once the NFL has moved past it.
+    """
+    weeks = _weeks_with_stats(season)
+    if not weeks:
         return False
+    if len(weeks) >= MIN_WEEKS_FOR_NEW_SEASON:
+        return True
+
+    current_week = _sleeper_current_week()
+    if current_week is None:
+        # Without knowing the week, the week-count rule above is all we have.
+        return False
+    if max(weeks) < current_week:
+        return True
+
+    logger.info("nflverse: season %d has only week(s) %s and week %d is still in progress; "
+                "not switching yet", season, sorted(weeks), current_week)
+    return False
 
 
 def _resolve_season() -> int:
-    """Current season if its data exists, otherwise fall back to the last completed one."""
+    """Current season once it has usable data, otherwise the last completed one."""
     season = _current_nfl_season()
-    if _season_has_data(season):
+    if _season_is_usable(season):
         return season
     prior = season - 1
-    logger.warning("nflverse: falling back to season %d until %d data is published", prior, season)
+    logger.warning("nflverse: staying on season %d until %d has a completed week", prior, season)
     return prior
 
 

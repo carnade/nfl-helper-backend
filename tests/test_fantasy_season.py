@@ -84,3 +84,82 @@ class TestScrapeUsesCurrentSeason:
 
         assert season.call_count == 1
         assert {c[0][3] for c in scrape.call_args_list} == {"2026_REG"}
+
+
+class TestSleeperSeasonUrls:
+    """ADP and season-to-date stats name the season in the URL, and Sleeper returns
+    that season's numbers rather than an error when it is wrong."""
+
+    def test_projections_use_the_current_season(self):
+        with patch.object(nfl_helper, "current_season_year", return_value=2026), \
+             patch.object(nfl_helper, "requests") as req:
+            nfl_helper.get_player_projections()
+
+        assert "/projections/nfl/2026" in req.get.call_args[0][0]
+
+    def test_stats_use_the_current_season_once_a_week_is_complete(self):
+        with patch.object(nfl_helper, "current_season_year", return_value=2026), \
+             patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=2), \
+             patch.object(nfl_helper, "requests") as req:
+            nfl_helper.get_player_stats()
+
+        assert "/stats/nfl/2026" in req.get.call_args[0][0]
+
+    def test_stats_hold_on_the_old_season_during_week_one(self):
+        """Week 1 holds a handful of players; switching would blank everyone's rank."""
+        with patch.object(nfl_helper, "current_season_year", return_value=2026), \
+             patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=1), \
+             patch.object(nfl_helper, "requests") as req:
+            nfl_helper.get_player_stats()
+
+        assert "/stats/nfl/2025" in req.get.call_args[0][0]
+
+    def test_stats_fall_forward_if_the_week_cannot_be_read(self):
+        with patch.object(nfl_helper, "current_season_year", return_value=2026), \
+             patch.object(nfl_helper.FantasyDataScraper, "get_current_week",
+                          side_effect=Exception("offline")), \
+             patch.object(nfl_helper, "requests") as req:
+            nfl_helper.get_player_stats()
+
+        assert "/stats/nfl/2026" in req.get.call_args[0][0]
+
+    def test_no_season_year_is_hardcoded_in_either_url(self):
+        for year in (2029, 2033):
+            with patch.object(nfl_helper, "current_season_year", return_value=year), \
+                 patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=5), \
+                 patch.object(nfl_helper, "requests") as req:
+                nfl_helper.get_player_projections()
+                nfl_helper.get_player_stats()
+            urls = " ".join(c[0][0] for c in req.get.call_args_list)
+            assert f"/projections/nfl/{year}" in urls and f"/stats/nfl/{year}" in urls
+
+
+class TestNflverseSeasonGuard:
+    def test_a_season_with_two_weeks_is_adopted(self):
+        import nflverse_stats as ns
+        with patch.object(ns, "_weeks_with_stats", return_value={1, 2}):
+            assert ns._season_is_usable(2026) is True
+
+    def test_a_season_with_no_data_is_not(self):
+        import nflverse_stats as ns
+        with patch.object(ns, "_weeks_with_stats", return_value=set()):
+            assert ns._season_is_usable(2026) is False
+
+    def test_week_one_in_progress_is_not_adopted(self):
+        """A single Thursday game must not replace a full prior season."""
+        import nflverse_stats as ns
+        with patch.object(ns, "_weeks_with_stats", return_value={1}), \
+             patch.object(ns, "_sleeper_current_week", return_value=1):
+            assert ns._season_is_usable(2026) is False
+
+    def test_week_one_completed_is_adopted(self):
+        import nflverse_stats as ns
+        with patch.object(ns, "_weeks_with_stats", return_value={1}), \
+             patch.object(ns, "_sleeper_current_week", return_value=2):
+            assert ns._season_is_usable(2026) is True
+
+    def test_resolve_falls_back_when_the_new_season_is_not_usable(self):
+        import nflverse_stats as ns
+        with patch.object(ns, "_current_nfl_season", return_value=2026), \
+             patch.object(ns, "_season_is_usable", return_value=False):
+            assert ns._resolve_season() == 2025

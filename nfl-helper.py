@@ -660,14 +660,6 @@ BYE_WEEKS_2026 = {
     "TEN": 9,  "WAS": 7
 }
 
-WIN_OU_2025 = {
-    "ARI": 8.5, "ATL": 7.5, "BAL": 11.5, "BUF": 11.5, "CAR": 6.5, "CHI": 8.5,
-    "CIN": 9.5, "CLE": 5.5, "DAL": 7.5, "DEN": 9.5, "DET": 11.5, "GB": 9.5,
-    "HOU": 9.5, "IND": 7.5, "JAX": 7.5, "KC": 11.5, "LAC": 9.5, "LAR": 9.5,
-    "LV": 6.5, "MIA": 8.5, "MIN": 8.5, "NE": 7.5, "NO": 5.5, "NYG": 5.5,
-    "NYJ": 5.5, "PHI": 11.5, "PIT": 8.5, "SF": 10.5, "SEA": 7.5, "TB": 9.5,
-    "TEN": 5.5, "WAS": 9.5
-}
 
 TEAM_SCHEDULES_2025 = {
     "ARI": ["@NO", "CAR", "@SF", "SEA", "TEN", "@IND", "GB", "BYE", "@DAL", "@SEA", "SF", "JAX", "@TB", "LAR", "@HOU", "ATL", "@CIN", "@LAR"],
@@ -4998,27 +4990,67 @@ def health_check():
     return "Health check passed", 200
 
 
+def current_season_year():
+    """
+    The year of the NFL season now being played.
+
+    Sleeper's endpoints name the season in the path, and asking for a past one
+    returns that season's numbers rather than an error, so this must never be a
+    literal — it has been re-pinned by hand at least once already.
+    """
+    return FantasyDataScraper().get_current_season_year()
+
+
 def get_player_projections():
     """
-    Fetch player projections for the 2025 NFL regular season.
+    Fetch player projections for the current NFL regular season.
 
     Returns:
         dict: JSON response containing player projections.
     """
-    url = "https://api.sleeper.com/projections/nfl/2025?season_type=regular&position[]=QB&position[]=RB&position[]=TE&position[]=WR&order_by=adp_2qb"
+    season = current_season_year()
+    url = (f"https://api.sleeper.com/projections/nfl/{season}?season_type=regular"
+           "&position[]=QB&position[]=RB&position[]=TE&position[]=WR&order_by=adp_2qb")
     response = requests.get(url)
     response.raise_for_status()  # Raise an exception for HTTP errors
     return response.json()
 
 
+def season_to_date_stats_year():
+    """
+    Which season's accumulated stats to show.
+
+    Season-to-date figures — games played, positional rank — are only meaningful
+    once some football has been played. In week 1 the new season holds a handful
+    of players, so showing it would blank the ranks for everyone else. Stay on the
+    completed season until the new one has a week behind it, the same rule the
+    nflverse pipeline applies.
+    """
+    season = current_season_year()
+    try:
+        week = FantasyDataScraper().get_current_week()
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Could not read the current week, "
+              f"using season {season} stats: {e}")
+        return season
+    if week and week >= 2:
+        return season
+    print(f"{datetime.datetime.now()} - Week {week} of {season}: using season "
+          f"{season - 1} stats until a week has been completed")
+    return season - 1
+
+
 def get_player_stats():
     """
-    Fetch player stats for the 2024 NFL regular season.
+    Fetch season-to-date player stats.
 
     Returns:
         dict: JSON response containing player stats.
     """
-    url = "https://api.sleeper.com/stats/nfl/2025?season_type=regular&position%5B%5D=QB&position%5B%5D=RB&position%5B%5D=TE&position%5B%5D=WR&order_by=pts_dynasty_2qb"
+    season = season_to_date_stats_year()
+    url = (f"https://api.sleeper.com/stats/nfl/{season}?season_type=regular"
+           "&position%5B%5D=QB&position%5B%5D=RB&position%5B%5D=TE&position%5B%5D=WR"
+           "&order_by=pts_dynasty_2qb")
     response = requests.get(url)
     response.raise_for_status()  # Raise an exception for HTTP errors
     return response.json()
