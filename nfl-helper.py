@@ -130,6 +130,12 @@ USE_SUPABASE = bool(SUPABASE_URL and SUPABASE_KEY)
 # use SUPABASE_KEY_PREFIX instead when dev data needs to survive.
 SUPABASE_READ_ONLY = os.environ.get('SUPABASE_READ_ONLY', '').strip().lower() in ('1', 'true', 'yes', 'on')
 
+# Odds API calls cost credits from a small monthly allowance. A dev instance has
+# no business spending them: it reads whatever production last stored and serves
+# that, however stale. The manual admin refresh still works, so a deliberate fetch
+# is always possible.
+ODDS_FETCH_DISABLED = os.environ.get('ODDS_FETCH_DISABLED', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
 # Namespace for the rows this instance owns. Set it (e.g. "dev_") to give a local
 # run its own parallel set of rows in the same table, isolated from production but
 # still durable across restarts. Empty in production, which owns the bare keys.
@@ -139,6 +145,22 @@ SUPABASE_KEY_PREFIX = os.environ.get('SUPABASE_KEY_PREFIX', '').strip()
 def _supabase_key(key):
     """Row key for this instance, namespaced by SUPABASE_KEY_PREFIX."""
     return f"{SUPABASE_KEY_PREFIX}{key}"
+
+
+def _supabase_read_keys(key):
+    """
+    Keys to try when loading, most specific first.
+
+    A namespaced instance starts with no rows of its own, which left dev with an
+    empty odds history — and worse, an empty odds cache reads as stale, so every
+    cold start spent credits refetching what production already had. Falling back
+    to the shared row makes a prefixed instance copy-on-write: it reads production
+    until it writes its own row, and never reads it again after that.
+    """
+    keys = [_supabase_key(key)]
+    if SUPABASE_KEY_PREFIX:
+        keys.append(key)
+    return keys
 
 supabase_client = None
 if USE_SUPABASE:
@@ -262,10 +284,13 @@ def _load_tinyurl_data_from_supabase():
     """Load tinyurl_data from Supabase"""
     global tinyurl_data
     try:
-        result = supabase_client.table('app_data').select('value').eq('key', _supabase_key('tinyurl_data')).execute()
-        if result.data:
-            tinyurl_data = result.data[0]['value']
-            print(f"{datetime.datetime.now()} - Loaded tinyurl_data from Supabase ({len(tinyurl_data)} entries)")
+        for row_key in _supabase_read_keys('tinyurl_data'):
+            result = supabase_client.table('app_data').select('value').eq('key', row_key).execute()
+            if result.data:
+                tinyurl_data = result.data[0]['value']
+                via = "" if row_key == _supabase_key('tinyurl_data') else f" via shared row '{row_key}'"
+                print(f"{datetime.datetime.now()} - Loaded tinyurl_data from Supabase ({len(tinyurl_data)} entries){via}")
+                break
         else:
             print(f"{datetime.datetime.now()} - No tinyurl_data found in Supabase, starting with empty data")
             tinyurl_data = {}
@@ -418,10 +443,13 @@ def _load_tournament_data_from_supabase():
     """Load tournament_data from Supabase"""
     global tournament_data
     try:
-        result = supabase_client.table('app_data').select('value').eq('key', _supabase_key('tournament_data')).execute()
-        if result.data:
-            tournament_data = result.data[0]['value']
-            print(f"{datetime.datetime.now()} - Loaded tournament_data from Supabase ({len(tournament_data)} entries)")
+        for row_key in _supabase_read_keys('tournament_data'):
+            result = supabase_client.table('app_data').select('value').eq('key', row_key).execute()
+            if result.data:
+                tournament_data = result.data[0]['value']
+                via = "" if row_key == _supabase_key('tournament_data') else f" via shared row '{row_key}'"
+                print(f"{datetime.datetime.now()} - Loaded tournament_data from Supabase ({len(tournament_data)} entries){via}")
+                break
         else:
             print(f"{datetime.datetime.now()} - No tournament_data found in Supabase, starting with empty data")
             tournament_data = {}
@@ -535,13 +563,15 @@ def _load_store(key: str, store: dict):
     """Load an in-memory dict: Supabase → GitHub Gist → local file."""
     if USE_SUPABASE:
         try:
-            result = supabase_client.table('app_data').select('value').eq('key', _supabase_key(key)).execute()
-            if result.data:
-                store.clear()
-                store.update(result.data[0]['value'])
-                print(f"{datetime.datetime.now()} - Loaded {key} from Supabase ({len(store)} entries)")
-            else:
-                print(f"{datetime.datetime.now()} - No {key} found in Supabase, starting empty")
+            for row_key in _supabase_read_keys(key):
+                result = supabase_client.table('app_data').select('value').eq('key', row_key).execute()
+                if result.data:
+                    store.clear()
+                    store.update(result.data[0]['value'])
+                    via = "" if row_key == _supabase_key(key) else f" via shared row '{row_key}'"
+                    print(f"{datetime.datetime.now()} - Loaded {key} from Supabase ({len(store)} entries){via}")
+                    return
+            print(f"{datetime.datetime.now()} - No {key} found in Supabase, starting empty")
             return
         except Exception as e:
             print(f"{datetime.datetime.now()} - Error loading {key} from Supabase: {e}, falling back to Gist/file")
@@ -1415,6 +1445,9 @@ scheduler.add_job(
 # The spec lives in odds_api so /odds/status can report next/overdue from the
 # same source the scheduler fires on.
 def _refresh_odds():
+    if ODDS_FETCH_DISABLED:
+        print(f"{datetime.datetime.now()} - Skipping scheduled odds refresh: ODDS_FETCH_DISABLED is set")
+        return
     run, why = odds_api.should_run_scheduled_refresh()
     if not run:
         print(f"{datetime.datetime.now()} - Skipping scheduled odds refresh: {why}")
@@ -5046,7 +5079,11 @@ def initialize_data_in_background():
         #    credits on a fetch if that data is actually stale.
         print(f"{datetime.datetime.now()} - Loading odds data...")
         load_odds_cache()
-        if odds_api.should_refresh_on_startup():
+        if ODDS_FETCH_DISABLED:
+            age = odds_api.cache_age_hours()
+            print(f"{datetime.datetime.now()} - ODDS_FETCH_DISABLED is set — serving the stored odds "
+                  f"({'none' if age is None else f'{age:.1f}h old'}) without fetching.")
+        elif odds_api.should_refresh_on_startup():
             age = odds_api.cache_age_hours()
             print(f"{datetime.datetime.now()} - Cached odds "
                   f"{'missing' if age is None else f'{age:.1f}h old'}, refreshing...")

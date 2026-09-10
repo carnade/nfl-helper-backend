@@ -844,6 +844,20 @@ def should_refresh_on_startup() -> bool:
 
 # ── History snapshot ─────────────────────────────────────────────────────────
 
+def _season_for_commence(commence_time: str) -> int | None:
+    """
+    The NFL season a kickoff belongs to. January and February games belong to the
+    season that began the previous autumn.
+    """
+    if not commence_time:
+        return None
+    try:
+        d = datetime.datetime.fromisoformat(commence_time.replace("Z", "")).date()
+    except Exception:
+        return None
+    return d.year - 1 if d.month <= 2 else d.year
+
+
 def _week_for_commence(commence_time: str) -> int | None:
     """
     Map a kickoff timestamp to its NFL week via the nflverse schedule.
@@ -950,8 +964,17 @@ def grade_props_history() -> list:
         wk = snap.get("nfl_week") or _week_for_commence(snap.get("commence_time"))
         entry["nfl_week"] = wk
 
+        # Week numbers repeat every season, so grading a 2026 prop against whatever
+        # sits in week 1 of the 2025 logs would produce a confident, wrong answer.
+        # Stats can legitimately lag the schedule early in a season; leave those
+        # ungraded until the stats catch up.
+        snap_season = _season_for_commence(snap.get("commence_time"))
+        stats_season = ns.nflverse_current_season
+        season_matches = (snap_season is None or stats_season is None
+                          or snap_season == stats_season)
+
         p = ns.nflverse_player_stats.get(snap.get("sleeper_id"), {})
-        if wk:
+        if wk and season_matches:
             for w in p.get("weekly") or []:
                 if w.get("week") == wk:
                     actual = _market_game_value(w, snap.get("market"))

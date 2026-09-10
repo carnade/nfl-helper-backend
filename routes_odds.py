@@ -2,6 +2,8 @@
 routes_odds.py — Flask Blueprint for /odds/* endpoints backed by The Odds API.
 """
 
+import datetime
+
 from flask import Blueprint, jsonify, request
 import odds_api as oa
 from nflverse_stats import nflverse_team_stats, nflverse_schedule, nflverse_games
@@ -165,10 +167,23 @@ def game_results():
     ABBR_MAP = {"LAR": "LA", "WSH": "WAS", "JAX": "JAC"}
 
     def _find_nflverse_game(home_nfl: str, away_nfl: str, gameday: str):
-        for week_games in nflverse_games.values():
-            for g in week_games:
-                if g["home_team"] == home_nfl and g["away_team"] == away_nfl and g["gameday"] == gameday:
-                    return g
+        """
+        commence_time is UTC and nflverse's gameday is Eastern, so any kickoff from
+        8pm ET onwards — every Thursday, Sunday and Monday night game — is stored
+        under the following UTC date. Check the day before as well before giving up.
+        """
+        candidates = [gameday]
+        try:
+            d = datetime.date.fromisoformat(gameday)
+            candidates.append((d - datetime.timedelta(days=1)).isoformat())
+        except (TypeError, ValueError):
+            pass
+
+        for day in candidates:
+            for week_games in nflverse_games.values():
+                for g in week_games:
+                    if g["home_team"] == home_nfl and g["away_team"] == away_nfl and g["gameday"] == day:
+                        return g
         return None
 
     results = []
