@@ -180,11 +180,11 @@ def game_results():
             pass
 
         for day in candidates:
-            for week_games in nflverse_games.values():
+            for week, week_games in nflverse_games.items():
                 for g in week_games:
                     if g["home_team"] == home_nfl and g["away_team"] == away_nfl and g["gameday"] == day:
-                        return g
-        return None
+                        return g, week
+        return None, None
 
     results = []
     for event_id, stored in oa.odds_history.items():
@@ -192,9 +192,16 @@ def game_results():
         away_nfl = ABBR_MAP.get(stored.get("away_abbr", ""), stored.get("away_abbr", ""))
         gameday = (stored.get("commence_time") or "")[:10]
 
-        game = _find_nflverse_game(home_nfl, away_nfl, gameday)
+        game, week = _find_nflverse_game(home_nfl, away_nfl, gameday)
 
         entry = dict(stored)
+        # The schedule already knows which week a game belongs to, so take it from
+        # the match rather than recomputing it from the kickoff. Falls back to the
+        # kickoff for a game the schedule has no row for.
+        try:
+            entry["nfl_week"] = int(week) if week is not None else oa._week_for_commence(stored.get("commence_time"))
+        except (TypeError, ValueError):
+            entry["nfl_week"] = None
         if game and game.get("home_score") is not None:
             h, a = game["home_score"], game["away_score"]
             actual_total = h + a
