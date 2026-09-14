@@ -6,6 +6,7 @@ from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import atexit
+import gc
 import json
 import os
 from flask_cors import CORS
@@ -1151,24 +1152,69 @@ def fetch_data():
             print(f"Mock data file {MOCK_DATA_FILE} not found.")
             return {}
     else:
-        # Fetch data from the API
-        response = requests.get(DATA_URL)
-        print(str(datetime.datetime.now()) + " Fetched Data - response code: ", response.status_code)
-        response.raise_for_status()  # Raises an exception for HTTP errors
-        return response.json()
+        # Stream the parse. response.json() would hold the 14 MB body as bytes, then
+        # again as a decoded string, then as the dict — three copies of the largest
+        # payload this service handles, on a box with 512 MB.
+        with requests.get(DATA_URL, stream=True, timeout=60) as response:
+            print(str(datetime.datetime.now()) + " Fetched Data - response code: ", response.status_code)
+            response.raise_for_status()  # Raises an exception for HTTP errors
+            response.raw.decode_content = True
+            return json.load(response.raw)
+
+
+def release_free_memory():
+    """
+    Hand freed heap back to the operating system.
+
+    Loading players and nflverse costs ~240 MB between them but retains under
+    30 MB; the rest is transient DataFrames and parsed JSON that Python has freed
+    and glibc is still holding. RSS therefore only ever climbs, and on a 512 MB
+    instance it climbs into the OOM killer. gc.collect() does not help — the
+    objects are already collected — but malloc_trim releases the arenas.
+
+    glibc-only, which is Linux, which is where this runs. Anywhere else (macOS
+    dev machines) the lookup fails and this is a no-op beyond the collect.
+    """
+    gc.collect()
+    try:
+        import ctypes, ctypes.util
+        libc_name = ctypes.util.find_library("c")
+        if not libc_name:
+            return
+        libc = ctypes.CDLL(libc_name)
+        if hasattr(libc, "malloc_trim"):
+            libc.malloc_trim(0)
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - malloc_trim unavailable ({e}); "
+              "freed memory stays with the process")
 
 
 def fetch_and_filter_data():
     global all_players, filtered_players, scraped_ranks, teams_data, last_players_update
 
     data = fetch_data()
-    
-    # Store the full unfiltered data for matching purposes
-    all_players = data
+
+    # all_players exists only so name matching can fall back to players outside the
+    # fantasy-relevant set. It is consulted for four fields; keeping all 53 costs
+    # ~29 MB for nothing. filtered_players below builds its own dicts rather than
+    # referencing these, so narrowing here is safe.
+    #
+    # Drain the payload as it is consumed rather than iterating and discarding it
+    # afterwards. Each player's full record is freed as soon as it has been read,
+    # so the fat original and the slim copy never both exist in full — which is
+    # what peak memory, and therefore the OOM killer, actually responds to.
+    all_players = {}
     filtered_players.clear()
     teams_data.clear()
 
-    for player_id, player_data in data.items():
+    while data:
+        player_id, player_data = data.popitem()
+        all_players[player_id] = {
+            "first_name": player_data.get("first_name"),
+            "last_name": player_data.get("last_name"),
+            "team": player_data.get("team"),
+            "position": player_data.get("position"),
+        }
         on_bye = False
         fantasy_positions = player_data.get("fantasy_positions")
 
@@ -1226,6 +1272,10 @@ def fetch_and_filter_data():
                         "last_name": player_data.get("last_name"),
                         "injury_status": player_data.get("injury_status")
                     })
+
+    # The payload has been drained by the loop above; hand the heap it used back
+    # before pulling down two more Sleeper payloads.
+    release_free_memory()
 
     # Fetch projections and update filtered_players
     projections = get_player_projections()
@@ -1951,17 +2001,27 @@ scheduler.add_job(
     trigger=CronTrigger(day_of_week="thu", hour=9, minute=0)
 )
 
+def _refresh_nflverse_and_release():
+    """
+    Scheduled nflverse refresh. Runs three times a week and peaks far above what
+    it keeps, so give the heap back afterwards — otherwise each refresh ratchets
+    RSS up for the life of the process.
+    """
+    refresh_nflverse_data()
+    release_free_memory()
+
+
 # Refresh nflverse player/team/schedule stats every Friday morning (updated weekly after games)
 scheduler.add_job(
-    func=refresh_nflverse_data,
+    func=_refresh_nflverse_and_release,
     trigger=CronTrigger(day_of_week="tue", hour=6, minute=0)   # full-week stats (MNF done)
 )
 scheduler.add_job(
-    func=refresh_nflverse_data,
+    func=_refresh_nflverse_and_release,
     trigger=CronTrigger(day_of_week="fri", hour=10, minute=0)  # injury reports + lines before weekend
 )
 scheduler.add_job(
-    func=refresh_nflverse_data,
+    func=_refresh_nflverse_and_release,
     trigger=CronTrigger(day_of_week="mon", hour=6, minute=0)   # Sunday + SNF results
 )
 
@@ -5066,13 +5126,14 @@ def initialize_data_in_background():
         update_dfs_salaries_data()
 
         # 4. Load nflverse player/team/schedule stats
-        # Force GC before the memory-intensive nflverse download so freed heap
-        # space from KTC/DFS scraping is reused rather than growing RSS further.
-        import gc
-        gc.collect()
-        gc.collect()
+        # Return the heap used by the KTC and DFS scraping before the most
+        # memory-intensive step, rather than making it grow RSS further.
+        release_free_memory()
         print(f"{datetime.datetime.now()} - Loading nflverse stats data...")
         refresh_nflverse_data()
+        # The refresh peaks around 114 MB of DataFrames to retain under 17 MB of
+        # dicts. Give the rest back rather than carrying it for the process's life.
+        release_free_memory()
 
         # 5. Load betting odds + history. Restore the last served set first so
         #    the page has data even if the API is unreachable, then only spend
