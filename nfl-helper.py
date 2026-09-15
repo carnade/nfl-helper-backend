@@ -1460,9 +1460,9 @@ scheduler.add_job(
 )
 
 # Scrape fantasy points once after each game window: Sunday afternoon's games (Sun
-# 23:00), Sunday night's (Mon), Monday night's (Tue) and Thursday night's (Fri). The
-# morning runs sit two hours after the nflverse refreshes rather than alongside them,
-# and all finish before the Wednesday multiweek scoring reads them as its fallback.
+# 23:00), Sunday night's (Mon), Monday night's (Tue) and Thursday night's (Fri). None
+# shares an hour with an nflverse refresh, and all finish before the Wednesday
+# multiweek scoring reads them as its fallback.
 scheduler.add_job(
     func=update_fantasy_points_data,
     trigger=CronTrigger(day_of_week="mon,tue,fri", hour=8, minute=0)
@@ -2043,7 +2043,7 @@ def _refresh_nflverse_and_release():
 # Refresh nflverse player/team/schedule stats every Friday morning (updated weekly after games)
 scheduler.add_job(
     func=_refresh_nflverse_and_release,
-    trigger=CronTrigger(day_of_week="tue", hour=6, minute=0)   # full-week stats (MNF done)
+    trigger=CronTrigger(day_of_week="tue", hour=12, minute=0)  # full-week stats; at 06:00 Monday night's score was not yet published
 )
 scheduler.add_job(
     func=_refresh_nflverse_and_release,

@@ -226,3 +226,12 @@ class TestSchedule:
     def test_finished_entries_are_cleared_thursday(self):
         assert triggers_for("clear_tinyurl_data") == ["cron[day_of_week='thu', hour='9', minute='0']"]
         assert triggers_for("clear_tournament_data") == ["cron[day_of_week='thu', hour='9', minute='0']"]
+
+    def test_tuesday_stats_refresh_waits_for_monday_nights_score(self):
+        """At 06:00 UTC nflverse had not yet published Monday night's score, which left
+        that game ungraded on the results page until Friday's refresh."""
+        assert triggers_for("_refresh_nflverse_and_release") == sorted([
+            "cron[day_of_week='mon', hour='6', minute='0']",
+            "cron[day_of_week='tue', hour='12', minute='0']",
+            "cron[day_of_week='fri', hour='10', minute='0']",
+        ])
