@@ -99,7 +99,7 @@ class TestSleeperSeasonUrls:
 
     def test_stats_use_the_current_season_once_a_week_is_complete(self):
         with patch.object(nfl_helper, "current_season_year", return_value=2026), \
-             patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=2), \
+             patch.object(nfl_helper.FantasyDataScraper, "get_league_week", return_value=2), \
              patch.object(nfl_helper, "requests") as req:
             nfl_helper.get_player_stats()
 
@@ -108,7 +108,7 @@ class TestSleeperSeasonUrls:
     def test_stats_hold_on_the_old_season_during_week_one(self):
         """Week 1 holds a handful of players; switching would blank everyone's rank."""
         with patch.object(nfl_helper, "current_season_year", return_value=2026), \
-             patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=1), \
+             patch.object(nfl_helper.FantasyDataScraper, "get_league_week", return_value=1), \
              patch.object(nfl_helper, "requests") as req:
             nfl_helper.get_player_stats()
 
@@ -116,7 +116,7 @@ class TestSleeperSeasonUrls:
 
     def test_stats_fall_forward_if_the_week_cannot_be_read(self):
         with patch.object(nfl_helper, "current_season_year", return_value=2026), \
-             patch.object(nfl_helper.FantasyDataScraper, "get_current_week",
+             patch.object(nfl_helper.FantasyDataScraper, "get_league_week",
                           side_effect=Exception("offline")), \
              patch.object(nfl_helper, "requests") as req:
             nfl_helper.get_player_stats()
@@ -126,7 +126,7 @@ class TestSleeperSeasonUrls:
     def test_no_season_year_is_hardcoded_in_either_url(self):
         for year in (2029, 2033):
             with patch.object(nfl_helper, "current_season_year", return_value=year), \
-                 patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=5), \
+                 patch.object(nfl_helper.FantasyDataScraper, "get_league_week", return_value=5), \
                  patch.object(nfl_helper, "requests") as req:
                 nfl_helper.get_player_projections()
                 nfl_helper.get_player_stats()

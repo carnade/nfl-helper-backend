@@ -68,14 +68,38 @@ class FantasyDataScraper:
         self._season_cache = int(season_year)
         return self._season_cache
 
+    def get_league_week(self) -> int:
+        """
+        The week Sleeper's league calendar is on, with no adjustment.
+
+        Sleeper moves to the next week once the last game of a week has been played —
+        by Tuesday morning — which is what anything deciding whether a week has
+        finished needs. get_current_week() is for display and holds the previous week
+        Tuesday to Thursday, so the weekly rollover must not use it.
+
+        Returns:
+            int: Sleeper's current week, or an estimate from the calendar if Sleeper
+            cannot be reached
+        """
+        try:
+            response = self.session.get(self.sleeper_api_url, timeout=10)
+            response.raise_for_status()
+            week = (response.json() or {}).get('week')
+            if week:
+                return int(week)
+            logger.warning("Sleeper state has no week; estimating it from the calendar")
+        except Exception as e:
+            logger.error(f"Error fetching the league week from Sleeper API: {e}")
+        return self._calculate_fallback_week()
+
     def get_current_week(self) -> int:
         """
         Get the current NFL week from Sleeper API.
-        Uses previous week on Wednesday and Thursday (up to 19:00 CET).
+        Uses previous week on Tuesday, Wednesday and Thursday (up to 19:00 CET).
         After Thursday 19:00 CET, uses current week.
         
         Returns:
-            int: Current week number (will be previous week on Wed/Thu before 19:00 CET)
+            int: Current week number (the previous week Tue–Thu before 19:00 CET; for display only — use get_league_week() to decide whether a week has finished)
         """
         try:
             logger.info("Fetching current week from Sleeper API")
@@ -88,7 +112,7 @@ class FantasyDataScraper:
             
             logger.info(f"Sleeper API returned week {current_week}, season_type: {season_type}")
             
-            # Use previous week on Wednesday and Thursday (up to 19:00 CET)
+            # Use previous week on Tuesday, Wednesday and Thursday (up to 19:00 CET)
             if self.should_use_previous_week():
                 previous_week = max(1, current_week - 1)
                 logger.info(f"Using previous week {previous_week} (Wednesday/Thursday before 19:00 CET)")
@@ -106,7 +130,7 @@ class FantasyDataScraper:
     def should_use_previous_week(self) -> bool:
         """
         Check if we should use previous week.
-        Uses previous week on Wednesday and Thursday (up to 19:00 CET).
+        Uses previous week on Tuesday, Wednesday and Thursday (up to 19:00 CET).
         After Thursday 19:00 CET, uses current week.
         
         Returns:
@@ -118,8 +142,8 @@ class FantasyDataScraper:
             now_cet = datetime.datetime.now(cet_tz)
             current_weekday = now_cet.weekday()  # Monday=0, Tuesday=1, Wednesday=2, Thursday=3, etc.
             
-            # Use previous week on Wednesday and Thursday (up to 19:00 CET)
-            if current_weekday == 1:  # Wednesday
+            # Use previous week on Tuesday, Wednesday and Thursday (up to 19:00 CET)
+            if current_weekday == 1:  # Tuesday
                 logger.info(f"Current time is Tuesday {now_cet.hour:02d}:{now_cet.minute:02d} CET - using previous week")
                 return True
             elif current_weekday == 2:  # Wednesday

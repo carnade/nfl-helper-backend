@@ -1594,7 +1594,7 @@ paths:
   /admin/tinyurl/cleanup:
     post:
       summary: Manually trigger TinyURL cleanup (Admin)
-      description: Admin endpoint to manually trigger TinyURL data cleanup. This runs the same cleanup logic as the scheduled job (runs automatically every Thursday at 09:00 UTC). Removes TinyURL entries with weeks older than the current week, keeping current week and all future weeks.
+      description: Admin endpoint to manually trigger TinyURL data cleanup. This runs the full cleanup, the same as the scheduled Thursday 09:00 UTC job, which scores and advances multiweek tournaments whose week has finished, and removes finished single-week entries and tournaments past their grace week. A separate scheduled pass on Wednesday 06:00 UTC scores and advances multiweek tournaments without deleting anything.
       operationId: adminTriggerTinyurlCleanup
       tags:
         - Admin

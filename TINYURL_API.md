@@ -1,6 +1,6 @@
 # TinyURL API Endpoints
 
-All endpoints are prefixed with `/tinyurl`. Maximum 10 entries (cleared every Thursday at 19:00 CET).
+All endpoints are prefixed with `/tinyurl`. Maximum 10 entries. Multiweek tournaments are scored and advanced Wednesday 06:00 UTC; finished entries are removed Thursday 09:00 UTC.
 
 ## 1. Create TinyURL (with data)
 **POST** `/tinyurl/create`

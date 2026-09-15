@@ -9,9 +9,9 @@ from conftest import make_lineup_string, create_entry
 
 @pytest.fixture
 def mock_week(request):
-    """Patch FantasyDataScraper.get_current_week. Use request.param to set the week (default 8)."""
+    """Patch FantasyDataScraper.get_league_week. Use request.param to set the week (default 8)."""
     week = getattr(request, "param", 8)
-    with patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=week):
+    with patch.object(nfl_helper.FantasyDataScraper, "get_league_week", return_value=week):
         yield week
 
 
@@ -101,7 +101,7 @@ class TestMultiweekDfsLifecycle:
         # end_week = start_week + num_weeks - 1 = 7 + 2 - 1 = 8
         # entry_week(8) < current_week(9) AND entry_week(8) == end_week(8) → grace
         create_entry("tourney", week=8, entry_type="multiweek_dfs", num_weeks=2, start_week=7)
-        with patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=9):
+        with patch.object(nfl_helper.FantasyDataScraper, "get_league_week", return_value=9):
             do_cleanup(client)
 
         entry = nfl_helper.tinyurl_data.get("tourney")
@@ -111,7 +111,7 @@ class TestMultiweekDfsLifecycle:
     def test_grace_week_expired_deletes_entry(self, client, mock_week):
         # end_week = 7 + 2 - 1 = 8; entry_week(9) > end_week(8) → deleted
         create_entry("tourney", week=9, entry_type="multiweek_dfs", num_weeks=2, start_week=7)
-        with patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=10):
+        with patch.object(nfl_helper.FantasyDataScraper, "get_league_week", return_value=10):
             do_cleanup(client)
 
         assert "tourney" not in nfl_helper.tinyurl_data
@@ -157,7 +157,7 @@ class TestMultiweekDfsLifecycle:
 
         # Cycle 1: score week 7, advance to 8
         submit(7)
-        with patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=8):
+        with patch.object(nfl_helper.FantasyDataScraper, "get_league_week", return_value=8):
             do_cleanup(client)
 
         entry = nfl_helper.tinyurl_data["tourney"]
@@ -166,7 +166,7 @@ class TestMultiweekDfsLifecycle:
 
         # Cycle 2: score week 8, advance to 9, keeping week 7 in the tally
         submit(8)
-        with patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=9):
+        with patch.object(nfl_helper.FantasyDataScraper, "get_league_week", return_value=9):
             do_cleanup(client)
 
         entry = nfl_helper.tinyurl_data["tourney"]
@@ -185,7 +185,7 @@ class TestMultiweekDfsLifecycle:
                       "data": make_lineup_string(7, ["11111:QB"]), "update_count": 1},
         }
 
-        with patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=8):
+        with patch.object(nfl_helper.FantasyDataScraper, "get_league_week", return_value=8):
             do_cleanup(client)
             do_cleanup(client)
 
