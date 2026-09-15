@@ -20,7 +20,7 @@ Reads follow the same order at startup.
 ## Running a local instance
 
 Production and a local instance point at the same Supabase project, so by default
-they share every row — including the ones the Thursday cleanup rewrites. Both of
+they share every row — including the ones the weekly rollover rewrites. Both of
 these keep a dev run out of production's data; pick based on whether dev data
 needs to survive a restart.
 

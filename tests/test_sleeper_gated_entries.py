@@ -128,7 +128,7 @@ class TestDeadlineRollsWeekly:
         nfl_helper.tinyurl_data["tourney"]["deadline"] = iso(was)
 
         with patch.object(nfl_helper, "fetch_sleeper_matchup_points", return_value={}), \
-             patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=8):
+             patch.object(nfl_helper.FantasyDataScraper, "get_league_week", return_value=8):
             client.post("/admin/tinyurl/cleanup")
 
         entry = nfl_helper.tinyurl_data["tourney"]
@@ -143,7 +143,7 @@ class TestDeadlineRollsWeekly:
         nfl_helper.tinyurl_data["tourney"]["deadline"] = future
 
         with patch.object(nfl_helper, "fetch_sleeper_matchup_points", return_value={}), \
-             patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=8):
+             patch.object(nfl_helper.FantasyDataScraper, "get_league_week", return_value=8):
             client.post("/admin/tinyurl/cleanup")
 
         assert nfl_helper.tinyurl_data["tourney"]["deadline"] == future
@@ -250,7 +250,7 @@ class TestOpenOnlyForTheFirstWeek:
 
     def advance(self, client, to_week):
         with patch.object(nfl_helper, "fetch_sleeper_matchup_points", return_value={}), \
-             patch.object(nfl_helper.FantasyDataScraper, "get_current_week", return_value=to_week):
+             patch.object(nfl_helper.FantasyDataScraper, "get_league_week", return_value=to_week):
             client.post("/admin/tinyurl/cleanup")
 
     def make_open_tournament(self, entrants=("alice", "bob")):

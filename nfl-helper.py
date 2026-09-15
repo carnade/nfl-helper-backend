@@ -1435,13 +1435,22 @@ def update_filtered_players_with_scraped_data():
 # Schedule the data fetch task
 scheduler = BackgroundScheduler()
 
-# Schedule the default job to run every 4 hours
-scheduler.add_job(func=fetch_and_filter_data, trigger="interval", hours=4)
-
-# Schedule the job to run on Thursdays, Sundays, Mondays between 12:00 PM and 11:59 PM
+# Refresh the Sleeper player list every four hours on fixed hours, rather than on an
+# interval counted from startup. It is the second-largest allocation in the process,
+# and an interval can land in the same hour as the nflverse refresh or the fantasy
+# points scrape; these hours sit clear of every heavy slot below.
 scheduler.add_job(
     func=fetch_and_filter_data,
-    trigger=CronTrigger(day_of_week="thu,sun,mon", hour="12-23", minute=0)
+    trigger=CronTrigger(hour="1,5,9,13,17,21", minute=0)
+)
+
+# On game days, refresh hourly through the afternoon and evening so injury news lands
+# before kickoff. The hours skip those the job above already covers (13, 17, 21) —
+# two jobs for the same function would otherwise load the player list twice at once —
+# as well as the 15:00 DFS salaries scrape and Sunday's 23:00 fantasy points run.
+scheduler.add_job(
+    func=fetch_and_filter_data,
+    trigger=CronTrigger(day_of_week="thu,sun,mon", hour="12,14,16,18,19,20,22", minute=0)
 )
 
 # Schedule the new job to run every Wednesday at 08:00
@@ -1450,33 +1459,17 @@ scheduler.add_job(
     trigger=CronTrigger(day_of_week="wed", hour=8, minute=0)
 )
 
-# Schedule fantasy points updates on Wednesday at 15:00, 16:00, 17:00, 18:00, 19:00
+# Scrape fantasy points once after each game window: Sunday afternoon's games (Sun
+# 23:00), Sunday night's (Mon), Monday night's (Tue) and Thursday night's (Fri). The
+# morning runs sit two hours after the nflverse refreshes rather than alongside them,
+# and all finish before the Wednesday multiweek scoring reads them as its fallback.
+scheduler.add_job(
+    func=update_fantasy_points_data,
+    trigger=CronTrigger(day_of_week="mon,tue,fri", hour=8, minute=0)
+)
 scheduler.add_job(
     func=update_fantasy_points_data,
     trigger=CronTrigger(day_of_week="sun", hour=23, minute=0)
-)
-scheduler.add_job(
-    func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="tue", hour=6, minute=0)
-)
-scheduler.add_job(
-    func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="tue", hour=7, minute=0)
-)
-scheduler.add_job(
-    func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="tue", hour=8, minute=0)
-)
-
-
-# Schedule fantasy points updates on Thursday, Friday, Saturday, Sunday, Monday at 17:00
-scheduler.add_job(
-    func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="fri,mon", hour=8, minute=0)
-)
-scheduler.add_job(
-    func=update_fantasy_points_data,
-    trigger=CronTrigger(day_of_week="fri,mon", hour=7, minute=0)
 )
 
 # Schedule DFS salaries update daily at 14:00 CET
@@ -1739,14 +1732,28 @@ def calculate_dfs_points_from_lineup(lineup_data, week, players_points=None):
         return 0.0
 
 
-def clear_tinyurl_data():
-    """Clear tinyurl_data entries for weeks that are older than the current week"""
+def clear_tinyurl_data(delete_finished=True):
+    """
+    Roll TinyURL entries over to the current week.
+
+    Multiweek tournaments whose week has finished are scored, have their lineups
+    cleared, and advance a week. With delete_finished — the default, and the Thursday
+    job — finished single-week entries, tournaments past their grace week and entries
+    with no week are removed as well. Without it, the Wednesday scoring pass deletes
+    nothing, so results pages stay up until Thursday.
+
+    Running both is safe: once a tournament has advanced, its week is no longer older
+    than the current one, so a second pass does not score it again.
+    """
     global tinyurl_data
     
     try:
-        # Get current week from Sleeper
+        # Sleeper's own week, not get_current_week(). That one deliberately reports the
+        # previous week Tuesday to Thursday so result pages keep showing the week just
+        # played; here it would make the week that has just finished look current, and
+        # leave it unscored until the following week.
         scraper = FantasyDataScraper()
-        current_week = scraper.get_current_week()
+        current_week = scraper.get_league_week()
         
         # Ensure current_week is an integer
         if current_week is None:
@@ -1780,8 +1787,9 @@ def clear_tinyurl_data():
             # Keep entries where entry_week >= current_week (current week and all future weeks)
             # Delete entries where entry_week < current_week (older weeks) or entry_week is None
             if entry_week is None:
-                print(f"{datetime.datetime.now()} - Marking entry '{entry_name}' for deletion (no week field)")
-                entries_to_delete.append(name)
+                if delete_finished:
+                    print(f"{datetime.datetime.now()} - Marking entry '{entry_name}' for deletion (no week field)")
+                    entries_to_delete.append(name)
             elif entry_week < current_week:
                 print(f"{datetime.datetime.now()} - Processing entry '{entry_name}' (week {entry_week}) - older than current week {current_week}")
                 
@@ -1792,8 +1800,9 @@ def clear_tinyurl_data():
                     end_week = (start_week + num_weeks - 1) if num_weeks is not None else None
 
                     if end_week is not None and entry_week > end_week:
-                        print(f"{datetime.datetime.now()} - Tournament '{entry_name}' grace week passed (end_week={end_week}), marking for deletion")
-                        entries_to_delete.append(name)
+                        if delete_finished:
+                            print(f"{datetime.datetime.now()} - Tournament '{entry_name}' grace week passed (end_week={end_week}), marking for deletion")
+                            entries_to_delete.append(name)
                     else:
                         print(f"{datetime.datetime.now()} - Calculating points for multiweek_dfs entry '{entry_name}' (week {entry_week}) and clearing lineup data")
 
@@ -1901,7 +1910,7 @@ def clear_tinyurl_data():
                             print(f"{datetime.datetime.now()} - Tournament '{entry_name}' completed after week {end_week}. Keeping for one grace week (week {entry_week + 1}).")
                         else:
                             print(f"{datetime.datetime.now()} - Advanced '{entry_name}' to week {entry_week + 1}")
-                else:
+                elif delete_finished:
                     # For single entries, mark for deletion
                     entries_to_delete.append(name)
             else:
@@ -1924,19 +1933,29 @@ def clear_tinyurl_data():
         print(f"{datetime.datetime.now()} - Error clearing TinyURL data: {e}")
         import traceback
         traceback.print_exc()
+        if not delete_finished:
+            # The scoring pass is holding live tournaments and their standings. Losing
+            # a week's scoring to an error is recoverable; wiping them is not.
+            print(f"{datetime.datetime.now()} - TinyURL scoring pass failed; leaving every entry untouched")
+            return
         # Fallback: clear all if we can't get current week
         tinyurl_data.clear()
         save_tinyurl_data()  # Save even on fallback
         print(f"{datetime.datetime.now()} - TinyURL data cleared (fallback: all entries)")
+
+
+def score_multiweek_tinyurls():
+    """Wednesday pass: score and advance multiweek tournaments, deleting nothing."""
+    clear_tinyurl_data(delete_finished=False)
 
 def clear_tournament_data():
     """Clear tournament_data entries for weeks that are older than the current week (keep current week and all future weeks)"""
     global tournament_data
     
     try:
-        # Get current week from Sleeper
+        # Sleeper's own week, for the same reason as clear_tinyurl_data.
         scraper = FantasyDataScraper()
-        current_week = scraper.get_current_week()
+        current_week = scraper.get_league_week()
         
         # Ensure current_week is an integer
         if current_week is None:
@@ -1989,7 +2008,17 @@ def clear_tournament_data():
         import traceback
         traceback.print_exc()
 
-# Schedule TinyURL data clearing every Thursday at 09:00 UTC (10:00 CET / 11:00 CEST)
+# Score and advance multiweek tournaments Wednesday 06:00 UTC (08:00 CEST), the
+# morning after Monday night's game. Standings are final once this runs — lineups are
+# cleared — so it leaves a day for Sleeper's stat corrections first.
+scheduler.add_job(
+    func=score_multiweek_tinyurls,
+    trigger=CronTrigger(day_of_week="wed", hour=6, minute=0)
+)
+
+# Full TinyURL cleanup Thursday 09:00 UTC (11:00 CEST), before the new week kicks off.
+# Removes finished single-week entries and tournaments past their grace week, and
+# re-checks multiweek tournaments in case Sleeper's week flipped after Wednesday.
 scheduler.add_job(
     func=clear_tinyurl_data,
     trigger=CronTrigger(day_of_week="thu", hour=9, minute=0)
@@ -3266,7 +3295,7 @@ def create_tinyurl():
         
         # Check if we already have 10 entries
         if len(tinyurl_data) >= 10:
-            return jsonify({"error": "Maximum of 10 entries reached. Data will be cleared Thursday at 19:00 CET."}), 400
+            return jsonify({"error": "Maximum of 10 entries reached. Finished entries are cleared Thursday at 09:00 UTC."}), 400
         
         # Check if name already exists (case-insensitive)
         if normalized_name in tinyurl_data:
@@ -4004,7 +4033,7 @@ def create_empty_tinyurl():
         
         # Check if we already have 10 entries
         if len(tinyurl_data) >= 10:
-            return jsonify({"error": "Maximum of 10 entries reached. Data will be cleared Thursday at 19:00 CET."}), 400
+            return jsonify({"error": "Maximum of 10 entries reached. Finished entries are cleared Thursday at 09:00 UTC."}), 400
         
         # Check if name already exists (case-insensitive)
         if normalized_name in tinyurl_data:
@@ -5068,7 +5097,7 @@ def season_to_date_stats_year():
     """
     season = current_season_year()
     try:
-        week = FantasyDataScraper().get_current_week()
+        week = FantasyDataScraper().get_league_week()
     except Exception as e:
         print(f"{datetime.datetime.now()} - Could not read the current week, "
               f"using season {season} stats: {e}")
