@@ -146,3 +146,44 @@ class TestDevReadThrough:
         with patch.object(nfl_helper, "SUPABASE_KEY_PREFIX", "dev_"):
             keys = nfl_helper._supabase_read_keys("tinyurl_data")
         assert keys[0] == "dev_tinyurl_data"
+
+
+class TestTeamCodes:
+    def test_a_jaguars_game_is_graded(self, client):
+        """nflverse spells Jacksonville JAX. Mapping the odds feed's JAX to JAC meant no
+        Jaguars game ever matched its result."""
+        oa.odds_history.clear(); ns.nflverse_games.clear()
+        oa.odds_history["cle-jax"] = {
+            "home_abbr": "JAX", "away_abbr": "CLE",
+            "commence_time": "2026-09-13T17:00:00Z",
+            "total": {"line": 40.5}, "ou_eval": {"signal": "over"},
+        }
+        ns.nflverse_games[1] = [{
+            "home_team": "JAX", "away_team": "CLE", "gameday": "2026-09-13",
+            "home_score": 34, "away_score": 10,
+        }]
+        try:
+            row = client.get("/odds/results").get_json()[0]
+            assert row["result"] is not None, "a Jaguars game must match its result"
+            assert row["result"]["actual_total"] == 44
+            assert row["result"]["edge_correct"] is True, "44 is over 40.5"
+        finally:
+            oa.odds_history.clear(); ns.nflverse_games.clear()
+
+    @pytest.mark.parametrize("odds_code,nflverse_code", [("LAR", "LA"), ("WSH", "WAS")])
+    def test_the_codes_that_do_differ_still_match(self, client, odds_code, nflverse_code):
+        oa.odds_history.clear(); ns.nflverse_games.clear()
+        oa.odds_history["g"] = {
+            "home_abbr": odds_code, "away_abbr": "SF",
+            "commence_time": "2026-09-13T17:00:00Z",
+            "total": {"line": 40.0}, "ou_eval": {"signal": "under"},
+        }
+        ns.nflverse_games[1] = [{
+            "home_team": nflverse_code, "away_team": "SF", "gameday": "2026-09-13",
+            "home_score": 17, "away_score": 13,
+        }]
+        try:
+            row = client.get("/odds/results").get_json()[0]
+            assert row["result"] is not None
+        finally:
+            oa.odds_history.clear(); ns.nflverse_games.clear()

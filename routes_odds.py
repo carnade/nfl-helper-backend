@@ -164,7 +164,9 @@ def all_props():
 def game_results():
     """Historical games: stored lines + actual scores from nflverse."""
     # odds API abbrs → nflverse abbrs
-    ABBR_MAP = {"LAR": "LA", "WSH": "WAS", "JAX": "JAC"}
+    # nflverse spells Jacksonville JAX, same as the odds feed. Mapping it to JAC left
+    # every Jaguars game unmatched, and so ungraded, for the whole season.
+    ABBR_MAP = {"LAR": "LA", "WSH": "WAS"}
 
     def _find_nflverse_game(home_nfl: str, away_nfl: str, gameday: str):
         """
