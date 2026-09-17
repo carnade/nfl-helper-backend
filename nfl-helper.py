@@ -3468,9 +3468,24 @@ def get_tinyurl_data(name):
             }), 200
         
         user_data = user_submissions[normalized_username]
-        
+
+        # A Sleeper-gated entry already proves who is asking: the lineup was filed
+        # under the display name of a verified token, so a token resolving to that
+        # same account identifies its owner at least as well as the PIN does. The
+        # PIN exists to stop anyone opening someone else's lineup by typing their
+        # name, which is still exactly the risk on an allowlist entry, so it keeps
+        # guarding those.
+        # Only worth asking Sleeper when a PIN would otherwise be demanded: verifying
+        # costs a round-trip, and nothing else here depends on the answer.
+        owns_via_sleeper_login = False
+        if 'pin' in user_data and not is_results_view and entry_is_sleeper_open(entry):
+            identity = verify_sleeper_token(_sleeper_token_from_request())
+            if identity:
+                identity_name = normalize_tinyurl_name(identity.get('display_name') or '')
+                owns_via_sleeper_login = bool(identity_name) and identity_name == normalized_username
+
         # Check if this user's submission has a PIN (unless results view bypasses it)
-        if 'pin' in user_data and not is_results_view:
+        if 'pin' in user_data and not is_results_view and not owns_via_sleeper_login:
             user_pin = user_data.get('pin')
             if not provided_pin:
                 return jsonify({

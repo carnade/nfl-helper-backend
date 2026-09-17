@@ -401,3 +401,56 @@ class TestMultiweekProgress:
 
         assert body["entries"][0]["tournament_week"] == 2
         assert body["entries"][0]["num_weeks"] == 4
+
+
+class TestLoadingOwnLineupOnSleeperEntries:
+    """A PIN keeps strangers out of a lineup. On a Sleeper-gated entry the token
+    already establishes who is asking, so the owner is let in without one."""
+
+    def _entry_with_pinned_lineup(self, client, verified, access_mode="sleeper"):
+        normalized = create_entry("cup", allowed_names=["alice"])
+        entry = nfl_helper.tinyurl_data[normalized]
+        entry["access_mode"] = access_mode
+        if access_mode == "sleeper":
+            entry["allowed_names"] = []
+        submit_body = {"data": make_lineup_string(8, ["11111-5000"]), "pin": "1234"}
+        if access_mode != "sleeper":
+            submit_body["name"] = "alice"
+        resp = client.post("/tinyurl/cup/add", json=submit_body,
+                           headers={"Authorization": "tok"})
+        assert resp.status_code == 200, resp.get_json()
+
+    def test_owner_loads_without_a_pin(self, client, verified):
+        self._entry_with_pinned_lineup(client, verified)
+        body = client.get("/tinyurl/cup/data?username=alice",
+                          headers={"Authorization": "tok"}).get_json()
+        assert not body.get("pin_required")
+        assert body["data"]
+
+    def test_pin_still_works_for_the_owner(self, client, verified):
+        self._entry_with_pinned_lineup(client, verified)
+        body = client.get("/tinyurl/cup/data?username=alice&pin=1234",
+                          headers={"Authorization": "tok"}).get_json()
+        assert body["data"]
+
+    def test_without_a_token_the_pin_is_still_required(self, client, verified):
+        self._entry_with_pinned_lineup(client, verified)
+        verified.return_value = None
+        body = client.get("/tinyurl/cup/data?username=alice").get_json()
+        assert body.get("pin_required") is True
+        assert body["data"] is None
+
+    def test_another_account_cannot_open_it(self, client, verified):
+        self._entry_with_pinned_lineup(client, verified)
+        verified.return_value = {"user_id": "222", "display_name": "bob"}
+        body = client.get("/tinyurl/cup/data?username=alice",
+                          headers={"Authorization": "tok"}).get_json()
+        assert body.get("pin_required") is True
+        assert body["data"] is None
+
+    def test_allowlist_entries_still_demand_the_pin(self, client, verified):
+        self._entry_with_pinned_lineup(client, verified, access_mode="allowlist")
+        body = client.get("/tinyurl/cup/data?username=alice",
+                          headers={"Authorization": "tok"}).get_json()
+        assert body.get("pin_required") is True
+        assert body["data"] is None
