@@ -16,12 +16,23 @@ nfl_helper = sys.modules["nfl_helper"]
 
 # ── DataFrame helpers ─────────────────────────────────────────────────────────
 
+def _polars_like(df: pd.DataFrame):
+    """Stand in for a polars frame: nflverse_stats selects columns before
+    converting, so .select(...) has to return something convertible too."""
+    from unittest.mock import MagicMock
+    frame = MagicMock()
+    frame.columns = list(df.columns)
+    frame.select.return_value.to_pandas.return_value = df
+    frame.to_pandas.return_value = df
+    return frame
+
+
 def _make_stats_df(rows: list[dict]) -> pd.DataFrame:
     defaults = {
         "season_type": "REG", "season": 2025, "week": 1,
         "player_id": "00-0001234", "player_display_name": "Test Player",
         "position": "WR", "position_group": "WR",
-        "team": "MIN", "headshot_url": "",
+        "team": "MIN", "opponent_team": "GB", "headshot_url": "",
         "completions": 0.0, "attempts": 0.0,
         "passing_yards": 0.0, "passing_tds": 0.0, "passing_interceptions": 0.0,
         "carries": 0.0, "rushing_yards": 0.0, "rushing_tds": 0.0,
@@ -33,7 +44,9 @@ def _make_stats_df(rows: list[dict]) -> pd.DataFrame:
         "passing_epa": 0.0, "rushing_epa": 0.0,
         "fantasy_points": 18.0, "fantasy_points_ppr": 23.0,
     }
-    return pd.DataFrame([{**defaults, **r} for r in rows])
+    # Keep the columns even with no rows: callers index them by name, and an
+    # empty frame built from an empty list would carry no columns at all.
+    return pd.DataFrame([{**defaults, **r} for r in rows], columns=list(defaults))
 
 
 def _make_team_stats_df(rows: list[dict]) -> pd.DataFrame:
@@ -134,10 +147,8 @@ class TestBuildIdMaps:
             "gsis_id": "00-0001234", "pfr_id": "JeffJu00",
             "sleeper_id": "999", "week": 1,
         }])
-        from unittest.mock import patch, MagicMock
-        mock_result = MagicMock()
-        mock_result.to_pandas.return_value = df
-        with patch.object(nfl, "load_rosters", return_value=mock_result):
+        from unittest.mock import patch
+        with patch.object(nfl, "load_rosters", return_value=_polars_like(df)):
             gsis_map, pfr_map = ns.build_id_maps(2025)
         assert gsis_map["00-0001234"] == "999"
         assert pfr_map["JeffJu00"] == "999"
@@ -147,7 +158,7 @@ class TestBuildIdMaps:
             "gsis_id": "00-0001234", "pfr_id": "JeffJu00",
             "sleeper_id": None, "week": 1,
         }])
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch, MagicMock  # noqa: F401
         mock_result = MagicMock()
         mock_result.to_pandas.return_value = df
         with patch.object(nfl, "load_rosters", return_value=mock_result):
@@ -278,6 +289,8 @@ class TestBuildPlayerAdvancedDict:
 # ── build_team_stats_dict ─────────────────────────────────────────────────────
 
 class TestBuildTeamStatsDict:
+    # Offensive per-game figures come from the player frame (averaged per team-week),
+    # while the defensive allowed figures are still flipped out of the team frame.
     def test_offensive_stats(self):
         df = _make_team_stats_df([
             {"team": "MIN", "opponent_team": "GB", "week": 1, "attempts": 35.0, "passing_yards": 280.0},
@@ -290,7 +303,13 @@ class TestBuildTeamStatsDict:
              "passing_tds": 2.0, "rushing_tds": 1.0, "targets": 25.0,
              "def_sacks": 1.0, "def_interceptions": 0.0, "def_pass_defended": 2.0},
         ])
-        result = ns.build_team_stats_dict(df)
+        players = _make_stats_df([
+            {"team": "MIN", "opponent_team": "GB", "week": 1, "position": "QB",
+             "attempts": 35.0, "passing_yards": 280.0},
+            {"team": "MIN", "opponent_team": "CHI", "week": 2, "position": "QB",
+             "attempts": 30.0, "passing_yards": 220.0},
+        ])
+        result = ns.build_team_stats_dict(df, players)
         assert result["MIN"]["pass_attempts_per_game"] == pytest.approx(32.5)
         assert result["MIN"]["passing_yards_per_game"] == pytest.approx(250.0)
 
@@ -301,14 +320,14 @@ class TestBuildTeamStatsDict:
              "passing_tds": 1.0, "rushing_tds": 0.0, "targets": 28.0,
              "def_sacks": 0.0, "def_interceptions": 0.0, "def_pass_defended": 0.0},
         ])
-        result = ns.build_team_stats_dict(df)
+        result = ns.build_team_stats_dict(df, _make_stats_df([]))
         assert result["MIN"]["def_pass_yards_allowed_per_game"] == pytest.approx(200.0)
         assert result["MIN"]["def_rush_yards_allowed_per_game"] == pytest.approx(90.0)
         assert result["MIN"]["def_sacks_per_game"] == pytest.approx(2.0)
 
     def test_preseason_excluded(self):
         df = _make_team_stats_df([{"team": "MIN", "season_type": "PRE"}])
-        result = ns.build_team_stats_dict(df)
+        result = ns.build_team_stats_dict(df, _make_stats_df([]))
         assert result == {}
 
 
