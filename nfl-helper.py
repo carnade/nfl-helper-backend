@@ -142,6 +142,15 @@ ODDS_FETCH_DISABLED = os.environ.get('ODDS_FETCH_DISABLED', '').strip().lower() 
 # still durable across restarts. Empty in production, which owns the bare keys.
 SUPABASE_KEY_PREFIX = os.environ.get('SUPABASE_KEY_PREFIX', '').strip()
 
+# Sleeper display names allowed to run organiser-only actions. The manage page hides
+# these behind the same list in the frontend, but that is only a UI courtesy: the
+# check that counts is this one, against a token Sleeper itself verified.
+ADMIN_SLEEPER_USERS = {
+    n.strip().lower()
+    for n in os.environ.get('ADMIN_SLEEPER_USERS', 'carnade').split(',')
+    if n.strip()
+}
+
 
 def _supabase_key(key):
     """Row key for this instance, namespaced by SUPABASE_KEY_PREFIX."""
@@ -2846,6 +2855,14 @@ def verify_sleeper_token(token):
     return identity
 
 
+def request_is_from_organiser():
+    """True when the request carries a Sleeper token belonging to an organiser."""
+    identity = verify_sleeper_token(_sleeper_token_from_request())
+    if not identity:
+        return False
+    return (identity.get('display_name') or '').strip().lower() in ADMIN_SLEEPER_USERS
+
+
 def entry_is_sleeper_open(entry):
     """True when the entry admits any verified Sleeper login rather than a list."""
     return entry.get('access_mode') == 'sleeper'
@@ -3949,6 +3966,64 @@ def remove_tinyurl_entrant(name, username):
     }), 200
 
 
+@app.route('/tinyurl/<name>/entrants/<username>/lineup', methods=['DELETE'])
+def clear_tinyurl_entrant_lineup(name, username):
+    """
+    Clear one entrant's lineup for the current week, leaving everything else alone.
+
+    An organiser needs this when a lineup can no longer be corrected by its owner:
+    once any of its players has kicked off, /add refuses to overwrite it. Clearing
+    puts the entrant back to not having submitted, so they can enter a fresh lineup
+    through the ordinary flow.
+
+    Deliberately narrow: the entrant stays on the allowlist, and standings from
+    earlier weeks are untouched. Only this week's lineup goes, which does mean the
+    week scores as nothing unless they submit again.
+
+    Organiser-only, and not blocked once games have started — that is exactly when
+    it is needed.
+    """
+    global tinyurl_data
+
+    if not request_is_from_organiser():
+        return jsonify({"error": "This action is for tournament organisers only."}), 403
+
+    normalized_name = normalize_tinyurl_name(name)
+    normalized_username = normalize_tinyurl_name(username)
+
+    if normalized_name not in tinyurl_data:
+        return jsonify({"error": f"TinyURL '{name}' not found"}), 404
+
+    entry = tinyurl_data[normalized_name]
+    user_submissions = entry.get('user_submissions', {})
+
+    if normalized_username not in user_submissions:
+        return jsonify({"error": f"'{username}' has no lineup in '{name}'"}), 404
+
+    user_data = user_submissions[normalized_username]
+    if user_data.get('data') is None:
+        return jsonify({"error": f"'{username}' has no lineup to clear in '{name}'"}), 404
+
+    # Drop the lineup itself and the marks of having submitted it, but keep the
+    # entrant's place: their PIN still identifies them for the next submission.
+    user_data['data'] = None
+    user_data['update_count'] = 0
+    for field in ('updated_at', 'updated_by'):
+        user_data.pop(field, None)
+    # created_at and pin stay: they describe the entrant, not the lineup, and the
+    # PIN is what lets them open and replace the submission they are about to make.
+
+    save_tinyurl_data()
+    print(f"{datetime.datetime.now()} - Cleared lineup for '{username}' in '{name}'")
+
+    return jsonify({
+        "name": entry.get('name', name),
+        "cleared": user_data.get('username', username),
+        "standings_kept": True,
+        "still_an_entrant": True,
+    }), 200
+
+
 @app.route('/tinyurl/<name>', methods=['DELETE'])
 def delete_tinyurl(name):
     """
@@ -4488,7 +4563,7 @@ def add_to_tinyurl(tinyurl_name):
             "updated_by": username,
             "updated_at": entry['updated_at'],
             "update_count": entry['user_submissions'][normalized_username]['update_count'],
-            "created_at": entry['user_submissions'][normalized_username]['created_at']
+            "created_at": entry['user_submissions'][normalized_username].get('created_at')
         }), 200
             
     except Exception as e:
