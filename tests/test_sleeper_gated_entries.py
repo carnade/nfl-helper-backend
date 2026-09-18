@@ -454,3 +454,85 @@ class TestLoadingOwnLineupOnSleeperEntries:
                           headers={"Authorization": "tok"}).get_json()
         assert body.get("pin_required") is True
         assert body["data"] is None
+
+
+class TestClearingOneLineup:
+    """An organiser can wipe a single lineup so its owner can submit again. Nothing
+    else moves: they stay an entrant, and earlier weeks keep their points."""
+
+    def setup_tournament(self):
+        create_entry("cup", allowed_names=["alice", "bob"], entry_type="multiweek_dfs")
+        nfl_helper.tinyurl_data["cup"].update(
+            user_submissions={"alice": {"username": "alice", "data": "x",
+                                        "created_at": "before", "update_count": 3,
+                                        "updated_at": "then", "pin": "1234"}},
+            standings={"alice": {"total_points": 30.0, "week_points": {"7": 30.0}}},
+        )
+
+    def clear(self, client, who="alice", token="tok"):
+        headers = {"Authorization": token} if token else {}
+        return client.delete(f"/tinyurl/cup/entrants/{who}/lineup", headers=headers)
+
+    @pytest.fixture(autouse=True)
+    def organiser(self, verified):
+        """Clearing is organiser-only, so the token must resolve to one."""
+        verified.return_value = {"user_id": "1", "display_name": "carnade"}
+        yield verified
+
+    def test_clears_only_the_lineup(self, client, verified):
+        self.setup_tournament()
+        resp = self.clear(client)
+        assert resp.status_code == 200, resp.get_json()
+        entry = nfl_helper.tinyurl_data["cup"]
+        assert entry["user_submissions"]["alice"]["data"] is None
+        assert entry["user_submissions"]["alice"]["update_count"] == 0
+        assert "updated_at" not in entry["user_submissions"]["alice"]
+
+    def test_keeps_them_an_entrant(self, client, verified):
+        self.setup_tournament()
+        self.clear(client)
+        assert nfl_helper.tinyurl_data["cup"]["allowed_names"] == ["alice", "bob"]
+        assert "alice" in nfl_helper.tinyurl_data["cup"]["user_submissions"]
+
+    def test_keeps_earlier_weeks_points(self, client, verified):
+        """Clearing is about this week's lineup, never the accumulated total."""
+        self.setup_tournament()
+        self.clear(client)
+        standings = nfl_helper.tinyurl_data["cup"]["standings"]["alice"]
+        assert standings["total_points"] == 30.0
+        assert standings["week_points"] == {"7": 30.0}
+
+    def test_they_can_submit_again(self, client, verified):
+        self.setup_tournament()
+        self.clear(client)
+        resp = submit(client, "cup", name="alice", token="tok")
+        assert resp.status_code == 200, resp.get_json()
+        assert nfl_helper.tinyurl_data["cup"]["user_submissions"]["alice"]["data"]
+
+    def test_is_not_blocked_by_started_players(self, client, verified):
+        """The whole point: /add refuses to overwrite a lineup whose players have
+        kicked off, so clearing must not apply the same check."""
+        self.setup_tournament()
+        with patch.object(nfl_helper, "validate_lineup_players_not_started",
+                          return_value=(False, "players started", ["11111"])):
+            assert self.clear(client).status_code == 200
+
+    def test_requires_an_organiser_token(self, client, verified):
+        self.setup_tournament()
+        verified.return_value = {"user_id": "222", "display_name": "bob"}
+        assert self.clear(client).status_code == 403
+        assert nfl_helper.tinyurl_data["cup"]["user_submissions"]["alice"]["data"] == "x"
+
+    def test_requires_a_token_at_all(self, client, verified):
+        self.setup_tournament()
+        verified.return_value = None
+        assert self.clear(client, token=None).status_code == 403
+
+    def test_unknown_entrant_is_a_404(self, client, verified):
+        self.setup_tournament()
+        assert self.clear(client, who="nobody").status_code == 404
+
+    def test_already_clear_is_a_404(self, client, verified):
+        self.setup_tournament()
+        assert self.clear(client).status_code == 200
+        assert self.clear(client).status_code == 404
