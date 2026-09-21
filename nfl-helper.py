@@ -90,6 +90,10 @@ teams_data = {}
 picks_data = {}  # Dictionary to store draft pick data
 fantasy_points_data = {}  # Dictionary to store fantasy points data with Sleeper IDs
 dfs_salaries_data = {}  # Dictionary to store DFS salaries data with Sleeper IDs
+# A player rostered in neither scoring league scores 0 with no error, and Sleeper
+# will not backfill a settled week. An override is the organiser's way to state a
+# player's points for a week before it is scored. Keyed like fantasy_points_data.
+points_overrides = {}  # f"{sleeper_id}_{week}" -> {points, set_by, set_at}
 tinyurl_data = {}  # Dictionary to store data: {name: {data: str, created_at: str, allowed_names: List[str], user_submissions: Dict[str, {data: str, created_at: str, update_count: int, updated_at: str}]}}
 tournament_data = {}  # Dictionary to store tournament data: {id: {week: int, name: str, games: list, created_at: str}}
 current_nfl_week = None  # Current NFL week (1-22) from DailyFantasyFuel data, includes playoffs
@@ -616,6 +620,14 @@ def _load_store(key: str, store: dict):
             print(f"{datetime.datetime.now()} - No {key} file found, starting empty")
     except Exception as e:
         print(f"{datetime.datetime.now()} - Error loading {key} from file: {e}")
+
+
+def save_points_overrides():
+    _save_store('points_overrides', points_overrides)
+
+
+def load_points_overrides():
+    _load_store('points_overrides', points_overrides)
 
 
 def save_odds_history():
@@ -1533,6 +1545,20 @@ scheduler.add_job(
     trigger=CronTrigger(day_of_week="thu,sun,mon", hour=12, minute=0)
 )
 
+def dfs_points_override(sleeper_id, week):
+    """
+    An organiser-set figure for this player in this week, or None.
+
+    Deliberately tests for None rather than truthiness: an override of 0.0 is a
+    statement that the player scored nothing, not an absence of one.
+    """
+    entry = points_overrides.get(f"{sleeper_id}_{week}")
+    if not entry:
+        return None
+    points = entry.get('points')
+    return float(points) if points is not None else None
+
+
 def fetch_sleeper_matchup_points(week, league_ids=None):
     """
     Fetch matchup points from Sleeper API for given leagues and week.
@@ -1708,7 +1734,13 @@ def calculate_dfs_points_from_lineup(lineup_data, week, players_points=None):
             points = None
             source = None
 
-            if players_points is not None and sleeper_id in players_points:
+            # An organiser's correction outranks both sources below it.
+            override = dfs_points_override(sleeper_id, week)
+            if override is not None:
+                points = override
+                source = 'override'
+
+            if points is None and players_points is not None and sleeper_id in players_points:
                 points = float(players_points[sleeper_id])
                 source = 'sleeper'
 
@@ -1931,6 +1963,20 @@ def clear_tinyurl_data(delete_finished=True):
         for name in entries_to_delete:
             del tinyurl_data[name]
         
+        # Overrides are consumed by the week they belong to. Prune only on the pass
+        # that deletes: the Wednesday pass leaves results pages standing until
+        # Thursday, and dropping an override there would strip it from the display
+        # while the standings it produced kept it.
+        if delete_finished:
+            stale = [k for k, v in points_overrides.items()
+                     if isinstance(v, dict) and int(v.get('week', 0)) < current_week]
+            for k in stale:
+                del points_overrides[k]
+            if stale:
+                save_points_overrides()
+                print(f"{datetime.datetime.now()} - Removed {len(stale)} points override(s) "
+                      f"older than week {current_week}")
+
         # Save the cleaned data to persistent storage (always save, even if nothing was deleted)
         save_tinyurl_data()
         
@@ -4309,10 +4355,112 @@ def recalc_tinyurl_standings(name):
     }), 200
 
 
+@app.route('/points-overrides/week/<int:week>', methods=['GET'])
+def get_points_overrides_for_week(week):
+    """
+    Organiser-set points for this week, as {sleeper_id: points}.
+
+    Deliberately ungated: the DFS results page shows these to whoever is looking
+    at a lineup, not only to the organiser who set them.
+    """
+    return jsonify({
+        "week": week,
+        "overrides": {
+            v['sleeper_id']: v['points']
+            for v in points_overrides.values()
+            if isinstance(v, dict) and v.get('week') == week
+        },
+    }), 200
+
+
+@app.route('/points-overrides', methods=['POST'])
+def set_points_override():
+    """
+    State a player's points for a week, above every other source.
+
+    Only bites on a week that has not been scored yet: scoring wipes the lineups
+    it read, so a settled week can no longer be recomputed from them. Setting one
+    for a past week is refused rather than stored where it could never apply.
+
+    Request body: {"sleeper_id": "3161", "week": 2, "points": 6.3}
+    """
+    global points_overrides
+
+    if not request_is_from_organiser():
+        return jsonify({"error": "This action is for tournament organisers only."}), 403
+
+    data = request.json or {}
+    sleeper_id = str(data.get('sleeper_id') or '').strip()
+    week = data.get('week')
+    points = data.get('points')
+
+    if not sleeper_id:
+        return jsonify({"error": "sleeper_id is required"}), 400
+    # A defence is keyed by its team code, everyone else by a numeric id; anything
+    # else is a typo that would sit in the store matching nothing.
+    if not (sleeper_id.isdigit() or sleeper_id.upper() in NFL_TEAM_CODES):
+        return jsonify({"error": f"'{sleeper_id}' is not a player id or team code"}), 400
+    if not isinstance(week, int):
+        return jsonify({"error": "week must be a whole number"}), 400
+    # 0 and negative are both legitimate scores, so test the type, not the value.
+    if isinstance(points, bool) or not isinstance(points, (int, float)):
+        return jsonify({"error": "points must be a number"}), 400
+
+    try:
+        current_week = FantasyDataScraper().get_league_week()
+    except Exception:
+        current_week = None
+    if current_week is not None and week < int(current_week):
+        return jsonify({
+            "error": f"week {week} has already been scored; an override there would never apply",
+            "current_week": int(current_week),
+        }), 400
+
+    identity = verify_sleeper_token(_sleeper_token_from_request()) or {}
+    points_overrides[f"{sleeper_id}_{week}"] = {
+        "sleeper_id": sleeper_id,
+        "week": week,
+        "points": float(points),
+        "set_by": identity.get('display_name'),
+        "set_at": datetime.datetime.now().isoformat(),
+    }
+    save_points_overrides()
+    print(f"{datetime.datetime.now()} - Points override set: {sleeper_id} week {week} = {points}")
+
+    return jsonify({
+        "sleeper_id": sleeper_id,
+        "week": week,
+        "points": float(points),
+        "applies": "when this week is scored, and on the results page now",
+    }), 200
+
+
+@app.route('/points-overrides/<sleeper_id>/<int:week>', methods=['DELETE'])
+def delete_points_override(sleeper_id, week):
+    """Drop an override, returning the player to the ordinary sources."""
+    global points_overrides
+
+    if not request_is_from_organiser():
+        return jsonify({"error": "This action is for tournament organisers only."}), 403
+
+    key = f"{sleeper_id}_{week}"
+    if key not in points_overrides:
+        return jsonify({"error": f"no override for {sleeper_id} in week {week}"}), 404
+
+    removed = points_overrides.pop(key)
+    save_points_overrides()
+    print(f"{datetime.datetime.now()} - Points override removed: {sleeper_id} week {week}")
+
+    return jsonify({"removed": removed}), 200
+
+
 @app.route('/tinyurl/<name>/set-points', methods=['POST'])
 def set_tinyurl_points(name):
     """
     Manually set points for a user for a specific week in a multiweek_dfs TinyURL entry.
+
+    Organiser-only: this rewrites a tournament's standings directly, and was
+    reachable by anyone until now.
     
     Request body:
     {
@@ -4328,6 +4476,9 @@ def set_tinyurl_points(name):
         JSON response indicating success or error
     """
     global tinyurl_data
+
+    if not request_is_from_organiser():
+        return jsonify({"error": "This action is for tournament organisers only."}), 403
     
     normalized_name = normalize_tinyurl_name(name)
     
@@ -5230,6 +5381,8 @@ def initialize_data_in_background():
         print(f"{datetime.datetime.now()} - Persistence: USE_GIST={USE_GIST}, GIST_ID={gist_mask}")
         load_tinyurl_data()
         load_tournament_data()
+        # Must be loaded before any scheduled scoring can fire.
+        load_points_overrides()
         
         # 1. Fetch and filter player data
         print(f"{datetime.datetime.now()} - Fetching and filtering player data...")

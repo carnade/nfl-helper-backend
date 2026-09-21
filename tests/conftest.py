@@ -27,7 +27,7 @@ nfl_helper = _load_nfl_helper()
 GLOBAL_DICTS = [
     "all_players", "filtered_players", "scraped_ranks", "teams_data",
     "picks_data", "fantasy_points_data", "dfs_salaries_data",
-    "tinyurl_data", "tournament_data",
+    "tinyurl_data", "tournament_data", "points_overrides",
 ]
 
 
@@ -48,7 +48,8 @@ def reset_globals():
     for name in GLOBAL_DICTS:
         getattr(nfl_helper, name).clear()
     with patch.object(nfl_helper, "save_tinyurl_data"), \
-         patch.object(nfl_helper, "save_tournament_data"):
+         patch.object(nfl_helper, "save_tournament_data"), \
+         patch.object(nfl_helper, "save_points_overrides"):
         yield
     for name in GLOBAL_DICTS:
         getattr(nfl_helper, name).clear()
