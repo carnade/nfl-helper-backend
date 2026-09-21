@@ -5,6 +5,7 @@ load_dotenv()
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 import atexit
 import gc
 import json
@@ -15,6 +16,7 @@ from get_dynasty_ranks import scrape_ktc, scrape_fantasy_calc, tep_adjust
 from fantasydatascraper import FantasyDataScraper
 from get_dfs_salaries_and_stats import DFFSalariesScraper
 import random  # Import random for generating random deltas
+import threading
 import time
 from pathlib import Path
 from routes_stats import stats_bp
@@ -672,6 +674,15 @@ last_players_update = None
 last_rankings_update = None
 last_fantasy_points_update = None
 last_dfs_salaries_update = None
+# A scrape can fail for reasons that pass on their own — most often the day's
+# slate not being published yet — so record each attempt and retry rather than
+# leaving the data empty until the next scheduled run.
+dfs_last_attempt = None   # when we last tried, successful or not
+dfs_last_error = None     # why the most recent attempt failed, if it did
+dfs_retry_count = 0       # consecutive failures with a retry already queued
+
+DFS_RETRY_DELAY_MINUTES = 20
+DFS_MAX_RETRIES = 3
 
 # URL to fetch data from
 DATA_URL = "https://api.sleeper.app/v1/players/nfl"
@@ -969,6 +980,36 @@ def update_fantasy_points_data():
         print(f"Error updating fantasy points data: {e}")
 
 
+def _schedule_dfs_retry(reason):
+    """
+    Queue another DFS scrape a little later, up to DFS_MAX_RETRIES times.
+
+    A restart that lands before DailyFantasyFuel publishes the day's slate leaves
+    the data empty until the next cron run — four hours on the morning this was
+    written. Retrying costs one scrape and usually clears it.
+    """
+    global dfs_retry_count
+
+    if dfs_retry_count >= DFS_MAX_RETRIES:
+        print(f"{datetime.datetime.now()} - DFS salaries failed ({reason}) and "
+              f"{DFS_MAX_RETRIES} retries are already spent; leaving it to the next scheduled run.")
+        return
+
+    dfs_retry_count += 1
+    run_at = datetime.datetime.now() + datetime.timedelta(minutes=DFS_RETRY_DELAY_MINUTES)
+    try:
+        scheduler.add_job(
+            func=update_dfs_salaries_data,
+            trigger=DateTrigger(run_date=run_at),
+            id=f"dfs_salaries_retry_{dfs_retry_count}",
+            replace_existing=True,
+        )
+        print(f"{datetime.datetime.now()} - DFS salaries failed ({reason}); "
+              f"retry {dfs_retry_count}/{DFS_MAX_RETRIES} queued for {run_at:%H:%M}.")
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Could not queue a DFS salaries retry: {e}")
+
+
 def update_dfs_salaries_data():
     """
     Update DFS salaries data by fetching from DailyFantasyFuel and matching to Sleeper IDs.
@@ -977,7 +1018,9 @@ def update_dfs_salaries_data():
     Also updates the current_nfl_week global variable based on DailyFantasyFuel data.
     """
     global dfs_salaries_data, last_dfs_salaries_update, all_players, current_nfl_week
-    
+    global dfs_last_attempt, dfs_last_error, dfs_retry_count
+
+    dfs_last_attempt = datetime.datetime.now()
     print(f"{datetime.datetime.now()} - Starting DFS salaries data update...")
     
     if USE_MOCK_DATA:
@@ -999,7 +1042,10 @@ def update_dfs_salaries_data():
         parsed_salaries = scraper.get_salaries_with_sleeper_ids(all_players, date=today)
         
         if not parsed_salaries:
+            # Usually the slate is not published yet rather than anything broken.
+            dfs_last_error = f"no slate data available for {today}"
             print(f"No DFS salary data scraped for {today}. Aborting DFS salaries update.")
+            _schedule_dfs_retry(dfs_last_error)
             return
         
         # Get current week - find the first player with a valid week (> 0), or fetch from Sleeper API
@@ -1106,7 +1152,9 @@ def update_dfs_salaries_data():
             print(f"Total salary differences: {len(salary_differences)} (salaries NOT updated in scheduled run)")
         
         last_dfs_salaries_update = datetime.datetime.now()
-        
+        dfs_last_error = None
+        dfs_retry_count = 0
+
         # Count matched players (those with numeric sleeper_id, not player name)
         matched_count = sum(1 for p in dfs_salaries_data.values() if p.get("sleeper_id") and str(p.get("sleeper_id")).isdigit())
         
@@ -1117,7 +1165,9 @@ def update_dfs_salaries_data():
         print(f"Date: {today}")
         
     except Exception as e:
+        dfs_last_error = str(e)
         print(f"Error updating DFS salaries data: {e}")
+        _schedule_dfs_retry(dfs_last_error)
 
 
 def get_fantasy_points_for_player(sleeper_id, week=None):
@@ -2271,6 +2321,7 @@ def get_statistics():
         JSON response containing uptime, request counts per endpoint, and average requests per day.
     """
     global request_statistics, startup_time, last_players_update, last_rankings_update, last_fantasy_points_update, last_dfs_salaries_update, dfs_salaries_data
+    global dfs_last_attempt, dfs_last_error, dfs_retry_count
 
     try:
         # Calculate uptime
@@ -2313,7 +2364,12 @@ def get_statistics():
             "last_players_update": str(last_players_update) if last_players_update else "Never",
             "last_rankings_update": str(last_rankings_update) if last_rankings_update else "Never",
             "last_fantasy_points_update": str(last_fantasy_points_update) if last_fantasy_points_update else "Never",
-            "last_dfs_salaries_update": str(last_dfs_salaries_update) if last_dfs_salaries_update else "Never"
+            "last_dfs_salaries_update": str(last_dfs_salaries_update) if last_dfs_salaries_update else "Never",
+            # "Never" alone cannot tell never-ran from failed-early, which is why a
+            # silent DFS failure took log archaeology to spot.
+            "last_dfs_salaries_attempt": str(dfs_last_attempt) if dfs_last_attempt else "Never",
+            "dfs_salaries_error": dfs_last_error,
+            "dfs_salaries_retries_queued": dfs_retry_count,
         }
 
         # Filter valid endpoints
@@ -2557,10 +2613,19 @@ def admin_update_dfs_salaries():
         JSON response indicating success or failure.
     """
     try:
-        # Call the DFS salaries update method
-        update_dfs_salaries_data()
+        # The scrape takes minutes on the deployed instance while the hosting
+        # gateway gives up at 100 seconds, so a success used to come back as a
+        # 504. Run it in the background and let /statistics report the outcome.
+        threading.Thread(
+            target=update_dfs_salaries_data,
+            name="dfs-salaries-manual",
+            daemon=True,
+        ).start()
 
-        return jsonify({"message": "DFS salaries update triggered successfully."}), 200
+        return jsonify({
+            "message": "DFS salaries update started; watch /statistics for the outcome.",
+            "check": "/statistics",
+        }), 202
     except Exception as e:
         print(f"Error while triggering DFS salaries update: {e}")
         return jsonify({"error": str(e)}), 500
