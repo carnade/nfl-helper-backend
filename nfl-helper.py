@@ -5,6 +5,7 @@ load_dotenv()
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 import atexit
 import gc
 import json
@@ -15,6 +16,7 @@ from get_dynasty_ranks import scrape_ktc, scrape_fantasy_calc, tep_adjust
 from fantasydatascraper import FantasyDataScraper
 from get_dfs_salaries_and_stats import DFFSalariesScraper
 import random  # Import random for generating random deltas
+import threading
 import time
 from pathlib import Path
 from routes_stats import stats_bp
@@ -90,6 +92,10 @@ teams_data = {}
 picks_data = {}  # Dictionary to store draft pick data
 fantasy_points_data = {}  # Dictionary to store fantasy points data with Sleeper IDs
 dfs_salaries_data = {}  # Dictionary to store DFS salaries data with Sleeper IDs
+# A player rostered in neither scoring league scores 0 with no error, and Sleeper
+# will not backfill a settled week. An override is the organiser's way to state a
+# player's points for a week before it is scored. Keyed like fantasy_points_data.
+points_overrides = {}  # f"{sleeper_id}_{week}" -> {points, set_by, set_at}
 tinyurl_data = {}  # Dictionary to store data: {name: {data: str, created_at: str, allowed_names: List[str], user_submissions: Dict[str, {data: str, created_at: str, update_count: int, updated_at: str}]}}
 tournament_data = {}  # Dictionary to store tournament data: {id: {week: int, name: str, games: list, created_at: str}}
 current_nfl_week = None  # Current NFL week (1-22) from DailyFantasyFuel data, includes playoffs
@@ -618,6 +624,14 @@ def _load_store(key: str, store: dict):
         print(f"{datetime.datetime.now()} - Error loading {key} from file: {e}")
 
 
+def save_points_overrides():
+    _save_store('points_overrides', points_overrides)
+
+
+def load_points_overrides():
+    _load_store('points_overrides', points_overrides)
+
+
 def save_odds_history():
     _save_store('odds_history', odds_api.odds_history)
 
@@ -660,6 +674,15 @@ last_players_update = None
 last_rankings_update = None
 last_fantasy_points_update = None
 last_dfs_salaries_update = None
+# A scrape can fail for reasons that pass on their own — most often the day's
+# slate not being published yet — so record each attempt and retry rather than
+# leaving the data empty until the next scheduled run.
+dfs_last_attempt = None   # when we last tried, successful or not
+dfs_last_error = None     # why the most recent attempt failed, if it did
+dfs_retry_count = 0       # consecutive failures with a retry already queued
+
+DFS_RETRY_DELAY_MINUTES = 20
+DFS_MAX_RETRIES = 3
 
 # URL to fetch data from
 DATA_URL = "https://api.sleeper.app/v1/players/nfl"
@@ -957,6 +980,36 @@ def update_fantasy_points_data():
         print(f"Error updating fantasy points data: {e}")
 
 
+def _schedule_dfs_retry(reason):
+    """
+    Queue another DFS scrape a little later, up to DFS_MAX_RETRIES times.
+
+    A restart that lands before DailyFantasyFuel publishes the day's slate leaves
+    the data empty until the next cron run — four hours on the morning this was
+    written. Retrying costs one scrape and usually clears it.
+    """
+    global dfs_retry_count
+
+    if dfs_retry_count >= DFS_MAX_RETRIES:
+        print(f"{datetime.datetime.now()} - DFS salaries failed ({reason}) and "
+              f"{DFS_MAX_RETRIES} retries are already spent; leaving it to the next scheduled run.")
+        return
+
+    dfs_retry_count += 1
+    run_at = datetime.datetime.now() + datetime.timedelta(minutes=DFS_RETRY_DELAY_MINUTES)
+    try:
+        scheduler.add_job(
+            func=update_dfs_salaries_data,
+            trigger=DateTrigger(run_date=run_at),
+            id=f"dfs_salaries_retry_{dfs_retry_count}",
+            replace_existing=True,
+        )
+        print(f"{datetime.datetime.now()} - DFS salaries failed ({reason}); "
+              f"retry {dfs_retry_count}/{DFS_MAX_RETRIES} queued for {run_at:%H:%M}.")
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - Could not queue a DFS salaries retry: {e}")
+
+
 def update_dfs_salaries_data():
     """
     Update DFS salaries data by fetching from DailyFantasyFuel and matching to Sleeper IDs.
@@ -965,7 +1018,9 @@ def update_dfs_salaries_data():
     Also updates the current_nfl_week global variable based on DailyFantasyFuel data.
     """
     global dfs_salaries_data, last_dfs_salaries_update, all_players, current_nfl_week
-    
+    global dfs_last_attempt, dfs_last_error, dfs_retry_count
+
+    dfs_last_attempt = datetime.datetime.now()
     print(f"{datetime.datetime.now()} - Starting DFS salaries data update...")
     
     if USE_MOCK_DATA:
@@ -987,7 +1042,10 @@ def update_dfs_salaries_data():
         parsed_salaries = scraper.get_salaries_with_sleeper_ids(all_players, date=today)
         
         if not parsed_salaries:
+            # Usually the slate is not published yet rather than anything broken.
+            dfs_last_error = f"no slate data available for {today}"
             print(f"No DFS salary data scraped for {today}. Aborting DFS salaries update.")
+            _schedule_dfs_retry(dfs_last_error)
             return
         
         # Get current week - find the first player with a valid week (> 0), or fetch from Sleeper API
@@ -1094,7 +1152,9 @@ def update_dfs_salaries_data():
             print(f"Total salary differences: {len(salary_differences)} (salaries NOT updated in scheduled run)")
         
         last_dfs_salaries_update = datetime.datetime.now()
-        
+        dfs_last_error = None
+        dfs_retry_count = 0
+
         # Count matched players (those with numeric sleeper_id, not player name)
         matched_count = sum(1 for p in dfs_salaries_data.values() if p.get("sleeper_id") and str(p.get("sleeper_id")).isdigit())
         
@@ -1105,7 +1165,9 @@ def update_dfs_salaries_data():
         print(f"Date: {today}")
         
     except Exception as e:
+        dfs_last_error = str(e)
         print(f"Error updating DFS salaries data: {e}")
+        _schedule_dfs_retry(dfs_last_error)
 
 
 def get_fantasy_points_for_player(sleeper_id, week=None):
@@ -1533,6 +1595,20 @@ scheduler.add_job(
     trigger=CronTrigger(day_of_week="thu,sun,mon", hour=12, minute=0)
 )
 
+def dfs_points_override(sleeper_id, week):
+    """
+    An organiser-set figure for this player in this week, or None.
+
+    Deliberately tests for None rather than truthiness: an override of 0.0 is a
+    statement that the player scored nothing, not an absence of one.
+    """
+    entry = points_overrides.get(f"{sleeper_id}_{week}")
+    if not entry:
+        return None
+    points = entry.get('points')
+    return float(points) if points is not None else None
+
+
 def fetch_sleeper_matchup_points(week, league_ids=None):
     """
     Fetch matchup points from Sleeper API for given leagues and week.
@@ -1708,7 +1784,13 @@ def calculate_dfs_points_from_lineup(lineup_data, week, players_points=None):
             points = None
             source = None
 
-            if players_points is not None and sleeper_id in players_points:
+            # An organiser's correction outranks both sources below it.
+            override = dfs_points_override(sleeper_id, week)
+            if override is not None:
+                points = override
+                source = 'override'
+
+            if points is None and players_points is not None and sleeper_id in players_points:
                 points = float(players_points[sleeper_id])
                 source = 'sleeper'
 
@@ -1931,6 +2013,20 @@ def clear_tinyurl_data(delete_finished=True):
         for name in entries_to_delete:
             del tinyurl_data[name]
         
+        # Overrides are consumed by the week they belong to. Prune only on the pass
+        # that deletes: the Wednesday pass leaves results pages standing until
+        # Thursday, and dropping an override there would strip it from the display
+        # while the standings it produced kept it.
+        if delete_finished:
+            stale = [k for k, v in points_overrides.items()
+                     if isinstance(v, dict) and int(v.get('week', 0)) < current_week]
+            for k in stale:
+                del points_overrides[k]
+            if stale:
+                save_points_overrides()
+                print(f"{datetime.datetime.now()} - Removed {len(stale)} points override(s) "
+                      f"older than week {current_week}")
+
         # Save the cleaned data to persistent storage (always save, even if nothing was deleted)
         save_tinyurl_data()
         
@@ -2225,6 +2321,7 @@ def get_statistics():
         JSON response containing uptime, request counts per endpoint, and average requests per day.
     """
     global request_statistics, startup_time, last_players_update, last_rankings_update, last_fantasy_points_update, last_dfs_salaries_update, dfs_salaries_data
+    global dfs_last_attempt, dfs_last_error, dfs_retry_count
 
     try:
         # Calculate uptime
@@ -2267,7 +2364,12 @@ def get_statistics():
             "last_players_update": str(last_players_update) if last_players_update else "Never",
             "last_rankings_update": str(last_rankings_update) if last_rankings_update else "Never",
             "last_fantasy_points_update": str(last_fantasy_points_update) if last_fantasy_points_update else "Never",
-            "last_dfs_salaries_update": str(last_dfs_salaries_update) if last_dfs_salaries_update else "Never"
+            "last_dfs_salaries_update": str(last_dfs_salaries_update) if last_dfs_salaries_update else "Never",
+            # "Never" alone cannot tell never-ran from failed-early, which is why a
+            # silent DFS failure took log archaeology to spot.
+            "last_dfs_salaries_attempt": str(dfs_last_attempt) if dfs_last_attempt else "Never",
+            "dfs_salaries_error": dfs_last_error,
+            "dfs_salaries_retries_queued": dfs_retry_count,
         }
 
         # Filter valid endpoints
@@ -2511,10 +2613,19 @@ def admin_update_dfs_salaries():
         JSON response indicating success or failure.
     """
     try:
-        # Call the DFS salaries update method
-        update_dfs_salaries_data()
+        # The scrape takes minutes on the deployed instance while the hosting
+        # gateway gives up at 100 seconds, so a success used to come back as a
+        # 504. Run it in the background and let /statistics report the outcome.
+        threading.Thread(
+            target=update_dfs_salaries_data,
+            name="dfs-salaries-manual",
+            daemon=True,
+        ).start()
 
-        return jsonify({"message": "DFS salaries update triggered successfully."}), 200
+        return jsonify({
+            "message": "DFS salaries update started; watch /statistics for the outcome.",
+            "check": "/statistics",
+        }), 202
     except Exception as e:
         print(f"Error while triggering DFS salaries update: {e}")
         return jsonify({"error": str(e)}), 500
@@ -4309,10 +4420,112 @@ def recalc_tinyurl_standings(name):
     }), 200
 
 
+@app.route('/points-overrides/week/<int:week>', methods=['GET'])
+def get_points_overrides_for_week(week):
+    """
+    Organiser-set points for this week, as {sleeper_id: points}.
+
+    Deliberately ungated: the DFS results page shows these to whoever is looking
+    at a lineup, not only to the organiser who set them.
+    """
+    return jsonify({
+        "week": week,
+        "overrides": {
+            v['sleeper_id']: v['points']
+            for v in points_overrides.values()
+            if isinstance(v, dict) and v.get('week') == week
+        },
+    }), 200
+
+
+@app.route('/points-overrides', methods=['POST'])
+def set_points_override():
+    """
+    State a player's points for a week, above every other source.
+
+    Only bites on a week that has not been scored yet: scoring wipes the lineups
+    it read, so a settled week can no longer be recomputed from them. Setting one
+    for a past week is refused rather than stored where it could never apply.
+
+    Request body: {"sleeper_id": "3161", "week": 2, "points": 6.3}
+    """
+    global points_overrides
+
+    if not request_is_from_organiser():
+        return jsonify({"error": "This action is for tournament organisers only."}), 403
+
+    data = request.json or {}
+    sleeper_id = str(data.get('sleeper_id') or '').strip()
+    week = data.get('week')
+    points = data.get('points')
+
+    if not sleeper_id:
+        return jsonify({"error": "sleeper_id is required"}), 400
+    # A defence is keyed by its team code, everyone else by a numeric id; anything
+    # else is a typo that would sit in the store matching nothing.
+    if not (sleeper_id.isdigit() or sleeper_id.upper() in NFL_TEAM_CODES):
+        return jsonify({"error": f"'{sleeper_id}' is not a player id or team code"}), 400
+    if not isinstance(week, int):
+        return jsonify({"error": "week must be a whole number"}), 400
+    # 0 and negative are both legitimate scores, so test the type, not the value.
+    if isinstance(points, bool) or not isinstance(points, (int, float)):
+        return jsonify({"error": "points must be a number"}), 400
+
+    try:
+        current_week = FantasyDataScraper().get_league_week()
+    except Exception:
+        current_week = None
+    if current_week is not None and week < int(current_week):
+        return jsonify({
+            "error": f"week {week} has already been scored; an override there would never apply",
+            "current_week": int(current_week),
+        }), 400
+
+    identity = verify_sleeper_token(_sleeper_token_from_request()) or {}
+    points_overrides[f"{sleeper_id}_{week}"] = {
+        "sleeper_id": sleeper_id,
+        "week": week,
+        "points": float(points),
+        "set_by": identity.get('display_name'),
+        "set_at": datetime.datetime.now().isoformat(),
+    }
+    save_points_overrides()
+    print(f"{datetime.datetime.now()} - Points override set: {sleeper_id} week {week} = {points}")
+
+    return jsonify({
+        "sleeper_id": sleeper_id,
+        "week": week,
+        "points": float(points),
+        "applies": "when this week is scored, and on the results page now",
+    }), 200
+
+
+@app.route('/points-overrides/<sleeper_id>/<int:week>', methods=['DELETE'])
+def delete_points_override(sleeper_id, week):
+    """Drop an override, returning the player to the ordinary sources."""
+    global points_overrides
+
+    if not request_is_from_organiser():
+        return jsonify({"error": "This action is for tournament organisers only."}), 403
+
+    key = f"{sleeper_id}_{week}"
+    if key not in points_overrides:
+        return jsonify({"error": f"no override for {sleeper_id} in week {week}"}), 404
+
+    removed = points_overrides.pop(key)
+    save_points_overrides()
+    print(f"{datetime.datetime.now()} - Points override removed: {sleeper_id} week {week}")
+
+    return jsonify({"removed": removed}), 200
+
+
 @app.route('/tinyurl/<name>/set-points', methods=['POST'])
 def set_tinyurl_points(name):
     """
     Manually set points for a user for a specific week in a multiweek_dfs TinyURL entry.
+
+    Organiser-only: this rewrites a tournament's standings directly, and was
+    reachable by anyone until now.
     
     Request body:
     {
@@ -4328,6 +4541,9 @@ def set_tinyurl_points(name):
         JSON response indicating success or error
     """
     global tinyurl_data
+
+    if not request_is_from_organiser():
+        return jsonify({"error": "This action is for tournament organisers only."}), 403
     
     normalized_name = normalize_tinyurl_name(name)
     
@@ -5230,6 +5446,8 @@ def initialize_data_in_background():
         print(f"{datetime.datetime.now()} - Persistence: USE_GIST={USE_GIST}, GIST_ID={gist_mask}")
         load_tinyurl_data()
         load_tournament_data()
+        # Must be loaded before any scheduled scoring can fire.
+        load_points_overrides()
         
         # 1. Fetch and filter player data
         print(f"{datetime.datetime.now()} - Fetching and filtering player data...")

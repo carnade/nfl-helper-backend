@@ -24,7 +24,7 @@ class TestSupabaseKeyNamespacing:
 
     def test_dev_and_prod_keys_never_collide(self):
         keys = ("tinyurl_data", "tournament_data", "odds_cache",
-                "odds_history", "props_history")
+                "odds_history", "props_history", "points_overrides")
         with patch.object(nfl_helper, "SUPABASE_KEY_PREFIX", ""):
             prod = {nfl_helper._supabase_key(k) for k in keys}
         with patch.object(nfl_helper, "SUPABASE_KEY_PREFIX", "dev_"):
