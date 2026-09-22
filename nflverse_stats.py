@@ -597,25 +597,36 @@ def build_schedule_dicts(df: pd.DataFrame) -> tuple:
         }
         games_by_week.setdefault(week, []).append(game)
 
-    # team → most-recent-week game (iterate weeks in reverse so first hit wins)
+    # team → the game it is playing next. The whole season is published before
+    # kickoff, so walking the weeks backwards lands on week 18 for all 32 teams
+    # rather than on anything upcoming — which had every consumer of this dict
+    # rating players against their week-18 opponent all season.
+    #
+    # A game carries a null score until it is final, so the first unscored game a
+    # team appears in is the one being played now or played next.
     team_schedule: dict = {}
-    for week in sorted(games_by_week.keys(), reverse=True):
+    final_game: dict = {}
+    for week in sorted(games_by_week.keys()):
         for game in games_by_week[week]:
-            home, away = game["home_team"], game["away_team"]
-            if home not in team_schedule:
-                team_schedule[home] = {
-                    "week": week, "opponent": away,
-                    "spread": game["spread_line"], "total": game["total_line"],
-                    "is_home": True, "gameday": game["gameday"],
+            sides = (
+                (game["home_team"], game["away_team"], True,  game["spread_line"]),
+                (game["away_team"], game["home_team"], False, -game["spread_line"]),
+            )
+            for team, opponent, is_home, spread in sides:
+                entry = {
+                    "week": week, "opponent": opponent,
+                    "spread": spread, "total": game["total_line"],
+                    "is_home": is_home, "gameday": game["gameday"],
                     "home_score": game["home_score"], "away_score": game["away_score"],
                 }
-            if away not in team_schedule:
-                team_schedule[away] = {
-                    "week": week, "opponent": home,
-                    "spread": -game["spread_line"], "total": game["total_line"],
-                    "is_home": False, "gameday": game["gameday"],
-                    "home_score": game["home_score"], "away_score": game["away_score"],
-                }
+                final_game[team] = entry
+                if game["home_score"] is None and team not in team_schedule:
+                    team_schedule[team] = entry
+
+    # Once the season is over nothing is unscored. Keep each team's last game so
+    # the map still covers all 32 rather than emptying out in February.
+    for team, entry in final_game.items():
+        team_schedule.setdefault(team, entry)
 
     return team_schedule, games_by_week
 

@@ -369,6 +369,66 @@ class TestBuildScheduleDicts:
         assert games == {}
 
 
+class TestScheduleTracksTheNextGame:
+    """The whole season is published before week 1, so "the last game in the
+    file" is week 18 for all 32 teams — which is what every consumer of this
+    dict was being told all season. A game has no score until it is final, so
+    the first unscored one a team appears in is the game at hand.
+    """
+
+    SEASON = [
+        {"week": 1, "home_team": "MIA", "away_team": "IND", "home_score": 20, "away_score": 17},
+        {"week": 2, "home_team": "SF",  "away_team": "MIA", "home_score": 24, "away_score": 13},
+        {"week": 3, "home_team": "MIA", "away_team": "KC"},
+        {"week": 4, "home_team": "BUF", "away_team": "MIA"},
+        {"week": 18, "home_team": "NE", "away_team": "MIA"},
+    ]
+
+    def test_it_picks_the_next_unplayed_game(self):
+        sched, _ = ns.build_schedule_dicts(_make_games_df(self.SEASON))
+
+        assert sched["MIA"]["week"] == 3
+        assert sched["MIA"]["opponent"] == "KC"
+
+    def test_it_does_not_pick_the_last_week_of_the_season(self):
+        sched, _ = ns.build_schedule_dicts(_make_games_df(self.SEASON))
+
+        assert sched["MIA"]["opponent"] != "NE", "week 18 is not the next game"
+
+    def test_a_game_in_progress_is_still_the_current_one(self):
+        """Kickoff does not post a score, so Sunday afternoon keeps showing the
+        game being played rather than jumping to next week."""
+        sched, _ = ns.build_schedule_dicts(_make_games_df(self.SEASON))
+
+        assert sched["KC"]["week"] == 3
+        assert sched["KC"]["opponent"] == "MIA"
+
+    def test_a_completed_season_falls_back_to_the_final_game(self):
+        played = [{**g, "home_score": 21, "away_score": 14} for g in self.SEASON]
+        sched, _ = ns.build_schedule_dicts(_make_games_df(played))
+
+        assert sched["MIA"]["week"] == 18, "every team should still be present"
+        assert sched["MIA"]["opponent"] == "NE"
+
+    def test_a_bye_week_is_skipped(self):
+        sched, _ = ns.build_schedule_dicts(_make_games_df([
+            {"week": 1, "home_team": "MIA", "away_team": "IND", "home_score": 20, "away_score": 17},
+            {"week": 2, "home_team": "SF",  "away_team": "KC"},
+            {"week": 3, "home_team": "MIA", "away_team": "NE"},
+        ]))
+
+        assert sched["MIA"]["week"] == 3
+
+    def test_the_away_spread_is_still_inverted(self):
+        sched, _ = ns.build_schedule_dicts(_make_games_df([
+            {"week": 3, "home_team": "MIA", "away_team": "KC", "spread_line": -3.0},
+        ]))
+
+        assert sched["MIA"]["spread"] == pytest.approx(-3.0)
+        assert sched["KC"]["spread"] == pytest.approx(3.0)
+        assert sched["KC"]["is_home"] is False
+
+
 # ── get_top_players ───────────────────────────────────────────────────────────
 
 class TestGetTopPlayers:
