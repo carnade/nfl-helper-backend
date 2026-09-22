@@ -6,7 +6,7 @@ import datetime
 
 from flask import Blueprint, jsonify, request
 import odds_api as oa
-from nflverse_stats import nflverse_team_stats, nflverse_schedule, nflverse_games
+from nflverse_stats import nflverse_team_stats, nflverse_games
 
 odds_bp = Blueprint("odds", __name__, url_prefix="/odds")
 
@@ -110,8 +110,11 @@ def all_games():
         entry = dict(g)
         total_line = (g.get("total") or {}).get("line")
         entry["ou_eval"] = _ou_eval(g.get("home_abbr", ""), g.get("away_abbr", ""), total_line)
-        sched = nflverse_schedule.get(g.get("home_abbr", "")) or nflverse_schedule.get(g.get("away_abbr", ""))
-        entry["nfl_week"] = sched.get("week") if sched else None
+        # nflverse_schedule holds only each team's most recent game, which leaves it
+        # pinned to the last week of the season — every upcoming game came back as
+        # week 18. The kickoff time places a game exactly, and the graded results
+        # already use this.
+        entry["nfl_week"] = oa._week_for_commence(g.get("commence_time"))
         result.append(entry)
     return jsonify(result)
 
@@ -153,8 +156,7 @@ def all_props():
         entry = dict(p)
         if market:
             entry["props"] = {market: props[market]}
-        sched = nflverse_schedule.get(p.get("home_abbr", "")) or nflverse_schedule.get(p.get("away_abbr", ""))
-        entry["nfl_week"] = sched.get("week") if sched else None
+        entry["nfl_week"] = oa._week_for_commence(p.get("commence_time"))
         result.append(entry)
 
     return jsonify(result)
