@@ -670,7 +670,12 @@ def _compute_value_flags(
                 if diff > threshold:
                     value_flag = "over"
                     value_pct  = round(diff, 3)
-                elif diff < -threshold:
+                # No book prices the player *not* scoring, so an under on a yes/no
+                # market is a call that could never be placed. It also fires
+                # constantly — a player yet to score projects 0.0, which is under
+                # every price going — and it comes in whenever he simply does not
+                # score, which flattered the hit rate badly.
+                elif diff < -threshold and not is_binary:
                     value_flag = "under"
                     value_pct  = round(diff, 3)
 
