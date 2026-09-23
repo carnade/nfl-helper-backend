@@ -295,6 +295,14 @@ def load_tinyurl_data():
         print(f"{datetime.datetime.now()} - Loading tinyurl_data from local file")
         _load_tinyurl_data_from_file()
 
+    # Standings written before they were keyed case-insensitively can hold the
+    # same entrant twice. Fold those together once, here, rather than leaving a
+    # split season on the board until someone notices.
+    merged = merge_case_split_standings(tinyurl_data)
+    if merged:
+        print(f"{datetime.datetime.now()} - Merged {merged} case-split standings row(s)")
+        save_tinyurl_data()
+
 
 def _load_tinyurl_data_from_supabase():
     """Load tinyurl_data from Supabase"""
@@ -1921,10 +1929,7 @@ def clear_tinyurl_data(delete_finished=True):
                                 week_points = 0.0
                                 print(f"{datetime.datetime.now()} - User '{username}' had no lineup for week {entry_week} (0 points)")
 
-                            if username not in entry['standings']:
-                                entry['standings'][username] = {'total_points': 0.0, 'week_points': {}, 'last_updated': current_time}
-
-                            standings_entry = entry['standings'][username]
+                            standings_entry = standings_bucket(entry, username, current_time)
                             standings_entry['week_points'][str(entry_week)] = week_points
                             standings_entry['total_points'] = sum(standings_entry['week_points'].values())
                             standings_entry['last_updated'] = current_time
@@ -2892,6 +2897,80 @@ def normalize_tinyurl_name(name):
     Returns the normalized name.
     """
     return name.lower() if name else name
+
+
+def standings_bucket(entry, username, current_time):
+    """
+    The standings row for one entrant, keyed case-insensitively.
+
+    user_submissions has always been keyed by the normalized name, but standings
+    were keyed by whatever capitalisation the entrant happened to type that week.
+    Entering as "User" one week and "user" the next therefore opened a second row
+    and split the season across the two, which both reads wrong and ranks the
+    entrant below people they are actually beating.
+
+    The key is normalized; the name as typed rides along so the table still shows
+    it the way they wrote it.
+    """
+    standings = entry.setdefault('standings', {})
+    key = normalize_tinyurl_name(username)
+    bucket = standings.get(key)
+    if bucket is None:
+        bucket = {'total_points': 0.0, 'week_points': {}, 'last_updated': current_time}
+        standings[key] = bucket
+    if username:
+        bucket['display_name'] = username
+    return bucket
+
+
+def standings_display_name(key, stats):
+    """The name as the entrant typed it, falling back to the key for old rows."""
+    return stats.get('display_name') or key
+
+
+def merge_case_split_standings(data):
+    """
+    Fold standings rows that differ only by capitalisation onto one key.
+
+    Runs once at load for data written before standings were keyed normalized.
+    Where both rows hold the same week the newer one wins, since that is the
+    figure a later scoring pass produced.
+    """
+    merged_rows = 0
+    for entry in (data or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        standings = entry.get('standings')
+        if not isinstance(standings, dict) or not standings:
+            continue
+
+        rebuilt = {}
+        for key, stats in standings.items():
+            if not isinstance(stats, dict):
+                continue
+            norm = normalize_tinyurl_name(key)
+            existing = rebuilt.get(norm)
+            if existing is None:
+                stats.setdefault('display_name', key)
+                rebuilt[norm] = stats
+                continue
+
+            merged_rows += 1
+            newer = (stats.get('last_updated') or '') > (existing.get('last_updated') or '')
+            weeks = dict(existing.get('week_points') or {})
+            for week, points in (stats.get('week_points') or {}).items():
+                if week not in weeks or newer:
+                    weeks[week] = points
+            existing['week_points'] = weeks
+            existing['total_points'] = sum(weeks.values())
+            if newer:
+                existing['display_name'] = stats.get('display_name') or key
+                existing['last_updated'] = stats.get('last_updated') or existing.get('last_updated')
+
+        if len(rebuilt) != len(standings) or set(rebuilt) != set(standings):
+            entry['standings'] = rebuilt
+
+    return merged_rows
 
 
 # ── Sleeper login verification ───────────────────────────────────────────────
@@ -4330,7 +4409,7 @@ def get_tinyurl_standings(name):
     standings_list = []
     for username, stats in standings.items():
         standings_list.append({
-            'username': username,
+            'username': standings_display_name(username, stats),
             'total_points': stats.get('total_points', 0.0),
             'week_points': stats.get('week_points', {}),
             'last_updated': stats.get('last_updated')
@@ -4393,10 +4472,7 @@ def recalc_tinyurl_standings(name):
         username = user_data.get('username', normalized_username)
         lineup_data = user_data.get('data')
 
-        if username not in entry['standings']:
-            entry['standings'][username] = {'total_points': 0.0, 'week_points': {}, 'last_updated': current_time}
-
-        standings_entry = entry['standings'][username]
+        standings_entry = standings_bucket(entry, username, current_time)
 
         if lineup_data and entry_week is not None:
             print(f"{datetime.datetime.now()} - Calculating points for '{username}' in week {entry_week}...")
@@ -4583,16 +4659,8 @@ def set_tinyurl_points(name):
     
     current_time = datetime.datetime.now().isoformat()
     
-    # Initialize user standings if not exists
-    if username not in entry['standings']:
-        entry['standings'][username] = {
-            'total_points': 0.0,
-            'week_points': {},
-            'last_updated': current_time
-        }
-    
-    standings_entry = entry['standings'][username]
-    
+    standings_entry = standings_bucket(entry, username, current_time)
+
     standings_entry['week_points'][str(week)] = points
     
     # Recalculate total points
