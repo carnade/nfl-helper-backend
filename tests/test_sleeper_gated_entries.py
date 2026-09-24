@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 nfl_helper = sys.modules["nfl_helper"]
 
-from conftest import make_lineup_string, create_entry
+from conftest import make_lineup_string, make_full_lineup_string, create_entry
 
 
 ALICE = {"user_id": "111", "display_name": "alice"}
@@ -40,7 +40,7 @@ def verified():
 
 def submit(client, entry, name=None, token=None, data=None):
     headers = {"Authorization": token} if token else {}
-    body = {"data": data or make_lineup_string(8, ["11111-5000"])}
+    body = {"data": data or make_full_lineup_string(8)}
     if name is not None:
         body["name"] = name
     return client.post(f"/tinyurl/{entry}/add", json=body, headers=headers)
@@ -280,7 +280,7 @@ class TestOpenOnlyForTheFirstWeek:
 
         # alice holds a valid Sleeper login but did not enter week one
         resp = submit(client, "cup", name="alice", token="good-token",
-                      data=make_lineup_string(8, ["11111-5000"]))
+                      data=make_full_lineup_string(8))
 
         assert resp.status_code == 401
 
@@ -289,7 +289,7 @@ class TestOpenOnlyForTheFirstWeek:
         self.advance(client, 8)
 
         resp = submit(client, "cup", name="alice",
-                      data=make_lineup_string(8, ["11111-5000"]))
+                      data=make_full_lineup_string(8))
 
         assert resp.status_code == 200
 
@@ -356,7 +356,7 @@ class TestRemoveEntrant:
         self.setup_tournament()
         client.delete("/tinyurl/cup/entrants/alice")
 
-        resp = submit(client, "cup", name="alice", data=make_lineup_string(8, ["11111-5000"]))
+        resp = submit(client, "cup", name="alice", data=make_full_lineup_string(8))
 
         assert resp.status_code == 401
 
@@ -421,7 +421,7 @@ class TestLoadingOwnLineupOnSleeperEntries:
         entry["access_mode"] = access_mode
         if access_mode == "sleeper":
             entry["allowed_names"] = []
-        submit_body = {"data": make_lineup_string(8, ["11111-5000"]), "pin": "1234"}
+        submit_body = {"data": make_full_lineup_string(8), "pin": "1234"}
         if access_mode != "sleeper":
             submit_body["name"] = "alice"
         resp = client.post("/tinyurl/cup/add", json=submit_body,
@@ -499,7 +499,7 @@ class TestAvailableReportsWhatTheLoginOpens:
         entry["access_mode"] = access_mode
         if access_mode == "sleeper":
             entry["allowed_names"] = []
-        body = {"data": make_lineup_string(8, ["11111-5000"])}
+        body = {"data": make_full_lineup_string(8)}
         if pin:
             body["pin"] = pin
         if access_mode != "sleeper":

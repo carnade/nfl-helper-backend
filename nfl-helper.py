@@ -3131,6 +3131,126 @@ def _localize_datetime(naive_dt, tz):
         return naive_dt.replace(tzinfo=tz)
 
 
+# A DFS lineup is QB, RB, RB, WR, WR, WR, TE, FLEX, DST. The page builds exactly
+# these nine slots and drops the empty ones when encoding, so an unfinished
+# lineup arrives as a shorter list rather than as anything malformed.
+DFS_LINEUP_SLOTS = 9
+
+
+def _lineup_slot_tokens(lineup_data):
+    """
+    The per-slot tokens in an encoded lineup, or None if it cannot be read.
+
+    Counts slots that were filled, not players we can identify: a manual entry
+    encodes a name where a Sleeper id would go, and that slot is still filled.
+    """
+    if not lineup_data or '|' not in lineup_data:
+        return None
+
+    base64_data = lineup_data.split('|', 1)[1]
+    if not base64_data:
+        # Decoded fine, to nothing at all. That is zero slots, not unreadable.
+        return []
+
+    decoded_string = _decode_lineup_payload(base64_data)
+    if not decoded_string:
+        return None
+
+    tokens = []
+    for pair in decoded_string.split(','):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if '-' in pair:
+            token = pair.split('-', 1)[0].strip()
+            # The first pair carries the "username:" prefix.
+            if ':' in token:
+                token = token.split(':')[-1].strip()
+        elif ':' in pair:
+            # The legacy "id:salary" form. A trailing colon with nothing after
+            # it is the username prefix on an otherwise empty lineup, not a slot.
+            head, tail = pair.split(':', 1)
+            token = head.strip() if tail.strip() else ''
+        else:
+            token = pair
+        if token:
+            tokens.append(token)
+    return tokens
+
+
+def _decode_lineup_payload(base64_data):
+    """
+    The player list inside an encoded lineup, or None.
+
+    The page compresses with LZString's compressToEncodedURIComponent, whose
+    output is not always valid base64 — decoding it as base64 first fails
+    outright for a good share of real lineups, so that is tried second rather
+    than first. Each step gets its own guard: one raising must not stop the
+    rest, which is how a URL-safe payload used to take the whole ladder down.
+    """
+    import base64
+    import zlib
+
+    def looks_like_a_lineup(text):
+        return bool(text) and ('-' in text or ':' in text)
+
+    try:
+        import lzstring
+        lzs = lzstring.LZString()
+    except ImportError:
+        try:
+            from lz_string import LZString
+            lzs = LZString()
+        except ImportError:
+            lzs = None
+
+    standard = base64_data.replace('-', '+').replace('_', '/')
+    standard += '=' * (-len(standard) % 4)
+    padded = base64_data + '=' * (-len(base64_data) % 4)
+
+    attempts = []
+    if lzs is not None:
+        attempts.append(lambda: lzs.decompressFromEncodedURIComponent(base64_data))
+    attempts.append(lambda: base64.b64decode(padded).decode('utf-8'))
+    attempts.append(lambda: base64.urlsafe_b64decode(padded).decode('utf-8'))
+    if lzs is not None:
+        attempts.append(lambda: lzs.decompressFromBase64(base64_data))
+        attempts.append(lambda: lzs.decompressFromBase64(standard))
+    attempts.append(lambda: zlib.decompress(base64.b64decode(padded)).decode('utf-8'))
+
+    for attempt in attempts:
+        try:
+            decoded = attempt()
+        except Exception:
+            continue
+        if looks_like_a_lineup(decoded):
+            return decoded
+    return None
+
+
+def validate_lineup_is_complete(lineup_data):
+    """
+    Every slot filled. Returns (is_valid, error_message).
+
+    Unlike the kickoff check this is not about timing, so it is not something
+    skip_validation may wave through: a lineup missing a player is not a lineup,
+    whenever it is sent. An undecodable lineup is left to the checks that
+    already deal with that rather than refused twice.
+    """
+    tokens = _lineup_slot_tokens(lineup_data)
+    if tokens is None:
+        return True, None
+
+    if len(tokens) != DFS_LINEUP_SLOTS:
+        missing = DFS_LINEUP_SLOTS - len(tokens)
+        if missing > 0:
+            return False, (f"Lineup is incomplete: {len(tokens)} of {DFS_LINEUP_SLOTS} "
+                           f"slots filled, {missing} still empty")
+        return False, (f"Lineup has too many players: {len(tokens)}, "
+                       f"expected {DFS_LINEUP_SLOTS}")
+    return True, None
+
+
 def validate_lineup_players_not_started(lineup_data):
     """
     Validate that no players in the lineup have started their games yet.
@@ -4789,6 +4909,13 @@ def add_to_tinyurl(tinyurl_name):
             if normalized_username not in normalized_allowed_names:
                 return jsonify({"error": "Not allowed username"}), 401
         
+        # A short lineup is invalid whenever it arrives, so this sits outside
+        # skip_validation — which is caller-supplied and would otherwise wave it
+        # through for anyone who asked.
+        is_complete, incomplete_msg = validate_lineup_is_complete(url_data)
+        if not is_complete:
+            return jsonify({"error": incomplete_msg}), 400
+
         # Initialize user_submissions if it doesn't exist
         if 'user_submissions' not in entry:
             entry['user_submissions'] = {}

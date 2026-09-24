@@ -58,10 +58,27 @@ def reset_globals():
 def make_lineup_string(week: int, player_entries: list) -> str:
     """Build a lineup data string the backend can decode.
     player_entries: list like ["12345:QB", "67890:RB"]
+
+    Free to be as short as the test needs — the scoring path sums whatever it is
+    given. Anything posted to /add needs make_full_lineup_string instead, since
+    that route now insists on a complete lineup.
     """
     content = ",".join(player_entries)
     encoded = base64.b64encode(content.encode()).decode()
     return f"{week}|{encoded}"
+
+
+def make_full_lineup_string(week: int, first_id: str = "11111") -> str:
+    """A lineup with all nine slots filled, which is what /add will accept.
+
+    The first id is settable so a test can still say which player is in it; the
+    rest are filler, because only the count is under test here.
+    """
+    entries = [f"{first_id}-5000"]
+    entries += [f"{2000 + i}-4000" for i in range(nfl_helper.DFS_LINEUP_SLOTS - 2)]
+    entries.append("CHI-3000")
+    assert len(entries) == nfl_helper.DFS_LINEUP_SLOTS
+    return make_lineup_string(week, entries)
 
 
 def create_entry(name="testleague", week=8, allowed_names=None, entry_type="single",
