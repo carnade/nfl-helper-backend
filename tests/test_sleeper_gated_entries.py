@@ -404,8 +404,16 @@ class TestMultiweekProgress:
 
 
 class TestLoadingOwnLineupOnSleeperEntries:
-    """A PIN keeps strangers out of a lineup. On a Sleeper-gated entry the token
-    already establishes who is asking, so the owner is let in without one."""
+    """A PIN keeps strangers out of a lineup. A verified token establishes who is
+    asking at least as well, so the owner is let in without one.
+
+    This was once limited to Sleeper-gated entries, on the reasoning that an
+    allowlist holds names anyone could claim. But a multiweek tournament turns
+    into an allowlist the moment its field locks after week one, so the proof the
+    entrant logged in with stopped working a week into every tournament that used
+    it. The token is checked against the name the lineup was filed under either
+    way, so how the tournament admits people has no bearing on it.
+    """
 
     def _entry_with_pinned_lineup(self, client, verified, access_mode="sleeper"):
         normalized = create_entry("cup", allowed_names=["alice"])
@@ -448,12 +456,89 @@ class TestLoadingOwnLineupOnSleeperEntries:
         assert body.get("pin_required") is True
         assert body["data"] is None
 
-    def test_allowlist_entries_still_demand_the_pin(self, client, verified):
+    def test_an_allowlist_entry_accepts_the_login_too(self, client, verified):
+        """Previously refused, which is what a locked tournament turns into."""
         self._entry_with_pinned_lineup(client, verified, access_mode="allowlist")
+        body = client.get("/tinyurl/cup/data?username=alice",
+                          headers={"Authorization": "tok"}).get_json()
+        assert not body.get("pin_required")
+        assert body["data"]
+
+    def test_an_allowlist_entry_still_refuses_a_stranger(self, client, verified):
+        self._entry_with_pinned_lineup(client, verified, access_mode="allowlist")
+        verified.return_value = {"user_id": "222", "display_name": "bob"}
         body = client.get("/tinyurl/cup/data?username=alice",
                           headers={"Authorization": "tok"}).get_json()
         assert body.get("pin_required") is True
         assert body["data"] is None
+
+    def test_a_locked_tournament_still_opens_for_its_entrants(self, client, verified):
+        """The week-one lock rewrites access_mode to allowlist. That closes the
+        field, and used to close the entrants out of their own lineups with it."""
+        self._entry_with_pinned_lineup(client, verified)
+        nfl_helper.tinyurl_data["cup"]["access_mode"] = "allowlist"
+        nfl_helper.tinyurl_data["cup"]["allowed_names"] = ["alice"]
+
+        body = client.get("/tinyurl/cup/data?username=alice",
+                          headers={"Authorization": "tok"}).get_json()
+
+        assert not body.get("pin_required")
+        assert body["data"]
+
+
+class TestAvailableReportsWhatTheLoginOpens:
+    """The load button has to know a lineup it can open from one it cannot.
+
+    Without this it can only see access_mode and has_pin, so it offered a PIN box
+    for a lineup with no PIN and disabled the button entirely for the owner.
+    """
+
+    def _entry(self, client, access_mode="allowlist", pin=None):
+        normalized = create_entry("cup", allowed_names=["alice"])
+        entry = nfl_helper.tinyurl_data[normalized]
+        entry["access_mode"] = access_mode
+        if access_mode == "sleeper":
+            entry["allowed_names"] = []
+        body = {"data": make_lineup_string(8, ["11111-5000"])}
+        if pin:
+            body["pin"] = pin
+        if access_mode != "sleeper":
+            body["name"] = "alice"
+        assert client.post("/tinyurl/cup/add", json=body,
+                           headers={"Authorization": "tok"}).status_code == 200
+
+    def _entry_info(self, client, username="alice", token="tok"):
+        headers = {"Authorization": token} if token else {}
+        body = client.get(f"/tinyurl/{username}/available", headers=headers).get_json()
+        return body["entries"][0]
+
+    def test_the_owner_is_told_their_login_opens_it(self, client, verified):
+        self._entry(client)
+        assert self._entry_info(client)["can_open_with_login"] is True
+
+    def test_it_holds_for_a_lineup_with_no_pin(self, client, verified):
+        """The case that had the button disabled outright."""
+        self._entry(client)
+        info = self._entry_info(client)
+        assert info["has_pin"] is False
+        assert info["has_data"] is True
+        assert info["can_open_with_login"] is True
+
+    def test_a_different_account_is_not(self, client, verified):
+        self._entry(client, pin="1234")
+        verified.return_value = {"user_id": "222", "display_name": "bob"}
+        assert self._entry_info(client)["can_open_with_login"] is False
+
+    def test_without_a_token_it_is_not(self, client, verified):
+        self._entry(client, pin="1234")
+        verified.return_value = None
+        assert self._entry_info(client, token=None)["can_open_with_login"] is False
+
+    def test_a_sleeper_entry_still_reports_its_access_mode(self, client, verified):
+        self._entry(client, access_mode="sleeper")
+        info = self._entry_info(client)
+        assert info["access_mode"] == "sleeper"
+        assert info["can_open_with_login"] is True
 
 
 class TestClearingOneLineup:
