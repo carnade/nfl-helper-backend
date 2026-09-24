@@ -3676,16 +3676,21 @@ def get_tinyurl_data(name):
         
         user_data = user_submissions[normalized_username]
 
-        # A Sleeper-gated entry already proves who is asking: the lineup was filed
-        # under the display name of a verified token, so a token resolving to that
-        # same account identifies its owner at least as well as the PIN does. The
-        # PIN exists to stop anyone opening someone else's lineup by typing their
-        # name, which is still exactly the risk on an allowlist entry, so it keeps
-        # guarding those.
+        # A verified Sleeper login identifies the owner at least as well as the
+        # PIN does: the lineup is filed under a display name, and the account
+        # behind it is the one thing a stranger cannot simply type.
+        #
+        # This used to be accepted only on Sleeper-gated entries, on the reasoning
+        # that an allowlist holds names anyone could claim. But a multiweek
+        # tournament stops being Sleeper-gated the moment its field locks after
+        # the first week, so the proof the entrant logged in with quietly stopped
+        # working a week into every tournament that used it. The token is checked
+        # against the name the lineup was filed under either way, so how the
+        # tournament admits people has no bearing on whether it is theirs.
         # Only worth asking Sleeper when a PIN would otherwise be demanded: verifying
         # costs a round-trip, and nothing else here depends on the answer.
         owns_via_sleeper_login = False
-        if 'pin' in user_data and not is_results_view and entry_is_sleeper_open(entry):
+        if 'pin' in user_data and not is_results_view:
             identity = verify_sleeper_token(_sleeper_token_from_request())
             if identity:
                 identity_name = normalize_tinyurl_name(identity.get('display_name') or '')
@@ -3949,6 +3954,8 @@ def get_tinyurls_by_username(username):
     # any caller presenting a token we can verify. Verified once here rather than
     # per entry — this runs on every DFS page load.
     sleeper_identity = verify_sleeper_token(_sleeper_token_from_request())
+    identity_name = normalize_tinyurl_name(
+        (sleeper_identity or {}).get('display_name') or '')
 
     matching_entries = []
     for entry_name, entry_data in tinyurl_data.items():
@@ -3988,7 +3995,12 @@ def get_tinyurls_by_username(username):
                 entry_info = {
                     "name": display_name,
                     "has_data": user_has_data,
-                    "has_pin": has_pin
+                    "has_pin": has_pin,
+                    # Whether this caller's login alone opens the lineup, which no
+                    # longer depends on how the tournament admits people. Without
+                    # it the page cannot tell a lineup it can open from one it
+                    # cannot, and offers a PIN box for a lineup that has no PIN.
+                    "can_open_with_login": bool(identity_name) and identity_name == lookup_username,
                 }
                 # Include week if present
                 if 'week' in entry_data:
