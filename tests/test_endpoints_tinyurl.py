@@ -3,7 +3,7 @@ import pytest
 
 nfl_helper = sys.modules["nfl_helper"]
 
-from conftest import make_lineup_string, create_entry
+from conftest import make_lineup_string, make_full_lineup_string, create_entry
 
 
 class TestCreateEmpty:
@@ -77,7 +77,7 @@ class TestCreateEmpty:
 class TestAddToTinyurl:
     def test_first_submission_success(self, client):
         create_entry("league", week=8, allowed_names=["alice", "bob"])
-        lineup = make_lineup_string(8, ["12345:QB"])
+        lineup = make_full_lineup_string(8, "12345")
         resp = client.post("/tinyurl/league/add", json={
             "name": "alice", "data": lineup, "skip_validation": True
         })
@@ -86,7 +86,7 @@ class TestAddToTinyurl:
 
     def test_second_submission_increments_count(self, client):
         create_entry("league", week=8, allowed_names=["alice"])
-        lineup = make_lineup_string(8, ["12345:QB"])
+        lineup = make_full_lineup_string(8, "12345")
         client.post("/tinyurl/league/add", json={"name": "alice", "data": lineup, "skip_validation": True})
         resp = client.post("/tinyurl/league/add", json={"name": "alice", "data": lineup, "skip_validation": True})
         assert resp.status_code == 200
@@ -95,27 +95,27 @@ class TestAddToTinyurl:
     def test_unauthorized_user_returns_401(self, client):
         create_entry("league", week=8, allowed_names=["alice"])
         resp = client.post("/tinyurl/league/add", json={
-            "name": "charlie", "data": make_lineup_string(8, ["1:QB"]), "skip_validation": True
+            "name": "charlie", "data": make_full_lineup_string(8), "skip_validation": True
         })
         assert resp.status_code == 401
 
     def test_nonexistent_entry_returns_404(self, client):
         resp = client.post("/tinyurl/ghost/add", json={
-            "name": "alice", "data": make_lineup_string(8, ["1:QB"]), "skip_validation": True
+            "name": "alice", "data": make_full_lineup_string(8), "skip_validation": True
         })
         assert resp.status_code == 404
 
     def test_case_insensitive_username_match(self, client):
         create_entry("league", week=8, allowed_names=["Alice"])
         resp = client.post("/tinyurl/league/add", json={
-            "name": "alice", "data": make_lineup_string(8, ["1:QB"]), "skip_validation": True
+            "name": "alice", "data": make_full_lineup_string(8), "skip_validation": True
         })
         assert resp.status_code == 200
 
     def test_entry_without_allowed_names_returns_400(self, client):
         nfl_helper.tinyurl_data["bare"] = {"name": "bare", "week": 8, "allowed_names": []}
         resp = client.post("/tinyurl/bare/add", json={
-            "name": "alice", "data": make_lineup_string(8, ["1:QB"]), "skip_validation": True
+            "name": "alice", "data": make_full_lineup_string(8), "skip_validation": True
         })
         assert resp.status_code == 400
 
