@@ -190,6 +190,66 @@ class TestEndpoints:
         assert resp.status_code == 400
         assert "already been scored" in resp.get_json()["error"]
 
+    def test_a_week_still_holding_lineups_is_allowed(self, client, organiser):
+        """The Tuesday window, which used to be refused.
+
+        Sleeper rolls its week on Tuesday; the scoring pass does not run until
+        Wednesday 06:00. In between, a week reads as past while its lineups sit
+        there waiting — and that is exactly when someone notices a wrong score.
+        Seen live: Sleeper on week 4, the tournament still on week 3 holding
+        fourteen lineups, and the override refused as "already scored".
+        """
+        create_entry("cup", week=6, entry_type="multiweek_dfs", num_weeks=4, start_week=3)
+        nfl_helper.tinyurl_data["cup"]["user_submissions"] = {
+            "alice": {"username": "alice", "data": make_lineup_string(6, ["11111-5000"])}
+        }
+
+        # get_league_week() is 7, so week 6 reads as past.
+        resp = client.post("/points-overrides",
+                           json={"sleeper_id": "3161", "week": 6, "points": 6.3},
+                           headers=auth())
+
+        assert resp.status_code == 200, resp.get_json()
+        assert nfl_helper.points_overrides["3161_6"]["points"] == 6.3
+
+    def test_a_week_whose_lineups_are_gone_is_still_refused(self, client, organiser):
+        """Same week, but scoring has been and cleared them."""
+        create_entry("cup", week=6, entry_type="multiweek_dfs", num_weeks=4, start_week=3)
+        nfl_helper.tinyurl_data["cup"]["user_submissions"] = {}
+
+        resp = client.post("/points-overrides",
+                           json={"sleeper_id": "3161", "week": 6, "points": 6.3},
+                           headers=auth())
+
+        assert resp.status_code == 400
+        assert "lineups cleared" in resp.get_json()["error"]
+
+    def test_another_tournament_on_another_week_does_not_open_the_door(self, client, organiser):
+        """Lineups held for week 7 say nothing about week 5."""
+        create_entry("cup", week=7, entry_type="multiweek_dfs")
+        nfl_helper.tinyurl_data["cup"]["user_submissions"] = {
+            "alice": {"username": "alice", "data": make_lineup_string(7, ["11111-5000"])}
+        }
+
+        resp = client.post("/points-overrides",
+                           json={"sleeper_id": "3161", "week": 5, "points": 6.3},
+                           headers=auth())
+
+        assert resp.status_code == 400
+
+    def test_a_single_week_entry_does_not_open_the_door(self, client, organiser):
+        """Only multiweek tournaments are scored by the pass this guards."""
+        create_entry("oneoff", week=6, entry_type="single")
+        nfl_helper.tinyurl_data["oneoff"]["user_submissions"] = {
+            "alice": {"username": "alice", "data": make_lineup_string(6, ["11111-5000"])}
+        }
+
+        resp = client.post("/points-overrides",
+                           json={"sleeper_id": "3161", "week": 6, "points": 6.3},
+                           headers=auth())
+
+        assert resp.status_code == 400
+
     def test_zero_is_accepted(self, client, organiser):
         resp = client.post("/points-overrides",
                            json={"sleeper_id": "3161", "week": 7, "points": 0},
