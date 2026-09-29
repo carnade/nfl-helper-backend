@@ -110,6 +110,12 @@ ODDS_API_KEY = os.environ.get('ODDS_API_KEY')
 # Sleeper leagues used to score DFS lineups. These must be leagues for the CURRENT
 # season — a completed prior-season league still answers /matchups/<week> with that
 # season's points, which scores silently and wrongly.
+#
+# There is more than one only because a single league caps at 32 rosters and more
+# players are needed than that. The overflow lives in a second league, so which
+# one a player sits in is an artifact of capacity and carries no meaning: every
+# league here is merged alike, and nothing may read one in preference to another.
+# The frontend keeps its own copy in DFS_SCORING_LEAGUE_IDS — change both together.
 DFS_SCORING_LEAGUE_IDS = [
     lid.strip() for lid in os.environ.get(
         'DFS_SCORING_LEAGUE_IDS',
