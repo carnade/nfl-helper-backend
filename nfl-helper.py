@@ -3059,6 +3059,28 @@ def request_is_from_organiser():
     return (identity.get('display_name') or '').strip().lower() in ADMIN_SLEEPER_USERS
 
 
+def week_awaiting_scoring(week):
+    """True while some tournament still holds its lineups for that week.
+
+    Asking the clock is not good enough. Sleeper rolls its own week on Tuesday,
+    but the scoring pass does not run until Wednesday 06:00, so for most of a day
+    and a half a week reads as past while its lineups sit there untouched —
+    which is precisely when someone notices a wrong score and goes to correct it.
+    Ask the data instead: if the lineups are still there, scoring has not run and
+    an override will be picked up when it does.
+    """
+    for entry in tinyurl_data.values():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get('type') != 'multiweek_dfs':
+            continue
+        if entry.get('week') != week:
+            continue
+        if entry.get('user_submissions'):
+            return True
+    return False
+
+
 def entry_is_sleeper_open(entry):
     """True when the entry admits any verified Sleeper login rather than a list."""
     return entry.get('access_mode') == 'sleeper'
@@ -4689,9 +4711,14 @@ def set_points_override():
         current_week = FantasyDataScraper().get_league_week()
     except Exception:
         current_week = None
-    if current_week is not None and week < int(current_week):
+    # Refuse only a week nothing can still act on. A week that reads as past but
+    # whose lineups are still waiting to be scored is the one case where setting
+    # an override matters most, and it used to be the one case that was blocked.
+    if (current_week is not None and week < int(current_week)
+            and not week_awaiting_scoring(week)):
         return jsonify({
-            "error": f"week {week} has already been scored; an override there would never apply",
+            "error": f"week {week} has already been scored and its lineups cleared, "
+                     f"so an override there would never apply",
             "current_week": int(current_week),
         }), 400
 
