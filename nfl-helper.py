@@ -69,6 +69,29 @@ def after_request(response):
 
 
 @app.before_request
+def gate_admin_endpoints():
+    """Every /admin route needs an organiser's verified Sleeper login.
+
+    One hook rather than a decorator on each of the sixteen, so that the
+    seventeenth cannot arrive unguarded — which is how all sixteen came to be
+    open in the first place. Among them: a cleanup that scores a week, wipes its
+    lineups and deletes finished tournaments, and a route documented as
+    returning "all data including user_submissions without requiring any PINs".
+    """
+    if not request.path.startswith('/admin/'):
+        return None
+    # A browser's CORS preflight carries no Authorization header by design, so
+    # refusing it would stop the real request ever being sent.
+    if request.method == 'OPTIONS':
+        return None
+    if request_is_from_organiser():
+        return None
+    return jsonify({
+        "error": "This action is for tournament organisers only.",
+    }), 403
+
+
+@app.before_request
 def track_request_statistics():
     """
     Middleware to track request statistics for each endpoint.

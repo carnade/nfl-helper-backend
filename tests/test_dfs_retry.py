@@ -13,6 +13,8 @@ import pytest
 
 nfl_helper = sys.modules["nfl_helper"]
 
+from conftest import admin_post
+
 
 @pytest.fixture(autouse=True)
 def reset_dfs_state():
@@ -137,7 +139,7 @@ class TestManualTrigger:
             return MagicMock()
 
         with patch.object(nfl_helper.threading, "Thread", side_effect=fake_thread):
-            resp = client.post("/admin/dfs-salaries/update")
+            resp = admin_post(client, "/admin/dfs-salaries/update")
 
         assert resp.status_code == 202
         assert started["target"] is nfl_helper.update_dfs_salaries_data

@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 nfl_helper = sys.modules["nfl_helper"]
 
-from conftest import make_lineup_string, create_entry
+from conftest import make_lineup_string, create_entry, admin_post
 
 
 @pytest.fixture
@@ -30,7 +30,7 @@ def sleeper_points():
 
 
 def do_cleanup(client):
-    return client.post("/admin/tinyurl/cleanup")
+    return admin_post(client, "/admin/tinyurl/cleanup")
 
 
 class TestSingleEntryCleanup:
