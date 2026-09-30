@@ -661,6 +661,77 @@ def _load_store(key: str, store: dict):
         print(f"{datetime.datetime.now()} - Error loading {key} from file: {e}")
 
 
+# The scrape runs daily at 15:00 and again on Wednesdays at 19:00, so anything
+# older than this means a scheduled run was missed rather than merely not due.
+DFS_SALARIES_STALE_AFTER = datetime.timedelta(hours=26)
+
+
+def save_dfs_salaries_data():
+    """Persist the salaries together with when they were scraped.
+
+    Everything else the app keeps is written through; this was the one that was
+    not, so every restart emptied it and left a ten-minute hole while the scrape
+    refilled it — the endpoint answering 404 with nothing to say why.
+
+    The timestamp travels with the rows because last_dfs_salaries_update is a
+    process global: after a restart it would read "Never" while a full set was
+    being served, which is the wrong thing to tell anyone.
+    """
+    scraped_at = last_dfs_salaries_update or datetime.datetime.now()
+    _save_store('dfs_salaries', {
+        'scraped_at': scraped_at.isoformat(),
+        'rows': dfs_salaries_data,
+    })
+
+
+def load_dfs_salaries_data():
+    """Restore the salaries, and the age of what was restored."""
+    global last_dfs_salaries_update
+
+    stored = {}
+    _load_store('dfs_salaries', stored)
+    rows = stored.get('rows')
+    if not isinstance(rows, dict) or not rows:
+        return
+
+    dfs_salaries_data.clear()
+    dfs_salaries_data.update(rows)
+
+    scraped_at = stored.get('scraped_at')
+    if scraped_at:
+        try:
+            last_dfs_salaries_update = datetime.datetime.fromisoformat(scraped_at)
+        except (TypeError, ValueError):
+            # Unreadable timestamp: better to report unknown age than a wrong one.
+            last_dfs_salaries_update = None
+
+    weeks = sorted({r.get('week') for r in rows.values() if r.get('week')})
+    age = dfs_salaries_age()
+    age_note = f"scraped {age} ago" if age is not None else "scrape time unknown"
+    stale_note = " — STALE, a scheduled scrape has been missed" if dfs_salaries_are_stale() else ""
+    print(f"{datetime.datetime.now()} - Loaded {len(rows)} DFS salary rows for "
+          f"weeks {weeks} ({age_note}){stale_note}")
+
+
+def dfs_salaries_age():
+    """How long ago the salaries were scraped, or None if nothing has been."""
+    if last_dfs_salaries_update is None:
+        return None
+    return datetime.datetime.now() - last_dfs_salaries_update
+
+
+def dfs_salaries_are_stale():
+    """True when a scheduled scrape has been missed, or none has ever run.
+
+    Persisting the rows means a failing scrape no longer shows up as an empty
+    endpoint, so the age has to be reported instead of inferred from silence.
+    """
+    if not dfs_salaries_data:
+        return False   # nothing to be stale about; the 404 says it plainly
+    age = dfs_salaries_age()
+    return age is None or age > DFS_SALARIES_STALE_AFTER
+
+
 def save_points_overrides():
     _save_store('points_overrides', points_overrides)
 
@@ -1200,6 +1271,10 @@ def update_dfs_salaries_data():
         print(f"Total DFS salary entries in memory: {len(dfs_salaries_data)}")
         print(f"Matched to Sleeper IDs: {matched_count}")
         print(f"Date: {today}")
+
+        # Written through so a restart serves these immediately instead of
+        # answering 404 for the ten minutes a fresh scrape takes.
+        save_dfs_salaries_data()
         
     except Exception as e:
         dfs_last_error = str(e)
@@ -2395,6 +2470,14 @@ def get_statistics():
             "total_dfs_salaries": total_dfs_salaries,
             "dfs_salaries_weeks": sorted(list(dfs_weeks)) if dfs_weeks else [],
             "dfs_salaries_dates": sorted(list(dfs_dates)) if dfs_dates else [],
+            # Persisted salaries survive a restart, so an endpoint answering
+            # normally no longer means the data is fresh. Say how old it is.
+            "dfs_salaries_age_hours": (
+                round(dfs_salaries_age().total_seconds() / 3600, 1)
+                if dfs_salaries_age() is not None else None
+            ),
+            "dfs_salaries_stale": dfs_salaries_are_stale(),
+            "dfs_salaries_stale_after_hours": DFS_SALARIES_STALE_AFTER.total_seconds() / 3600,
             "last_players_update": str(last_players_update) if last_players_update else "Never",
             "last_rankings_update": str(last_rankings_update) if last_rankings_update else "Never",
             "last_fantasy_points_update": str(last_fantasy_points_update) if last_fantasy_points_update else "Never",
@@ -5723,6 +5806,9 @@ def initialize_data_in_background():
         # 3. Update fantasy points and DFS salaries (requires filtered_players)
         print(f"{datetime.datetime.now()} - filtered_players populated with {len(filtered_players)} players, proceeding with fantasy points and DFS salaries updates")
         update_fantasy_points_data()
+        # Serve the last known salaries straight away; the scrape below then
+        # refreshes them in the usual way, pruning any week that has rolled off.
+        load_dfs_salaries_data()
         update_dfs_salaries_data()
 
         # 4. Load nflverse player/team/schedule stats
