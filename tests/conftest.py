@@ -49,7 +49,8 @@ def reset_globals():
         getattr(nfl_helper, name).clear()
     with patch.object(nfl_helper, "save_tinyurl_data"), \
          patch.object(nfl_helper, "save_tournament_data"), \
-         patch.object(nfl_helper, "save_points_overrides"):
+         patch.object(nfl_helper, "save_points_overrides"), \
+         patch.object(nfl_helper, "save_dfs_salaries_data"):
         yield
     for name in GLOBAL_DICTS:
         getattr(nfl_helper, name).clear()
