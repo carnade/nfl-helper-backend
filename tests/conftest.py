@@ -55,6 +55,20 @@ def reset_globals():
         getattr(nfl_helper, name).clear()
 
 
+def admin_post(client, path, **kwargs):
+    """POST an /admin route as an organiser.
+
+    Every /admin route is gated on a verified Sleeper login belonging to an
+    organiser, so a test driving one has to present itself as one. The patch is
+    scoped to the call so it does not disturb whatever identity the test is
+    otherwise using.
+    """
+    with patch.object(nfl_helper, "verify_sleeper_token",
+                      return_value={"user_id": "1", "display_name": "carnade"}):
+        headers = {"Authorization": "tok", **kwargs.pop("headers", {})}
+        return client.post(path, headers=headers, **kwargs)
+
+
 def make_lineup_string(week: int, player_entries: list) -> str:
     """Build a lineup data string the backend can decode.
     player_entries: list like ["12345:QB", "67890:RB"]

@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 nfl_helper = sys.modules["nfl_helper"]
 
-from conftest import make_lineup_string, make_full_lineup_string, create_entry
+from conftest import make_lineup_string, make_full_lineup_string, create_entry, admin_post
 
 
 ALICE = {"user_id": "111", "display_name": "alice"}
@@ -129,7 +129,7 @@ class TestDeadlineRollsWeekly:
 
         with patch.object(nfl_helper, "fetch_sleeper_matchup_points", return_value={}), \
              patch.object(nfl_helper.FantasyDataScraper, "get_league_week", return_value=8):
-            client.post("/admin/tinyurl/cleanup")
+            admin_post(client, "/admin/tinyurl/cleanup")
 
         entry = nfl_helper.tinyurl_data["tourney"]
         rolled, _ = nfl_helper.parse_deadline(entry["deadline"])
@@ -144,7 +144,7 @@ class TestDeadlineRollsWeekly:
 
         with patch.object(nfl_helper, "fetch_sleeper_matchup_points", return_value={}), \
              patch.object(nfl_helper.FantasyDataScraper, "get_league_week", return_value=8):
-            client.post("/admin/tinyurl/cleanup")
+            admin_post(client, "/admin/tinyurl/cleanup")
 
         assert nfl_helper.tinyurl_data["tourney"]["deadline"] == future
 
@@ -251,7 +251,7 @@ class TestOpenOnlyForTheFirstWeek:
     def advance(self, client, to_week):
         with patch.object(nfl_helper, "fetch_sleeper_matchup_points", return_value={}), \
              patch.object(nfl_helper.FantasyDataScraper, "get_league_week", return_value=to_week):
-            client.post("/admin/tinyurl/cleanup")
+            admin_post(client, "/admin/tinyurl/cleanup")
 
     def make_open_tournament(self, entrants=("alice", "bob")):
         create_entry("cup", week=7, entry_type="multiweek_dfs", num_weeks=4,
