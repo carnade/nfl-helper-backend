@@ -1667,7 +1667,7 @@ scheduler.add_job(
     trigger=CronTrigger(day_of_week="wed", hour=19, minute=0)
 )
 
-# Schedule odds refresh: Thursday (props open) + Monday (post-week).
+# Schedule odds refresh: Thursday (props open) + Sunday (morning of the slate).
 # The spec lives in odds_api so /odds/status can report next/overdue from the
 # same source the scheduler fires on.
 def _refresh_odds():
@@ -1684,10 +1684,12 @@ def _refresh_odds():
 scheduler.add_job(
     func=_refresh_odds,
     trigger=CronTrigger(day_of_week=",".join(odds_api.REFRESH_CRON_DAYS),
-                        hour=odds_api.REFRESH_HOUR_UTC, minute=0)
+                        hour=odds_api.REFRESH_HOUR_LOCAL, minute=0,
+                        timezone=odds_api.REFRESH_TIMEZONE)
 )
 
-# Snapshot odds before each game window (Thu/Sun/Mon 12:00 UTC, 2h after refresh)
+# Snapshot odds before each game window (Thu/Sun/Mon 12:00 UTC, after the refresh
+# on the two days that have one; Monday snapshots what Sunday's refresh fetched).
 def _snapshot_odds():
     from routes_odds import _ou_eval
     added = odds_api.snapshot_current_games(_ou_eval)
