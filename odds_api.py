@@ -1021,6 +1021,36 @@ def grade_props_history() -> list:
     return graded
 
 
+def opening_game_lines(event_id: str) -> dict | None:
+    """Spread and total as they stood the first time we saw this game.
+
+    The snapshot job writes a game once and then leaves it — deliberately, so
+    the record of what was offered cannot be edited after the fact. That makes
+    odds_history the opening line, and the live odds_games the current one, so
+    the movement between them is already recorded and only needed joining up.
+    """
+    snap = odds_history.get(event_id)
+    if not snap:
+        return None
+    return {
+        "home_spread": (snap.get("spread") or {}).get("home_spread"),
+        "total":       (snap.get("total") or {}).get("line"),
+        "seen_at":     snap.get("snapshotted_at"),
+    }
+
+
+def opening_prop_line(event_id: str, sleeper_id: str, market: str) -> dict | None:
+    """What this prop's line was when first snapshotted.
+
+    Props, unlike games, keep being updated until kickoff — so the history
+    carries first_line alongside the latest, and this reads the former.
+    """
+    snap = odds_props_history.get(f"{event_id}:{sleeper_id}:{market}")
+    if not snap:
+        return None
+    return {"line": snap.get("first_line"), "seen_at": snap.get("first_seen_at")}
+
+
 def snapshot_current_games(ou_eval_fn) -> int:
     """Copy current odds_games into odds_history. Idempotent — skips existing event_ids."""
     added = 0
