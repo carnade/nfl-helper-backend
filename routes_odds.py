@@ -115,6 +115,10 @@ def all_games():
         # week 18. The kickoff time places a game exactly, and the graded results
         # already use this.
         entry["nfl_week"] = oa._week_for_commence(g.get("commence_time"))
+        # Where the line started, so the page can show how far it has come.
+        # Thursday's snapshot against Sunday's live number is the interesting
+        # case, and both are already held — they were simply never joined.
+        entry["opening"] = oa.opening_game_lines(g.get("event_id"))
         result.append(entry)
     return jsonify(result)
 
@@ -154,8 +158,14 @@ def all_props():
             continue
 
         entry = dict(p)
-        if market:
-            entry["props"] = {market: props[market]}
+        shown = {market: props[market]} if market else props
+        # Copied before annotating: these are the live dicts the refresh owns,
+        # and writing an opening line into them would make it look like one.
+        entry["props"] = {
+            mkey: {**m, "opening": oa.opening_prop_line(
+                p.get("event_id"), p.get("sleeper_id"), mkey)}
+            for mkey, m in shown.items()
+        }
         entry["nfl_week"] = oa._week_for_commence(p.get("commence_time"))
         result.append(entry)
 
