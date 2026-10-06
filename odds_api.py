@@ -708,18 +708,38 @@ def _compute_value_flags(
 # Defined here rather than at the scheduler so the same spec drives both the
 # cron trigger and the "next / overdue" figures reported on /odds/status.
 
-REFRESH_CRON_DAYS = ("thu", "mon")
-REFRESH_WEEKDAYS  = (3, 0)   # datetime.weekday(): Mon=0 … Thu=3
-REFRESH_HOUR_UTC  = 10
+# Thursday opens the week's props; Sunday refreshes them the morning of the
+# main slate, a few hours before the 1pm ET kickoffs. Monday used to take
+# Sunday's place, which meant the biggest slate of the week was priced off lines
+# fetched the previous Thursday.
+REFRESH_CRON_DAYS = ("thu", "sun")
+REFRESH_WEEKDAYS  = (3, 6)   # datetime.weekday(): Mon=0 … Thu=3, Sun=6
+
+# Local rather than UTC, so the run stays at the same hour of the morning either
+# side of the October clock change instead of drifting to 11:00.
+REFRESH_HOUR_LOCAL = 10
+REFRESH_TIMEZONE_NAME = "Europe/Stockholm"
+
+try:
+    from zoneinfo import ZoneInfo
+    REFRESH_TIMEZONE = ZoneInfo(REFRESH_TIMEZONE_NAME)
+except ImportError:  # pragma: no cover - stdlib on every version we run
+    import pytz
+    REFRESH_TIMEZONE = pytz.timezone(REFRESH_TIMEZONE_NAME)
 
 
 def _scheduled_runs_around(now: datetime.datetime) -> tuple[datetime.datetime, datetime.datetime]:
     """The most recent scheduled refresh at or before `now`, and the next one after."""
+    # `now` is naive UTC, so each slot is built at the scheduled local hour and
+    # converted back. Doing it the other way round — assuming a fixed UTC hour —
+    # is what would drift by an hour every winter.
     slots = []
     for delta in range(-8, 9):
         d = (now + datetime.timedelta(days=delta)).date()
         if d.weekday() in REFRESH_WEEKDAYS:
-            slots.append(datetime.datetime.combine(d, datetime.time(REFRESH_HOUR_UTC, 0)))
+            local = datetime.datetime.combine(
+                d, datetime.time(REFRESH_HOUR_LOCAL, 0), tzinfo=REFRESH_TIMEZONE)
+            slots.append(local.astimezone(datetime.timezone.utc).replace(tzinfo=None))
     slots.sort()
     prev = max((s for s in slots if s <= now), default=None)
     nxt  = min((s for s in slots if s > now), default=None)
@@ -735,8 +755,8 @@ def _scheduled_runs_around(now: datetime.datetime) -> tuple[datetime.datetime, d
 # fetch instead of an empty page.
 #
 # 4 days matches the widest legitimate gap between scheduled refreshes
-# (Thu -> Mon), so a restart only spends credits when we have actually missed a
-# scheduled run rather than on every boot.
+# (Sun -> Thu), so a restart only spends credits when we have actually missed a
+# scheduled run rather than on every boot. Thu -> Sun is three.
 STARTUP_REFRESH_MAX_AGE_HOURS = 96
 
 
