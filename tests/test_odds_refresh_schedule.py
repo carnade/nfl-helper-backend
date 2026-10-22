@@ -1,9 +1,14 @@
 """When the paid odds refresh runs.
 
-It used to be Thursday and Monday. Thursday opens the week's props; Monday came
-after everything had been played, which meant the biggest slate of the week —
-Sunday — was priced off lines fetched the previous Thursday. Now Thursday and
-Sunday, the latter a few hours before the 1pm ET kickoffs.
+It used to be Thursday and Monday, then Thursday and Sunday. Monday came after
+everything had been played; Sunday priced the main slate a few hours before
+kickoff but overlapped Thursday, which bought the same thirteen games twice and
+put the month over its 500-credit quota.
+
+Now Thursday and Saturday, with windows that meet rather than overlap: Thursday
+takes Thursday night and Friday, Saturday takes its own fixtures through Monday
+night. Saturday is also a day earlier than Sunday was, which leaves time to act
+on a line and time to notice a failed run.
 
 The hour is local rather than UTC so it stays at the same time of morning either
 side of the October clock change. The scheduler and /odds/status read the same
@@ -43,11 +48,12 @@ def fire_times(count, start):
 
 
 class TestTheDays:
-    def test_it_runs_thursday_and_sunday(self):
-        assert set(oa.REFRESH_CRON_DAYS) == {"thu", "sun"}
+    def test_it_runs_thursday_and_saturday(self):
+        assert set(oa.REFRESH_CRON_DAYS) == {"thu", "sat"}
 
-    def test_monday_is_no_longer_one_of_them(self):
+    def test_the_days_it_has_outgrown_are_not_in_there(self):
         assert "mon" not in oa.REFRESH_CRON_DAYS
+        assert "sun" not in oa.REFRESH_CRON_DAYS
 
     def test_the_weekday_numbers_match_the_cron_names(self):
         """Two spellings of the same thing: the cron drives the scheduler and
@@ -57,7 +63,7 @@ class TestTheDays:
 
     def test_the_schedule_actually_fires_on_those_days(self):
         days = {t.strftime("%a").lower() for t in fire_times(6, datetime.datetime(2026, 10, 4, 6, 0, tzinfo=UTC))}
-        assert days == {"thu", "sun"}
+        assert days == {"thu", "sat"}
 
 
 class TestTheHourSurvivesTheClockChange:
@@ -96,8 +102,8 @@ class TestTheJobThatIsActuallyRegistered:
         assert len(found) == 1, f"expected one odds refresh job, found {len(found)}"
         return found[0]
 
-    def test_it_is_registered_for_thursday_and_sunday(self):
-        assert "day_of_week='thu,sun'" in str(self.the_registered_trigger())
+    def test_it_is_registered_for_thursday_and_saturday(self):
+        assert "day_of_week='thu,sat'" in str(self.the_registered_trigger())
 
     def test_it_is_registered_in_a_named_zone_not_utc(self):
         trigger = self.the_registered_trigger()
@@ -149,5 +155,11 @@ class TestTheStartupBudgetStillHolds:
         runs = fire_times(8, datetime.datetime(2026, 10, 4, 6, 0, tzinfo=UTC))
         gaps = [(b - a).total_seconds() / 3600 for a, b in zip(runs, runs[1:])]
         assert max(gaps) <= oa.STARTUP_REFRESH_MAX_AGE_HOURS
-        assert max(gaps) == pytest.approx(96, abs=1), "Sun -> Thu is four days"
-        assert min(gaps) == pytest.approx(72, abs=1), "Thu -> Sun is three"
+        assert max(gaps) == pytest.approx(120, abs=1), "Sat -> Thu is five days"
+        assert min(gaps) == pytest.approx(48, abs=1), "Thu -> Sat is two"
+
+    def test_the_budget_was_widened_with_the_days(self):
+        """The gap grew from four days to five when Sunday became Saturday. Left
+        at 96 hours, a restart on the Tuesday or Wednesday would read as a
+        missed run and buy a refresh it did not need."""
+        assert oa.STARTUP_REFRESH_MAX_AGE_HOURS == 120

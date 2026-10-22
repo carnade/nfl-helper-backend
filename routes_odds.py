@@ -132,6 +132,19 @@ def game_detail(event_id: str):
     return jsonify(game)
 
 
+def _live_props(props: dict) -> dict:
+    """
+    Only the markets we still buy.
+
+    A retired market stays in the grading history but stops being served: the
+    cached copy of the last fetch outlives the decision to stop buying it by
+    however long it takes the next refresh to land, and until then the page
+    would go on showing lines nobody is refreshing.
+    """
+    return {k: v for k, v in (props or {}).items()
+            if k not in oa.RETIRED_PROP_MARKETS}
+
+
 @odds_bp.route("/props")
 def all_props():
     """
@@ -150,7 +163,9 @@ def all_props():
         if position and p.get("position") != position:
             continue
 
-        props = p.get("props", {})
+        props = _live_props(p.get("props"))
+        if not props:
+            continue
         if market and market not in props:
             continue
 
@@ -254,7 +269,7 @@ def player_props(sleeper_id: str):
     player = next((p for p in oa.odds_props if p["sleeper_id"] == sleeper_id), None)
     if not player:
         return jsonify({"error": f"No props found for sleeper_id {sleeper_id}"}), 404
-    return jsonify(player)
+    return jsonify({**player, "props": _live_props(player.get("props"))})
 
 
 @odds_bp.route("/prop-results")
@@ -273,6 +288,7 @@ def prop_results():
     only_graded = request.args.get("graded", "").lower() == "true"
 
     rows = oa.grade_props_history()
+    rows = [r for r in rows if r.get("market") not in oa.RETIRED_PROP_MARKETS]
     if market:
         rows = [r for r in rows if r.get("market") == market]
     if position:
@@ -317,7 +333,7 @@ def value_props():
     for p in oa.odds_props:
         if position and p.get("position") != position:
             continue
-        for mkey, m in p.get("props", {}).items():
+        for mkey, m in _live_props(p.get("props")).items():
             if not m.get("value_flag"):
                 continue
             if market and mkey != market:

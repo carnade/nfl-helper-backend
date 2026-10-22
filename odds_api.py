@@ -39,8 +39,27 @@ PROP_MARKETS = [
     "player_rush_yds",
     "player_receptions",
     "player_reception_yds",
-    "player_anytime_td",
 ]
+
+# Markets we have stopped paying for.
+#
+# Every event costs (markets returned x regions), so each market is a flat
+# share of the prop bill whether or not anyone acts on it. Anytime TD went
+# first because it is the weakest of the six on its own terms: its projection
+# is a hit rate off a handful of games, which is why it needs
+# BINARY_VALUE_THRESHOLD set three and a half times wider than the yardage one,
+# and no book posts the "no" side, so a good part of its flags were never bets
+# that could be placed.
+#
+# Leaving it out of PROP_MARKETS stops it being requested. Naming it here also
+# stops what is already cached and already graded from being served, which
+# matters because the stored copy outlives the decision by as long as it takes
+# the next refresh to land.
+#
+# The binary machinery below stays. The grading history still holds these rows
+# and has to stay readable, and putting the market back is one line in each of
+# the two lists.
+RETIRED_PROP_MARKETS = {"player_anytime_td"}
 
 # Market key → nflverse rolling_5 stat key used for value flag comparison
 PROP_ROLLING_KEY = {
@@ -308,6 +327,49 @@ PROPS_LOOKAHEAD_DAYS   = 4
 PROPS_OPENER_BUFFER_DAYS = 7  # off-season fallback only — see _props_cutoff()
 PROPS_REGION = "us"           # single region for props to minimise credit use
 
+# How far each scheduled run looks, by weekday.
+#
+# The two windows are sized to partition the week rather than overlap it. Three
+# days from Thursday morning reaches Sunday 09:00 UTC, which stops just short of
+# the 13:30 kickoffs — so Thursday takes Thursday night, and any Friday or
+# Saturday fixture, and Sunday takes the Sunday slate plus Sunday and Monday
+# night. Every game is bought once.
+#
+# Thursday used to look four days, which reached across the whole Sunday slate
+# and bought all thirteen of those games three days early; Sunday then bought
+# the same thirteen again. That duplication was most of the bill: 647 credits in
+# the worst calendar month against a 500 monthly quota, which is why the balance
+# ran out in October with a week to go. At three days it is 377.
+#
+# Measured against the real schedule, not reasoned about — two results worth
+# keeping because both are counter-intuitive:
+#
+#   - Shrinking Sunday saves almost nothing, about 5 credits a season. No NFL
+#     game kicks off between Tuesday morning and Thursday evening, so the days
+#     it gives up were already empty. Two days is kept because it is honest
+#     about what the run is for, not because it saves anything.
+#   - Going below three days on Thursday starts losing fixtures rather than
+#     duplication: two days drops the late-season Saturday games, one day drops
+#     the Friday ones as well, and neither is then picked up by Sunday's run
+#     because they have already kicked off.
+#
+# What three days costs, and it is not nothing: Sunday's prop lines are now
+# first seen on Sunday morning, so prop line movement for the main slate has
+# nothing earlier to move from. Game lines are unaffected — the bulk h2h /
+# spreads / totals call is a flat 3 credits for every game on the board and
+# does not consult this window at all. Keeping the Thursday reading of Sunday
+# props costs 647 a month, and the quota is 500, so it is not affordable.
+PROPS_LOOKAHEAD_BY_WEEKDAY = {
+    3: 2,   # Thursday — Thursday night and any Friday fixture
+    5: 3,   # Saturday — Saturday's games through Monday night
+}
+
+
+def props_lookahead_days(now: datetime.datetime | None = None) -> int:
+    """The lookahead for a run happening at `now`, in days."""
+    now = now or datetime.datetime.utcnow()
+    return PROPS_LOOKAHEAD_BY_WEEKDAY.get(now.weekday(), PROPS_LOOKAHEAD_DAYS)
+
 
 def _props_cutoff(now: datetime.datetime, game_times: list) -> datetime.datetime:
     """
@@ -322,7 +384,7 @@ def _props_cutoff(now: datetime.datetime, game_times: list) -> datetime.datetime
     next game is usually a day or two out, so an unconditional max() would keep the
     cutoff ~7 days ahead and silently cancel out the short rolling window.
     """
-    rolling_cutoff = now + datetime.timedelta(days=PROPS_LOOKAHEAD_DAYS)
+    rolling_cutoff = now + datetime.timedelta(days=props_lookahead_days(now))
     if not game_times:
         return rolling_cutoff
     if any(t <= rolling_cutoff for t in game_times):
@@ -356,7 +418,7 @@ def fetch_player_props(api_key: str, name_lookup: dict[str, str], games: dict, s
             pass
 
     cutoff = _props_cutoff(now, [t for _, t in dated_games])
-    upcoming = [g for g, t in dated_games if t <= cutoff]
+    upcoming = [g for g, t in dated_games if now <= t <= cutoff]
     lookahead_days = (cutoff - now).days
     logger.info("odds: fetching props for %d events within %d days", len(upcoming), lookahead_days)
 
@@ -708,12 +770,22 @@ def _compute_value_flags(
 # Defined here rather than at the scheduler so the same spec drives both the
 # cron trigger and the "next / overdue" figures reported on /odds/status.
 
-# Thursday opens the week's props; Sunday refreshes them the morning of the
-# main slate, a few hours before the 1pm ET kickoffs. Monday used to take
-# Sunday's place, which meant the biggest slate of the week was priced off lines
-# fetched the previous Thursday.
-REFRESH_CRON_DAYS = ("thu", "sun")
-REFRESH_WEEKDAYS  = (3, 6)   # datetime.weekday(): Mon=0 … Thu=3, Sun=6
+# Thursday takes Thursday night and anything on Friday. Saturday takes
+# everything from Saturday's own fixtures through Monday night — by Saturday
+# morning the whole slate is posted, which the old four-day Thursday window
+# demonstrated by successfully pulling 317 players' Sunday props three days
+# out. The two windows meet and do not overlap, so every game is bought once.
+#
+# Saturday rather than Sunday morning for two reasons. It is a day earlier, so
+# there is time to act on a line and time to notice a failed run before kickoff;
+# and it is the only placement that covers the late-season Saturday fixtures
+# without a third run. The cost is that lines are read a day further from
+# close, which for finding value is arguably the right side to be on.
+#
+# Sunday used to hold this slot, and Monday before that — which meant the
+# biggest slate of the week was priced off lines fetched the previous Thursday.
+REFRESH_CRON_DAYS = ("thu", "sat")
+REFRESH_WEEKDAYS  = (3, 5)   # datetime.weekday(): Mon=0 … Thu=3, Sat=5
 
 # Local rather than UTC, so the run stays at the same hour of the morning either
 # side of the October clock change instead of drifting to 11:00.
@@ -754,10 +826,14 @@ def _scheduled_runs_around(now: datetime.datetime) -> tuple[datetime.datetime, d
 # cannot reach the API (out of credits, most likely) still serves the last good
 # fetch instead of an empty page.
 #
-# 4 days matches the widest legitimate gap between scheduled refreshes
-# (Sun -> Thu), so a restart only spends credits when we have actually missed a
-# scheduled run rather than on every boot. Thu -> Sun is three.
-STARTUP_REFRESH_MAX_AGE_HOURS = 96
+# 5 days matches the widest legitimate gap between scheduled refreshes
+# (Sat -> Thu), so a restart only spends credits when we have actually missed a
+# scheduled run rather than on every boot. Thu -> Sat is two.
+#
+# This has to move whenever the refresh days do. Left at the old four days, a
+# restart on the Tuesday or Wednesday would read as a missed run and buy a
+# refresh it did not need — and a host on a free tier restarts often.
+STARTUP_REFRESH_MAX_AGE_HOURS = 120
 
 
 def export_cache() -> dict:
@@ -819,9 +895,11 @@ def refresh_overdue_hours() -> float:
     return round((now - prev).total_seconds() / 3600.0, 2)
 
 
-def games_within_window(within_days: int = PROPS_LOOKAHEAD_DAYS) -> int:
+def games_within_window(within_days: int | None = None) -> int:
     """How many known games kick off inside the given window."""
     now = datetime.datetime.utcnow()
+    if within_days is None:
+        within_days = props_lookahead_days(now)
     cutoff = now + datetime.timedelta(days=within_days)
     n = 0
     for g in odds_games.values():
@@ -848,10 +926,11 @@ def should_run_scheduled_refresh() -> tuple[bool, str]:
     """
     if not odds_games:
         return True, "no games held yet"
-    n = games_within_window()
+    days = props_lookahead_days()
+    n = games_within_window(days)
     if n:
-        return True, f"{n} game(s) within {PROPS_LOOKAHEAD_DAYS} days"
-    return False, (f"no games within {PROPS_LOOKAHEAD_DAYS} days — skipping to avoid a "
+        return True, f"{n} game(s) within {days} days"
+    return False, (f"no games within {days} days — skipping to avoid a "
                    f"full opener-week fetch; will resume automatically")
 
 
@@ -928,6 +1007,11 @@ def snapshot_current_props() -> tuple[int, int]:
             started = False
 
         for mkey, m in (p.get("props") or {}).items():
+            # No point freezing a call on a market we no longer buy and no
+            # longer serve. The cached fetch still carries these until a
+            # refresh lands, which without credits could be a while.
+            if mkey in RETIRED_PROP_MARKETS:
+                continue
             key = f"{p.get('event_id')}:{p.get('sleeper_id')}:{mkey}"
             existing = odds_props_history.get(key)
             if existing and started:
