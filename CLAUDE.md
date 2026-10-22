@@ -4,14 +4,28 @@ Check it **immediately before the push**, not when the branch was created. A PR 
 
 PRs here are squash-merged, so a branch's commits never become ancestors of `main`. `git merge-base --is-ancestor` will report merged work as missing. Check by commit subject against `git log main` (a squash commit keeps the PR title, usually with `(#NN)` appended, so match on substring), or by whether the branch's diff against `main` is empty. A two-dot diff (`main..branch`) is not a merge test — it also counts main's newer commits as differences.
 
-**Never spend odds API credits without asking first.** They are a finite purchased balance, not a rate limit that refills, and `/odds/status` reports what is left under `credits_remaining`.
+**Never spend odds API credits without asking first.** **The quota is 500 a month** and `credits_remaining` on `/odds/status` is what is left of the current billing period, not of the season — it comes straight from the API's `x-requests-remaining` header. It resets monthly; it does not accumulate. October 2026 ran out with a week still to play, which is what prompted the sizing below.
 
 A refresh costs `3` for the bulk game-lines call plus `markets x regions` for **each** event inside the lookahead window — so `3 + (games x len(PROP_MARKETS))` at one region. With 13 games and 5 prop markets that is ~68, and the two scheduled runs come to ~136 a week, or ~1470 for the rest of a season from late October.
 
-The window is per weekday (`PROPS_LOOKAHEAD_BY_WEEKDAY`): Thursday 4 days, Sunday 2. Two things measured rather than assumed, worth knowing before tuning them:
+The window is per weekday (`PROPS_LOOKAHEAD_BY_WEEKDAY`): **Thursday 3 days, Sunday 2**, sized so the two runs partition the week instead of overlapping it. Thursday + 3 days reaches Sunday 09:00 UTC, stopping just short of the 13:30 kickoffs, so Thursday buys Thursday night and any Friday or Saturday fixture while Sunday buys the slate plus Sunday and Monday night. Every game is bought once.
 
-- **Shrinking Sunday saves almost nothing** — about 5 credits across a whole season. No NFL game kicks off between Tuesday morning and Thursday evening, so the days it removes were already empty.
-- **Thursday's window is what costs.** It buys all thirteen Sunday games three days early and Sunday buys the same thirteen again. Cutting Thursday to 1-2 days takes the rest of a season from ~1470 to ~840, but gives up the opening lines the movement columns are built from, and at 1 day the occasional Friday or Saturday fixture falls between the two windows.
+Worst calendar month, measured against the real schedule at 5 markets:
+
+| Thursday window | credits/month | games lost |
+|---|---|---|
+| 4 days (what ran out) | 647 | none |
+| **3 days (current)** | **377** | none |
+| 2 days | 377 | late-season Saturday games |
+| 1 day | 372 | Friday and Saturday games |
+
+Three counter-intuitive results worth not re-deriving:
+
+- **Shrinking Sunday saves almost nothing** — ~5 credits a season. No game kicks off between Tuesday morning and Thursday evening, so those days were already empty.
+- **Thursday 4 to 3 is the whole saving.** Four days reached across the Sunday slate and bought all thirteen games that Sunday then bought again.
+- **Below 3 days stops saving and starts losing fixtures**, and Sunday's run cannot pick them up because they have already kicked off.
+
+What 3 days costs: Sunday's prop lines are first seen on Sunday morning, so prop line movement for the main slate has nothing earlier to move from. **Game lines are unaffected** — the bulk h2h/spreads/totals call is a flat 3 credits for the whole board and ignores this window. Keeping Thursday's reading of Sunday props costs 647 a month against a 500 quota, so it is not affordable.
 
 The other lever is `len(PROP_MARKETS)`; `RETIRED_PROP_MARKETS` records what was dropped and why. Three paths spend them and nothing else does:
 

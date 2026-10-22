@@ -327,26 +327,41 @@ PROPS_LOOKAHEAD_DAYS   = 4
 PROPS_OPENER_BUFFER_DAYS = 7  # off-season fallback only — see _props_cutoff()
 PROPS_REGION = "us"           # single region for props to minimise credit use
 
-# How far each scheduled run looks, by weekday. Thursday has to reach Sunday's
-# slate three days out, and is also where Sunday's opening lines get captured.
-# By Sunday morning everything left in the week is that afternoon's games and
-# Monday night, which is a day and a half away, so two days covers it with
-# room to spare.
+# How far each scheduled run looks, by weekday.
 #
-# Worth knowing before tuning these: shrinking Sunday is close to free but also
-# close to pointless, because no NFL game kicks off between Tuesday morning and
-# Thursday evening, so the two days this removes were already empty — measured
-# at 5 credits across the rest of a season.
+# The two windows are sized to partition the week rather than overlap it. Three
+# days from Thursday morning reaches Sunday 09:00 UTC, which stops just short of
+# the 13:30 kickoffs — so Thursday takes Thursday night, and any Friday or
+# Saturday fixture, and Sunday takes the Sunday slate plus Sunday and Monday
+# night. Every game is bought once.
 #
-# The window that actually costs is Thursday's. It buys all thirteen Sunday
-# games three days early and Sunday then buys the same thirteen again, so the
-# two runs are near-duplicates. Cutting Thursday to a day or two roughly halves
-# the bill, at the price of the opening lines the movement columns are built
-# from, and of the odd Friday or Saturday fixture that then falls between the
-# two windows.
+# Thursday used to look four days, which reached across the whole Sunday slate
+# and bought all thirteen of those games three days early; Sunday then bought
+# the same thirteen again. That duplication was most of the bill: 647 credits in
+# the worst calendar month against a 500 monthly quota, which is why the balance
+# ran out in October with a week to go. At three days it is 377.
+#
+# Measured against the real schedule, not reasoned about — two results worth
+# keeping because both are counter-intuitive:
+#
+#   - Shrinking Sunday saves almost nothing, about 5 credits a season. No NFL
+#     game kicks off between Tuesday morning and Thursday evening, so the days
+#     it gives up were already empty. Two days is kept because it is honest
+#     about what the run is for, not because it saves anything.
+#   - Going below three days on Thursday starts losing fixtures rather than
+#     duplication: two days drops the late-season Saturday games, one day drops
+#     the Friday ones as well, and neither is then picked up by Sunday's run
+#     because they have already kicked off.
+#
+# What three days costs, and it is not nothing: Sunday's prop lines are now
+# first seen on Sunday morning, so prop line movement for the main slate has
+# nothing earlier to move from. Game lines are unaffected — the bulk h2h /
+# spreads / totals call is a flat 3 credits for every game on the board and
+# does not consult this window at all. Keeping the Thursday reading of Sunday
+# props costs 647 a month, and the quota is 500, so it is not affordable.
 PROPS_LOOKAHEAD_BY_WEEKDAY = {
-    3: 4,   # Thursday — reach Sunday's slate, and open the week's lines
-    6: 2,   # Sunday — today's games and Monday night
+    3: 3,   # Thursday — Thursday night, and any Friday or Saturday fixture
+    6: 2,   # Sunday — the Sunday slate, Sunday night and Monday night
 }
 
 

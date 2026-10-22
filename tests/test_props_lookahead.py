@@ -22,9 +22,28 @@ THURSDAY = _at(2026, 10, 22)
 SUNDAY   = _at(2026, 10, 25)
 
 
+# A real week in UTC, which is the thing that makes these windows awkward:
+# every night game lands on the following calendar day.
+TNF        = datetime.datetime(2026, 10, 23, 0, 15)   # Thu night
+SAT_GAME   = datetime.datetime(2026, 10, 24, 21, 0)   # late-season Saturday
+SUN_EARLY  = datetime.datetime(2026, 10, 25, 13, 30)  # London
+SUN_BULK   = datetime.datetime(2026, 10, 25, 17, 0)
+SNF        = datetime.datetime(2026, 10, 26, 0, 20)   # Sun night
+MNF        = datetime.datetime(2026, 10, 27, 0, 15)   # Mon night
+NEXT_TNF   = datetime.datetime(2026, 10, 30, 0, 15)
+
+WEEK = [TNF, SAT_GAME, SUN_EARLY, SUN_BULK, SNF, MNF, NEXT_TNF]
+
+
+def _covered(now, games=WEEK):
+    """Which of `games` a run at `now` would buy props for."""
+    cutoff = oa._props_cutoff(now, games)
+    return [g for g in games if now <= g <= cutoff]
+
+
 class TestLookaheadByDay:
-    def test_thursday_reaches_sundays_slate(self):
-        assert oa.props_lookahead_days(THURSDAY) == 4
+    def test_thursday_stops_short_of_the_sunday_slate(self):
+        assert oa.props_lookahead_days(THURSDAY) == 3
 
     def test_sunday_only_has_to_reach_monday_night(self):
         assert oa.props_lookahead_days(SUNDAY) == 2
@@ -37,34 +56,35 @@ class TestLookaheadByDay:
         assert set(oa.PROPS_LOOKAHEAD_BY_WEEKDAY) == set(oa.REFRESH_WEEKDAYS)
 
 
-class TestWindowCoversTheWeek:
+class TestTheWindowsPartitionTheWeek:
     """
-    The windows have to between them reach every fixture. Kickoffs in UTC run
-    late: Thursday night is Friday 00:15, Sunday night Monday 00:20, and Monday
-    night Tuesday 00:15 — which is why Sunday needs two days and not one.
+    The point of the two sizes is that between them they buy every fixture
+    exactly once. Overlap is what the old four-day Thursday was paying for.
     """
 
-    def test_thursday_covers_thursday_night(self):
-        cutoff = oa._props_cutoff(THURSDAY, [_at(2026, 10, 23, 0) + datetime.timedelta(minutes=15)])
-        assert cutoff >= datetime.datetime(2026, 10, 23, 0, 15)
+    def test_thursday_takes_the_midweek_fixtures(self):
+        assert _covered(THURSDAY) == [TNF, SAT_GAME]
 
-    def test_thursday_covers_the_sunday_games(self):
-        cutoff = oa._props_cutoff(THURSDAY, [datetime.datetime(2026, 10, 25, 20, 25)])
-        assert cutoff >= datetime.datetime(2026, 10, 25, 20, 25)
+    def test_sunday_takes_the_slate_and_both_night_games(self):
+        assert _covered(SUNDAY) == [SUN_EARLY, SUN_BULK, SNF, MNF]
 
-    def test_sunday_covers_monday_night(self):
-        # Monday night is Tuesday 00:15 UTC. One day would miss it.
-        monday_night = datetime.datetime(2026, 10, 27, 0, 15)
-        assert oa._props_cutoff(SUNDAY, [monday_night]) >= monday_night
+    def test_between_them_they_cover_the_week_once_each(self):
+        bought = _covered(THURSDAY) + _covered(SUNDAY)
+        assert sorted(bought) == [TNF, SAT_GAME, SUN_EARLY, SUN_BULK, SNF, MNF]
+        assert len(bought) == len(set(bought))
 
-    def test_sunday_does_not_reach_next_thursday_night(self):
-        # Thursday's own run buys that one; buying it twice is the waste.
-        # The list has to include a game inside the window, or the off-season
-        # opener fallback stretches the cutoff out to meet the only fixture it
-        # can see.
-        next_tnf = datetime.datetime(2026, 10, 30, 0, 15)
-        this_week = [datetime.datetime(2026, 10, 25, 17, 0), next_tnf]
-        assert oa._props_cutoff(SUNDAY, this_week) < next_tnf
+    def test_neither_run_reaches_the_following_week(self):
+        assert NEXT_TNF not in _covered(THURSDAY)
+        assert NEXT_TNF not in _covered(SUNDAY)
+
+    def test_sunday_needs_two_days_for_monday_night(self):
+        # Monday night is Tuesday 00:15 UTC, so a one-day window would miss it.
+        assert MNF in _covered(SUNDAY)
+        assert MNF > SUNDAY + datetime.timedelta(days=1)
+
+    def test_a_started_game_is_not_bought_again(self):
+        # Sunday's run is after Thursday night; there is nothing left to price.
+        assert TNF not in _covered(SUNDAY)
 
 
 class TestOpenerFallbackStillWorks:
@@ -79,7 +99,7 @@ class TestOpenerFallbackStillWorks:
     def test_a_game_inside_the_window_keeps_the_rolling_cutoff(self):
         now = THURSDAY
         cutoff = oa._props_cutoff(now, [now + datetime.timedelta(days=1)])
-        assert cutoff == now + datetime.timedelta(days=4)
+        assert cutoff == now + datetime.timedelta(days=3)
 
 
 class TestStatusAgreesWithTheFetch:
