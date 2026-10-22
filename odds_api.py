@@ -327,6 +327,34 @@ PROPS_LOOKAHEAD_DAYS   = 4
 PROPS_OPENER_BUFFER_DAYS = 7  # off-season fallback only — see _props_cutoff()
 PROPS_REGION = "us"           # single region for props to minimise credit use
 
+# How far each scheduled run looks, by weekday. Thursday has to reach Sunday's
+# slate three days out, and is also where Sunday's opening lines get captured.
+# By Sunday morning everything left in the week is that afternoon's games and
+# Monday night, which is a day and a half away, so two days covers it with
+# room to spare.
+#
+# Worth knowing before tuning these: shrinking Sunday is close to free but also
+# close to pointless, because no NFL game kicks off between Tuesday morning and
+# Thursday evening, so the two days this removes were already empty — measured
+# at 5 credits across the rest of a season.
+#
+# The window that actually costs is Thursday's. It buys all thirteen Sunday
+# games three days early and Sunday then buys the same thirteen again, so the
+# two runs are near-duplicates. Cutting Thursday to a day or two roughly halves
+# the bill, at the price of the opening lines the movement columns are built
+# from, and of the odd Friday or Saturday fixture that then falls between the
+# two windows.
+PROPS_LOOKAHEAD_BY_WEEKDAY = {
+    3: 4,   # Thursday — reach Sunday's slate, and open the week's lines
+    6: 2,   # Sunday — today's games and Monday night
+}
+
+
+def props_lookahead_days(now: datetime.datetime | None = None) -> int:
+    """The lookahead for a run happening at `now`, in days."""
+    now = now or datetime.datetime.utcnow()
+    return PROPS_LOOKAHEAD_BY_WEEKDAY.get(now.weekday(), PROPS_LOOKAHEAD_DAYS)
+
 
 def _props_cutoff(now: datetime.datetime, game_times: list) -> datetime.datetime:
     """
@@ -341,7 +369,7 @@ def _props_cutoff(now: datetime.datetime, game_times: list) -> datetime.datetime
     next game is usually a day or two out, so an unconditional max() would keep the
     cutoff ~7 days ahead and silently cancel out the short rolling window.
     """
-    rolling_cutoff = now + datetime.timedelta(days=PROPS_LOOKAHEAD_DAYS)
+    rolling_cutoff = now + datetime.timedelta(days=props_lookahead_days(now))
     if not game_times:
         return rolling_cutoff
     if any(t <= rolling_cutoff for t in game_times):
@@ -375,7 +403,7 @@ def fetch_player_props(api_key: str, name_lookup: dict[str, str], games: dict, s
             pass
 
     cutoff = _props_cutoff(now, [t for _, t in dated_games])
-    upcoming = [g for g, t in dated_games if t <= cutoff]
+    upcoming = [g for g, t in dated_games if now <= t <= cutoff]
     lookahead_days = (cutoff - now).days
     logger.info("odds: fetching props for %d events within %d days", len(upcoming), lookahead_days)
 
@@ -838,9 +866,11 @@ def refresh_overdue_hours() -> float:
     return round((now - prev).total_seconds() / 3600.0, 2)
 
 
-def games_within_window(within_days: int = PROPS_LOOKAHEAD_DAYS) -> int:
+def games_within_window(within_days: int | None = None) -> int:
     """How many known games kick off inside the given window."""
     now = datetime.datetime.utcnow()
+    if within_days is None:
+        within_days = props_lookahead_days(now)
     cutoff = now + datetime.timedelta(days=within_days)
     n = 0
     for g in odds_games.values():
@@ -867,10 +897,11 @@ def should_run_scheduled_refresh() -> tuple[bool, str]:
     """
     if not odds_games:
         return True, "no games held yet"
-    n = games_within_window()
+    days = props_lookahead_days()
+    n = games_within_window(days)
     if n:
-        return True, f"{n} game(s) within {PROPS_LOOKAHEAD_DAYS} days"
-    return False, (f"no games within {PROPS_LOOKAHEAD_DAYS} days — skipping to avoid a "
+        return True, f"{n} game(s) within {days} days"
+    return False, (f"no games within {days} days — skipping to avoid a "
                    f"full opener-week fetch; will resume automatically")
 
 
