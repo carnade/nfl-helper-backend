@@ -1688,8 +1688,14 @@ scheduler.add_job(
                         timezone=odds_api.REFRESH_TIMEZONE)
 )
 
-# Snapshot odds before each game window (Thu/Sun/Mon 12:00 UTC, after the refresh
-# on the two days that have one; Monday snapshots what Sunday's refresh fetched).
+# Snapshot odds before each game window (Thu/Sat/Sun/Mon 12:00 UTC, after the
+# refresh on the two days that have one). Saturday is in the list because the
+# late-season Saturday fixtures kick off at ~21:00 UTC: without it their lines
+# would first be frozen by Sunday's snapshot, hours after the game started, and
+# a line recorded after kickoff is not one anybody could have bet. Sunday and
+# Monday carry no refresh of their own and snapshot what Saturday fetched.
+#
+# Costs nothing — it reads the data already in memory.
 def _snapshot_odds():
     from routes_odds import _ou_eval
     added = odds_api.snapshot_current_games(_ou_eval)
@@ -1706,7 +1712,7 @@ def _snapshot_odds():
 
 scheduler.add_job(
     func=_snapshot_odds,
-    trigger=CronTrigger(day_of_week="thu,sun,mon", hour=12, minute=0)
+    trigger=CronTrigger(day_of_week="thu,sat,sun,mon", hour=12, minute=0)
 )
 
 def dfs_points_override(sleeper_id, week):

@@ -8,24 +8,32 @@ PRs here are squash-merged, so a branch's commits never become ancestors of `mai
 
 A refresh costs `3` for the bulk game-lines call plus `markets x regions` for **each** event inside the lookahead window — so `3 + (games x len(PROP_MARKETS))` at one region. With 13 games and 5 prop markets that is ~68, and the two scheduled runs come to ~136 a week, or ~1470 for the rest of a season from late October.
 
-The window is per weekday (`PROPS_LOOKAHEAD_BY_WEEKDAY`): **Thursday 3 days, Sunday 2**, sized so the two runs partition the week instead of overlapping it. Thursday + 3 days reaches Sunday 09:00 UTC, stopping just short of the 13:30 kickoffs, so Thursday buys Thursday night and any Friday or Saturday fixture while Sunday buys the slate plus Sunday and Monday night. Every game is bought once.
+Runs **Thursday and Saturday** (`REFRESH_CRON_DAYS`), and the window is per weekday (`PROPS_LOOKAHEAD_BY_WEEKDAY`): **Thursday 2 days, Saturday 3**. Sized so the two runs partition the week rather than overlap it — Thursday's cutoff is Saturday morning and Saturday's run starts there, so nothing falls between them and no game is bought twice.
+
+- Thursday takes Thursday night and any Friday fixture.
+- Saturday takes its own fixtures, the Sunday slate, Sunday night and Monday night. It needs **3** days, not 2: Monday night is Tuesday 00:15 UTC, and there is no later run to pick it up.
 
 Worst calendar month, measured against the real schedule at 5 markets:
 
-| Thursday window | credits/month | games lost |
+| schedule | credits/month | games lost |
 |---|---|---|
-| 4 days (what ran out) | 647 | none |
-| **3 days (current)** | **377** | none |
-| 2 days | 377 | late-season Saturday games |
-| 1 day | 372 | Friday and Saturday games |
+| Thu 4 / Sun 4, 6 markets (what ran out) | 729 | none |
+| Thu 4 / Sun 2, 5 markets | 647 | none |
+| Thu 3 / Sun 2 | 377 | none |
+| **Thu 2 / Sat 3 (current)** | **337** | none |
+| Thu 2 / Sat 2 | 317 | every Monday night game |
+| Thu 1 / Sat 3 | 322 | the Friday fixtures |
 
-Three counter-intuitive results worth not re-deriving:
+Results worth not re-deriving:
 
-- **Shrinking Sunday saves almost nothing** — ~5 credits a season. No game kicks off between Tuesday morning and Thursday evening, so those days were already empty.
-- **Thursday 4 to 3 is the whole saving.** Four days reached across the Sunday slate and bought all thirteen games that Sunday then bought again.
-- **Below 3 days stops saving and starts losing fixtures**, and Sunday's run cannot pick them up because they have already kicked off.
+- **Shrinking the second run's window saves almost nothing** — ~5 credits a season. No game kicks off between Tuesday morning and Thursday evening, so those days were already empty.
+- **Removing the overlap is the whole saving.** A 4-day Thursday reached across the Sunday slate and bought all thirteen games that the second run then bought again.
+- **Past that, it stops saving and starts losing fixtures** that no later run can pick up, because they have already kicked off.
+- **Saturday beats Sunday for the second run**: it is the only placement that covers the late-season Saturday fixtures without a third run, and it is a day earlier, so there is time to act on a line and time to notice a failed run.
 
-What 3 days costs: Sunday's prop lines are first seen on Sunday morning, so prop line movement for the main slate has nothing earlier to move from. **Game lines are unaffected** — the bulk h2h/spreads/totals call is a flat 3 credits for the whole board and ignores this window. Keeping Thursday's reading of Sunday props costs 647 a month against a 500 quota, so it is not affordable.
+What the single reading costs, measured over 2,553 graded snapshots whose first and last readings were Thursday and Sunday: **only 18% of prop lines moved at all** between them, median 2.0 when they did. By market — passing yards 42%, receiving yards 25%, rushing yards 25%, receptions 6%, rush attempts 7%. So the number you would have bet is unchanged four times in five; what is given up is the movement signal, concentrated in passing yards. **Game lines are unaffected** either way — the bulk h2h/spreads/totals call is a flat 3 credits for the whole board and ignores this window.
+
+`STARTUP_REFRESH_MAX_AGE_HOURS` must move whenever the days do. It is the widest legitimate gap between runs — Saturday to Thursday, 120 hours. Left narrower, a restart on the Tuesday or Wednesday reads as a missed run and buys a refresh it did not need, and a free-tier host restarts often.
 
 The other lever is `len(PROP_MARKETS)`; `RETIRED_PROP_MARKETS` records what was dropped and why. Three paths spend them and nothing else does:
 

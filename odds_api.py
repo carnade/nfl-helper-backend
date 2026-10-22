@@ -360,8 +360,8 @@ PROPS_REGION = "us"           # single region for props to minimise credit use
 # does not consult this window at all. Keeping the Thursday reading of Sunday
 # props costs 647 a month, and the quota is 500, so it is not affordable.
 PROPS_LOOKAHEAD_BY_WEEKDAY = {
-    3: 3,   # Thursday — Thursday night, and any Friday or Saturday fixture
-    6: 2,   # Sunday — the Sunday slate, Sunday night and Monday night
+    3: 2,   # Thursday — Thursday night and any Friday fixture
+    5: 3,   # Saturday — Saturday's games through Monday night
 }
 
 
@@ -770,12 +770,22 @@ def _compute_value_flags(
 # Defined here rather than at the scheduler so the same spec drives both the
 # cron trigger and the "next / overdue" figures reported on /odds/status.
 
-# Thursday opens the week's props; Sunday refreshes them the morning of the
-# main slate, a few hours before the 1pm ET kickoffs. Monday used to take
-# Sunday's place, which meant the biggest slate of the week was priced off lines
-# fetched the previous Thursday.
-REFRESH_CRON_DAYS = ("thu", "sun")
-REFRESH_WEEKDAYS  = (3, 6)   # datetime.weekday(): Mon=0 … Thu=3, Sun=6
+# Thursday takes Thursday night and anything on Friday. Saturday takes
+# everything from Saturday's own fixtures through Monday night — by Saturday
+# morning the whole slate is posted, which the old four-day Thursday window
+# demonstrated by successfully pulling 317 players' Sunday props three days
+# out. The two windows meet and do not overlap, so every game is bought once.
+#
+# Saturday rather than Sunday morning for two reasons. It is a day earlier, so
+# there is time to act on a line and time to notice a failed run before kickoff;
+# and it is the only placement that covers the late-season Saturday fixtures
+# without a third run. The cost is that lines are read a day further from
+# close, which for finding value is arguably the right side to be on.
+#
+# Sunday used to hold this slot, and Monday before that — which meant the
+# biggest slate of the week was priced off lines fetched the previous Thursday.
+REFRESH_CRON_DAYS = ("thu", "sat")
+REFRESH_WEEKDAYS  = (3, 5)   # datetime.weekday(): Mon=0 … Thu=3, Sat=5
 
 # Local rather than UTC, so the run stays at the same hour of the morning either
 # side of the October clock change instead of drifting to 11:00.
@@ -816,10 +826,14 @@ def _scheduled_runs_around(now: datetime.datetime) -> tuple[datetime.datetime, d
 # cannot reach the API (out of credits, most likely) still serves the last good
 # fetch instead of an empty page.
 #
-# 4 days matches the widest legitimate gap between scheduled refreshes
-# (Sun -> Thu), so a restart only spends credits when we have actually missed a
-# scheduled run rather than on every boot. Thu -> Sun is three.
-STARTUP_REFRESH_MAX_AGE_HOURS = 96
+# 5 days matches the widest legitimate gap between scheduled refreshes
+# (Sat -> Thu), so a restart only spends credits when we have actually missed a
+# scheduled run rather than on every boot. Thu -> Sat is two.
+#
+# This has to move whenever the refresh days do. Left at the old four days, a
+# restart on the Tuesday or Wednesday would read as a missed run and buy a
+# refresh it did not need — and a host on a free tier restarts often.
+STARTUP_REFRESH_MAX_AGE_HOURS = 120
 
 
 def export_cache() -> dict:
