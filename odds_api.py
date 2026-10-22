@@ -39,8 +39,27 @@ PROP_MARKETS = [
     "player_rush_yds",
     "player_receptions",
     "player_reception_yds",
-    "player_anytime_td",
 ]
+
+# Markets we have stopped paying for.
+#
+# Every event costs (markets returned x regions), so each market is a flat
+# share of the prop bill whether or not anyone acts on it. Anytime TD went
+# first because it is the weakest of the six on its own terms: its projection
+# is a hit rate off a handful of games, which is why it needs
+# BINARY_VALUE_THRESHOLD set three and a half times wider than the yardage one,
+# and no book posts the "no" side, so a good part of its flags were never bets
+# that could be placed.
+#
+# Leaving it out of PROP_MARKETS stops it being requested. Naming it here also
+# stops what is already cached and already graded from being served, which
+# matters because the stored copy outlives the decision by as long as it takes
+# the next refresh to land.
+#
+# The binary machinery below stays. The grading history still holds these rows
+# and has to stay readable, and putting the market back is one line in each of
+# the two lists.
+RETIRED_PROP_MARKETS = {"player_anytime_td"}
 
 # Market key → nflverse rolling_5 stat key used for value flag comparison
 PROP_ROLLING_KEY = {
@@ -928,6 +947,11 @@ def snapshot_current_props() -> tuple[int, int]:
             started = False
 
         for mkey, m in (p.get("props") or {}).items():
+            # No point freezing a call on a market we no longer buy and no
+            # longer serve. The cached fetch still carries these until a
+            # refresh lands, which without credits could be a while.
+            if mkey in RETIRED_PROP_MARKETS:
+                continue
             key = f"{p.get('event_id')}:{p.get('sleeper_id')}:{mkey}"
             existing = odds_props_history.get(key)
             if existing and started:

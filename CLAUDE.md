@@ -4,7 +4,9 @@ Check it **immediately before the push**, not when the branch was created. A PR 
 
 PRs here are squash-merged, so a branch's commits never become ancestors of `main`. `git merge-base --is-ancestor` will report merged work as missing. Check by commit subject against `git log main` (a squash commit keeps the PR title, usually with `(#NN)` appended, so match on substring), or by whether the branch's diff against `main` is empty. A two-dot diff (`main..branch`) is not a merge test — it also counts main's newer commits as differences.
 
-**Never spend odds API credits without asking first.** They are a finite purchased balance, not a rate limit that refills — about 50 go per refresh, and `/odds/status` reports what is left under `credits_remaining`. Three paths spend them and nothing else does:
+**Never spend odds API credits without asking first.** They are a finite purchased balance, not a rate limit that refills, and `/odds/status` reports what is left under `credits_remaining`.
+
+A refresh costs `3` for the bulk game-lines call plus `markets x regions` for **each** event inside `PROPS_LOOKAHEAD_DAYS` — so `3 + (games x len(PROP_MARKETS))` at one region. With 13 games in the window and 5 prop markets that is ~68, and the two scheduled runs come to ~136 a week. The two levers that matter are the length of that lookahead window and the number of entries in `PROP_MARKETS`; `RETIRED_PROP_MARKETS` records the ones dropped and why. Three paths spend them and nothing else does:
 
 - `POST /admin/trigger-odds-fetch`
 - `refresh_odds_and_cache()` / `odds_api.refresh_odds_data()` called directly
