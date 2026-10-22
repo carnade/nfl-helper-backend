@@ -33,6 +33,10 @@ Results worth not re-deriving:
 
 What the single reading costs, measured over 2,553 graded snapshots whose first and last readings were Thursday and Sunday: **only 18% of prop lines moved at all** between them, median 2.0 when they did. By market — passing yards 42%, receiving yards 25%, rushing yards 25%, receptions 6%, rush attempts 7%. So the number you would have bet is unchanged four times in five; what is given up is the movement signal, concentrated in passing yards. **Game lines are unaffected** either way — the bulk h2h/spreads/totals call is a flat 3 credits for the whole board and ignores this window.
 
+**Both runs are needed; one is not an economy.** Of 2,156 props on Sunday-slate games, 22.7% were not posted on Thursday at all, and 163 player-games (17.5%) had no prop of any kind until later in the week — those players would simply be absent, not merely stale. It lands where roles firm up late: rush attempts 35% new and RBs 28%, against passing yards at 1.9%, because quarterbacks are known on Thursday and carry splits are not. The late props are not throwaway either — 82.7% carried a value flag against a 75.7% baseline. Thursday cannot be dropped either, since Thursday night games kick off before the second run, but at one or two events it is nearly free.
+
+Measured Thursday-versus-Sunday, because there has never been a Saturday fetch to compare against; Saturday is 1.2 days out rather than 3, so it should catch most of that 22.7%, and the first Saturday run will say how much by what `player_prop_count` comes to against the ~317 these runs have produced.
+
 `STARTUP_REFRESH_MAX_AGE_HOURS` must move whenever the days do. It is the widest legitimate gap between runs — Saturday to Thursday, 120 hours. Left narrower, a restart on the Tuesday or Wednesday reads as a missed run and buys a refresh it did not need, and a free-tier host restarts often.
 
 The other lever is `len(PROP_MARKETS)`; `RETIRED_PROP_MARKETS` records what was dropped and why. Three paths spend them and nothing else does:
