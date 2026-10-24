@@ -79,7 +79,7 @@ class TestAddToTinyurl:
         create_entry("league", week=8, allowed_names=["alice", "bob"])
         lineup = make_full_lineup_string(8, "12345")
         resp = client.post("/tinyurl/league/add", json={
-            "name": "alice", "data": lineup, "skip_validation": True
+            "name": "alice", "data": lineup
         })
         assert resp.status_code == 200
         assert resp.get_json()["update_count"] == 1
@@ -87,35 +87,35 @@ class TestAddToTinyurl:
     def test_second_submission_increments_count(self, client):
         create_entry("league", week=8, allowed_names=["alice"])
         lineup = make_full_lineup_string(8, "12345")
-        client.post("/tinyurl/league/add", json={"name": "alice", "data": lineup, "skip_validation": True})
-        resp = client.post("/tinyurl/league/add", json={"name": "alice", "data": lineup, "skip_validation": True})
+        client.post("/tinyurl/league/add", json={"name": "alice", "data": lineup})
+        resp = client.post("/tinyurl/league/add", json={"name": "alice", "data": lineup})
         assert resp.status_code == 200
         assert resp.get_json()["update_count"] == 2
 
     def test_unauthorized_user_returns_401(self, client):
         create_entry("league", week=8, allowed_names=["alice"])
         resp = client.post("/tinyurl/league/add", json={
-            "name": "charlie", "data": make_full_lineup_string(8), "skip_validation": True
+            "name": "charlie", "data": make_full_lineup_string(8)
         })
         assert resp.status_code == 401
 
     def test_nonexistent_entry_returns_404(self, client):
         resp = client.post("/tinyurl/ghost/add", json={
-            "name": "alice", "data": make_full_lineup_string(8), "skip_validation": True
+            "name": "alice", "data": make_full_lineup_string(8)
         })
         assert resp.status_code == 404
 
     def test_case_insensitive_username_match(self, client):
         create_entry("league", week=8, allowed_names=["Alice"])
         resp = client.post("/tinyurl/league/add", json={
-            "name": "alice", "data": make_full_lineup_string(8), "skip_validation": True
+            "name": "alice", "data": make_full_lineup_string(8)
         })
         assert resp.status_code == 200
 
     def test_entry_without_allowed_names_returns_400(self, client):
         nfl_helper.tinyurl_data["bare"] = {"name": "bare", "week": 8, "allowed_names": []}
         resp = client.post("/tinyurl/bare/add", json={
-            "name": "alice", "data": make_full_lineup_string(8), "skip_validation": True
+            "name": "alice", "data": make_full_lineup_string(8)
         })
         assert resp.status_code == 400
 

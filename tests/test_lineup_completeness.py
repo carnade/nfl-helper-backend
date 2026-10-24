@@ -102,9 +102,10 @@ class TestTheRoute:
         self._post(client, lineup(*FULL[:6]))
         assert nfl_helper.tinyurl_data["cup"].get("user_submissions", {}) == {}
 
-    def test_skip_validation_does_not_wave_it_through(self, client):
-        """skip_validation is caller-supplied, so anything it can bypass is
-        effectively optional. A short lineup is invalid whenever it arrives."""
+    def test_the_old_skip_validation_flag_is_ignored(self, client):
+        """It used to bypass the kickoff rule and carried no authentication, so
+        anyone who sent it walked through the lock. It is gone; a body still
+        carrying it is accepted and the flag has no effect."""
         resp = self._post(client, lineup(*FULL[:6]), skip_validation=True)
         assert resp.status_code == 400
         assert "6 of 9" in resp.get_json()["error"]
