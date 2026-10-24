@@ -2672,9 +2672,9 @@ def get_dfs_salaries_for_player_endpoint(sleeper_id):
         
         if week:
             # Get specific week data
-            key = f"{sleeper_id}_W{week}"
-            player_data = dfs_salaries_data.get(key)
-            
+            rows = dfs_salary_rows(sleeper_id, week)
+            player_data = rows[0] if rows else None
+
             if player_data:
                 return jsonify(player_data), 200
             else:
@@ -2937,13 +2937,14 @@ def admin_check_test_data(sleeper_id, week):
     """
     global dfs_salaries_data
     
-    key = f"{sleeper_id}_W{week}"
-    player_data = dfs_salaries_data.get(key)
-    
+    rows = dfs_salary_rows(sleeper_id, week)
+    player_data = rows[0] if rows else None
+
     if player_data:
         return jsonify({
             "found": True,
-            "key": key,
+            "key": f"{sleeper_id}_W{week}",
+            "rows_held": len(rows),
             "data": player_data
         }), 200
     else:
@@ -3370,6 +3371,27 @@ def _decode_lineup_payload(base64_data):
     return None
 
 
+def dfs_salary_rows(sleeper_id, week):
+    """
+    Every salary row held for this player in this week, across slates.
+
+    Rows are keyed "{sleeper_id}_W{week}_D{game_date}" — the date was added
+    when DFS gained support for the Thursday and Monday slates, because one
+    week holds several of them. Three readers were left building the old
+    "{sleeper_id}_W{week}" and so matched nothing at all, and the worst of
+    them was the kickoff check below: every lookup missed, every player was
+    skipped as unknown, and it reported every lineup clean. It had not
+    actually blocked anything since that change.
+
+    Matching on the prefix rather than reconstructing the key, because the
+    caller does not know the game date — finding it is the point. The "_D"
+    is required in the prefix so that player 1 cannot match player 10.
+    """
+    prefix = f"{sleeper_id}_W{week}"
+    return [row for key, row in dfs_salaries_data.items()
+            if key == prefix or key.startswith(f"{prefix}_D")]
+
+
 def validate_lineup_is_complete(lineup_data):
     """
     Every slot filled. Returns (is_valid, error_message).
@@ -3439,112 +3461,47 @@ def validate_lineup_players_not_started(lineup_data):
         week_str = parts[0]
         base64_data = parts[1]
         
-        # Decode base64 to get player list
+        # Decode the payload into the player list.
+        #
+        # Through the shared helper, which the completeness check already used.
+        # This function had its own ladder that tried raw base64 first and gave
+        # up when that failed — and compressToEncodedURIComponent output is not
+        # base64, so a good share of real lineups never got past it.
         sleeper_ids = []
+        decoded_string = _decode_lineup_payload(base64_data)
+        if decoded_string is None:
+            # Nothing can be checked about a lineup that cannot be read. Letting
+            # it through is deliberate — refusing every submission the moment the
+            # encoding changes would lock everyone out — but it is the one
+            # remaining way past this check, so it is logged loudly.
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "Could not decode lineup payload, kickoff check skipped. "
+                f"Length {len(base64_data)}, first 40 chars: {base64_data[:40]}"
+            )
+            return True, None, []
+
         try:
-            # Preserve original base64_data for LZString (before any modifications)
-            original_base64_data = base64_data
-            
-            # Add padding if needed (base64 strings must be multiple of 4)
-            missing_padding = len(base64_data) % 4
-            if missing_padding:
-                base64_data += '=' * (4 - missing_padding)
-            
-            # Decode base64 to bytes first
-            # Try standard base64 first, then URL-safe base64 if that fails
-            try:
-                decoded_bytes = base64.b64decode(base64_data)
-            except Exception:
-                # If standard base64 fails, try URL-safe base64 (uses - and _ instead of + and /)
-                try:
-                    decoded_bytes = base64.urlsafe_b64decode(base64_data)
-                except Exception as e:
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.warning(f"Could not decode base64 (standard or URL-safe): {str(e)}. Base64 data (first 100 chars): {base64_data[:100]}. Skipping game time validation.")
-                    return True, None, []
-            
-            # Try to decode as UTF-8
-            try:
-                decoded_string = decoded_bytes.decode('utf-8')
-            except UnicodeDecodeError:
-                # If UTF-8 fails, try LZString decompression (common for frontend compression)
-                decoded_string = None
-                try:
-                    # Try lzstring package (most common)
-                    try:
-                        import lzstring
-                        lzs = lzstring.LZString()
-                        # LZString expects the base64 string, not the decoded bytes
-                        # Use original_base64_data (before padding was added)
-                        # Try with original first
-                        try:
-                            decoded_string = lzs.decompressFromBase64(original_base64_data)
-                        except:
-                            # If that fails, try converting URL-safe base64 to standard base64
-                            # URL-safe uses - and _ instead of + and /
-                            if '-' in original_base64_data or '_' in original_base64_data:
-                                # Convert URL-safe to standard base64
-                                standard_base64 = original_base64_data.replace('-', '+').replace('_', '/')
-                                # Re-add padding if needed
-                                missing_padding = len(standard_base64) % 4
-                                if missing_padding:
-                                    standard_base64 += '=' * (4 - missing_padding)
-                                decoded_string = lzs.decompressFromBase64(standard_base64)
-                    except ImportError:
-                        # Try alternative package name
-                        try:
-                            from lz_string import LZString
-                            lzs = LZString()
-                            try:
-                                decoded_string = lzs.decompressFromBase64(original_base64_data)
-                            except:
-                                # Try URL-safe conversion
-                                if '-' in original_base64_data or '_' in original_base64_data:
-                                    standard_base64 = original_base64_data.replace('-', '+').replace('_', '/')
-                                    missing_padding = len(standard_base64) % 4
-                                    if missing_padding:
-                                        standard_base64 += '=' * (4 - missing_padding)
-                                    decoded_string = lzs.decompressFromBase64(standard_base64)
-                        except ImportError:
-                            # Neither package available
-                            pass
-                except Exception as e:
-                    # LZString decompression failed, will try zlib as fallback
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.debug(f"LZString decompression failed: {str(e)}, trying zlib fallback")
-                    pass
-                
-                # If LZString didn't work, try zlib decompression
-                if not decoded_string:
-                    import zlib
-                    try:
-                        decompressed = zlib.decompress(decoded_bytes)
-                        decoded_string = decompressed.decode('utf-8')
-                    except:
-                        # If all decompression methods fail, log and skip validation
-                        import logging
-                        logger = logging.getLogger(__name__)
-                        logger.warning(f"Could not decode base64 as UTF-8, LZString, or zlib. Base64 length: {len(base64_data)}, decoded bytes length: {len(decoded_bytes)}, first 20 bytes (hex): {decoded_bytes[:20].hex()}. Skipping game time validation.")
-                        return True, None, []
-            
             # Parse player list
             # Format can be:
             # - "sleeper_id:salary,sleeper_id:salary,..." 
             # - "sleeper_id-salary,sleeper_id-salary,..."
             # - "username:sleeper_id-salary,sleeper_id-salary,..." (with username prefix)
             
-            # Check if there's a username prefix (format: "username:player_list")
-            # Username prefix would be at the start, all letters, followed by a colon
+            # Strip a username prefix, if there is one.
             if ':' in decoded_string:
-                first_colon_idx = decoded_string.index(':')
-                before_colon = decoded_string[:first_colon_idx].strip()
-                # If the part before the first colon is all letters (username), extract player list
-                if before_colon.isalpha() and len(before_colon) > 0:
-                    player_list = decoded_string[first_colon_idx + 1:]  # Get everything after "username:"
-                else:
-                    player_list = decoded_string
+                head, rest = decoded_string.split(':', 1)
+                head = head.strip()
+                # A purely numeric head is a sleeper_id in the "id:salary" form
+                # rather than a handle, so the string is already a player list.
+                # Anything else is a username and gets dropped.
+                #
+                # This used to test isalpha(), which is false for any handle
+                # carrying a digit — "Ringside1981", "52Ravens". Their prefix
+                # was left in place, the first pair parsed as the handle, and
+                # that player went unchecked.
+                player_list = decoded_string if head.isdigit() else rest
             else:
                 player_list = decoded_string
             
@@ -3592,16 +3549,24 @@ def validate_lineup_players_not_started(lineup_data):
             if week is None:
                 continue
             
-            # Try to find player data (key format: sleeper_id_W{week})
-            key = f"{sleeper_id}_W{week}"
-            player_data = dfs_salaries_data.get(key)
-            
-            if not player_data:
-                # Player not found in salary data, skip validation for this player
+            rows = dfs_salary_rows(sleeper_id, week)
+
+            if not rows:
+                # Genuinely unknown to us — a manual entry, or a player the
+                # scrape missed. Nothing can be said about their kickoff, so
+                # they are skipped rather than guessed at.
                 import logging
                 logger = logging.getLogger(__name__)
-                logger.debug(f"Player {sleeper_id} (week {week}, key: {key}) not found in dfs_salaries_data. Available keys: {list(dfs_salaries_data.keys())[:10]}")
+                logger.warning(f"Player {sleeper_id} (week {week}) not in dfs_salaries_data — kickoff not checked for them")
                 continue
+
+            # A player can be held against more than one slate. The earliest
+            # kickoff is the one that locks them, so a later slate's row cannot
+            # wave through a game that has already been played.
+            player_data = min(
+                rows,
+                key=lambda row: row.get('game_date') or row.get('start_date') or '9999-99-99'
+            )
             
             # Check if game has started
             game_date_str = player_data.get('game_date') or player_data.get('start_date')
@@ -4264,6 +4229,30 @@ def get_tinyurls_by_username(username):
                     # cannot, and offers a PIN box for a lineup that has no PIN.
                     "can_open_with_login": bool(identity_name) and identity_name == lookup_username,
                 }
+
+                # Whether the stored lineup is already frozen by a kickoff.
+                #
+                # The rule lives in validate_lineup_players_not_started and is
+                # enforced on submit. Reporting it here as well lets the page say
+                # so before a lineup is built, instead of taking one and refusing
+                # it with an alert — and keeps the answer in one place, which is
+                # the whole lesson of this check having been dead for months.
+                #
+                # Only set when players were actually identified as started: the
+                # same call returns False for a lineup it could not read, and that
+                # is not a lock.
+                entry_info['locked'] = False
+                if user_has_data:
+                    stored_lineup = (user_submissions.get(lookup_username) or {}).get('data') \
+                        or entry_data.get('data')
+                    if stored_lineup:
+                        _ok, _why, started = validate_lineup_players_not_started(stored_lineup)
+                        if started:
+                            entry_info['locked'] = True
+                            entry_info['locked_by'] = [
+                                {'name': p.get('name'), 'team': p.get('team')}
+                                for p in started
+                            ]
                 # Include week if present
                 if 'week' in entry_data:
                     entry_info['week'] = entry_data['week']
