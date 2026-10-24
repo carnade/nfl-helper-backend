@@ -3246,6 +3246,25 @@ def parse_deadline(value):
     return parsed.astimezone(datetime.timezone.utc), None
 
 
+def reveal_is_pending(entry):
+    """
+    Whether this tournament's lineups are still meant to be secret.
+
+    The reveal time has been stored and echoed since the feature was written
+    and never once compared against the clock, so /tinyurl/<name>/data served
+    every entrant's lineup to anyone who knew the tournament's name, whenever
+    they asked. The results page hid them client-side, which is a courtesy
+    rather than a rule — and its own admin override is a URL parameter plus a
+    localStorage check, neither of which proves anything to the server.
+
+    No reveal time means nothing to wait for.
+    """
+    parsed, _err = parse_deadline(entry.get('reveal'))
+    if parsed is None:
+        return False
+    return datetime.datetime.now(datetime.timezone.utc) < parsed
+
+
 def deadline_has_passed(entry):
     """Whether this entry's submission deadline is in the past."""
     parsed, _ = parse_deadline(entry.get('deadline'))
@@ -3449,10 +3468,17 @@ def validate_lineup_is_complete(lineup_data):
 PUBLIC_SUBMISSION_FIELDS = ('username', 'data', 'created_at', 'updated_at', 'update_count')
 
 
-def public_user_submissions(entry):
-    """Submissions with only the fields a public caller has any business seeing."""
+def public_user_submissions(entry, include_data=True):
+    """
+    Submissions with only the fields a public caller has any business seeing.
+
+    `include_data` drops the lineups themselves, for before the reveal time.
+    Who has submitted, and when, is not a secret — what they picked is.
+    """
+    fields = PUBLIC_SUBMISSION_FIELDS if include_data else tuple(
+        f for f in PUBLIC_SUBMISSION_FIELDS if f != 'data')
     return {
-        key: {field: sub.get(field) for field in PUBLIC_SUBMISSION_FIELDS if field in sub}
+        key: {field: sub.get(field) for field in fields if field in sub}
         for key, sub in (entry.get('user_submissions') or {}).items()
     }
 
@@ -4181,13 +4207,24 @@ def get_tinyurl_data(name):
                 "message": "Incorrect PIN"
             }), 200
     
+    # Lineups stay in until the reveal time, for everybody but the organiser.
+    #
+    # The organiser check costs a verified Sleeper lookup, so it is only made
+    # when there is actually a reveal to wait for — after it passes, this route
+    # behaves exactly as it always has.
+    withhold_lineups = reveal_is_pending(entry) and not request_is_from_organiser()
+
     # Use original name from entry if stored, otherwise use the provided name
     display_name = entry.get('name', name)
     response = {
         "name": display_name,
-        "data": entry.get('data'),
+        "data": None if withhold_lineups else entry.get('data'),
         "created_at": entry.get('created_at')
     }
+    if withhold_lineups:
+        # Said out loud, so a page can show "hidden until reveal" rather than
+        # an empty grid it cannot explain.
+        response['reveal_pending'] = True
     
     # Include allowed_names if present (created via /create/empty)
     if 'allowed_names' in entry:
@@ -4217,7 +4254,8 @@ def get_tinyurl_data(name):
     # anybody who knew the tournament's name. `data` stays: serving it is what
     # the results view is for.
     if 'user_submissions' in entry:
-        response['user_submissions'] = public_user_submissions(entry)
+        response['user_submissions'] = public_user_submissions(
+            entry, include_data=not withhold_lineups)
     
     return jsonify(response), 200
 

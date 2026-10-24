@@ -467,3 +467,99 @@ class TestTheOrganiserRoutes:
 
     def test_details_reports_the_mode(self, entry, client):
         assert client.get("/tinyurl/cup/details").get_json()["lineup_lock"] == "full"
+
+
+class TestLineupsStayInUntilTheReveal:
+    """
+    The reveal time had been stored and echoed since the feature was written and
+    never compared against the clock, so this route served every entrant's
+    lineup to anyone who knew the tournament's name. The results page hid them
+    client-side, which is a courtesy rather than a rule.
+
+    The organiser still needs them — that is what the manage and admin results
+    views are for — so the exception is a verified Sleeper login, not a URL
+    parameter.
+    """
+
+    FUTURE = "2099-01-01T00:00:00Z"
+    PAST = "2020-01-01T00:00:00Z"
+
+    def _entry(self, monkeypatch, reveal):
+        monkeypatch.setattr(nh, "tinyurl_data", {"cup": {
+            "name": "cup", "allowed_names": ["MrJocke"], "week": WEEK,
+            "reveal": reveal, "data": lineup(UNPLAYED + [SPARE]),
+            "user_submissions": {"mrjocke": {
+                "username": "MrJocke", "data": lineup(UNPLAYED + [SPARE]),
+                "update_count": 2, "created_at": "2026-10-22T19:00:00",
+            }},
+        }})
+
+    def test_before_the_reveal_a_stranger_gets_no_lineups(self, monkeypatch, client):
+        self._entry(monkeypatch, self.FUTURE)
+        monkeypatch.setattr(nh, "request_is_from_organiser", lambda: False)
+        body = client.get("/tinyurl/cup/data?action=results").get_json()
+        assert body["reveal_pending"] is True
+        assert body["data"] is None
+        assert "data" not in body["user_submissions"]["mrjocke"]
+
+    def test_who_submitted_is_still_public(self, monkeypatch, client):
+        # Not a secret, and the results page needs it to show who is in.
+        self._entry(monkeypatch, self.FUTURE)
+        monkeypatch.setattr(nh, "request_is_from_organiser", lambda: False)
+        sub = client.get("/tinyurl/cup/data?action=results").get_json()["user_submissions"]["mrjocke"]
+        assert sub["username"] == "MrJocke"
+        assert sub["update_count"] == 2
+        assert sub["created_at"]
+
+    def test_the_organiser_still_sees_them(self, monkeypatch, client):
+        self._entry(monkeypatch, self.FUTURE)
+        monkeypatch.setattr(nh, "request_is_from_organiser", lambda: True)
+        body = client.get("/tinyurl/cup/data?action=results").get_json()
+        assert "reveal_pending" not in body
+        assert body["data"]
+        assert body["user_submissions"]["mrjocke"]["data"]
+
+    def test_an_admin_query_parameter_is_not_enough(self, monkeypatch, client):
+        # The results page's own admin mode is a URL flag plus a localStorage
+        # check. Enforcing this server-side is what makes that harmless.
+        self._entry(monkeypatch, self.FUTURE)
+        monkeypatch.setattr(nh, "request_is_from_organiser", lambda: False)
+        body = client.get("/tinyurl/cup/data?action=results&admin=true").get_json()
+        assert body["data"] is None
+
+    def test_after_the_reveal_everyone_sees_them(self, monkeypatch, client):
+        self._entry(monkeypatch, self.PAST)
+        monkeypatch.setattr(nh, "request_is_from_organiser", lambda: False)
+        body = client.get("/tinyurl/cup/data?action=results").get_json()
+        assert "reveal_pending" not in body
+        assert body["user_submissions"]["mrjocke"]["data"]
+
+    def test_a_tournament_with_no_reveal_time_is_unaffected(self, monkeypatch, client):
+        self._entry(monkeypatch, None)
+        monkeypatch.setattr(nh, "request_is_from_organiser", lambda: False)
+        body = client.get("/tinyurl/cup/data?action=results").get_json()
+        assert body["user_submissions"]["mrjocke"]["data"]
+
+    def test_an_unparseable_reveal_time_does_not_hide_anything(self, monkeypatch, client):
+        # Rather than locking a tournament out of its own results on a typo.
+        self._entry(monkeypatch, "not a date")
+        monkeypatch.setattr(nh, "request_is_from_organiser", lambda: False)
+        assert client.get("/tinyurl/cup/data?action=results").get_json()["data"]
+
+    def test_the_organiser_is_only_asked_about_when_it_matters(self, monkeypatch, client):
+        # request_is_from_organiser verifies a token against Sleeper, so it must
+        # not be called on every results view once the reveal has passed.
+        self._entry(monkeypatch, self.PAST)
+        calls = []
+        monkeypatch.setattr(nh, "request_is_from_organiser",
+                            lambda: (calls.append(1), False)[1])
+        client.get("/tinyurl/cup/data?action=results")
+        assert calls == []
+
+    def test_an_entrant_can_still_fetch_their_own(self, monkeypatch, client):
+        # Their own lineup is theirs to look at; that branch picks its fields
+        # explicitly and is not touched by the reveal.
+        self._entry(monkeypatch, self.FUTURE)
+        monkeypatch.setattr(nh, "request_is_from_organiser", lambda: False)
+        body = client.get("/tinyurl/cup/data?username=MrJocke").get_json()
+        assert body["data"]
