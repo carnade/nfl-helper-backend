@@ -3388,8 +3388,18 @@ def dfs_salary_rows(sleeper_id, week):
     is required in the prefix so that player 1 cannot match player 10.
     """
     prefix = f"{sleeper_id}_W{week}"
-    return [row for key, row in dfs_salaries_data.items()
+    rows = [row for key, row in dfs_salaries_data.items()
             if key == prefix or key.startswith(f"{prefix}_D")]
+    if rows:
+        return rows
+
+    # A defence has no numeric id, so the scrape keys its row by name and team
+    # — "Bears_CHI_W7_D2026-10-22" — which no prefix built from the team code
+    # can match. Falling back to the fields finds it.
+    token = str(sleeper_id).upper()
+    return [row for row in dfs_salaries_data.values()
+            if str(row.get('sleeper_id', '')).upper() == token
+            and row.get('week') == week]
 
 
 def validate_lineup_is_complete(lineup_data):
@@ -3397,7 +3407,7 @@ def validate_lineup_is_complete(lineup_data):
     Every slot filled. Returns (is_valid, error_message).
 
     Unlike the kickoff check this is not about timing, so it is not something
-    skip_validation may wave through: a lineup missing a player is not a lineup,
+    anything may wave through: a lineup missing a player is not a lineup,
     whenever it is sent. An undecodable lineup is left to the checks that
     already deal with that rather than refused twice.
     """
@@ -3412,17 +3422,167 @@ def validate_lineup_is_complete(lineup_data):
                            f"slots filled, {missing} still empty")
         return False, (f"Lineup has too many players: {len(tokens)}, "
                        f"expected {DFS_LINEUP_SLOTS}")
+
+    # Nine slots can be nine slots and still hold a player twice, and scoring
+    # sums the list rather than the set — so a repeat counts double. It also
+    # walks through the kickoff rule, which compares who is in a lineup and not
+    # how many times: keeping a played player and duplicating him satisfies
+    # "nothing was removed" while doubling his points.
+    #
+    # Sits here for the same reason the slot count does: a lineup holding one
+    # player twice is not a lineup, whenever it arrives. The page cannot
+    # produce one — selecting a rostered player
+    # removes him rather than adding a second copy.
+    repeated = sorted({t for t in tokens if tokens.count(t) > 1})
+    if repeated:
+        return False, (f"Lineup has the same player in more than one slot: "
+                       f"{', '.join(repeated)}")
     return True, None
 
 
-def validate_lineup_players_not_started(lineup_data):
+# What a stranger may see of a submission.
+#
+# An allowlist rather than a blocklist, so that the next field added inside
+# user_submissions is private until somebody decides otherwise. The inverse —
+# handing out the whole dict and remembering to remove things — is how this
+# route came to publish every entrant's PIN.
+PUBLIC_SUBMISSION_FIELDS = ('username', 'data', 'created_at', 'updated_at', 'update_count')
+
+
+def public_user_submissions(entry):
+    """Submissions with only the fields a public caller has any business seeing."""
+    return {
+        key: {field: sub.get(field) for field in PUBLIC_SUBMISSION_FIELDS if field in sub}
+        for key, sub in (entry.get('user_submissions') or {}).items()
+    }
+
+
+# How many submissions back a lineup is kept.
+#
+# A short forensic backup, not an archive: it answers "what did they send
+# before" during the week it was sent, and nothing more. The long-term record
+# is the week's points in standings, which is already kept.
+#
+# Nothing prunes this on a timer because nothing has to. clear_tinyurl_data
+# resets user_submissions wholesale at the weekly rollover, after that week has
+# been scored, so the history goes with it — which is exactly the lifetime
+# wanted. A single-week entry is deleted outright at the same point.
+LINEUP_HISTORY_LIMIT = 10
+
+
+def record_lineup_submission(user_submission, data, at):
+    """
+    Keep this submission in the entrant's short history, oldest first.
+
+    Appended on every submission including the first, so the field holds what
+    its name says and history[-1] is always what is stored under `data`. The
+    alternative — pushing the outgoing lineup at overwrite time — makes each
+    record's timestamp mean "when it was replaced", which is not what anybody
+    reading a list of submissions expects.
+    """
+    history = list(user_submission.get('history') or [])
+    history.append({'at': at, 'data': data})
+    user_submission['history'] = history[-LINEUP_HISTORY_LIMIT:]
+
+
+LINEUP_LOCK_MODES = ('full', 'unplayed')
+
+
+def lineup_lock_mode(entry):
+    """
+    How strictly this tournament freezes a lineup once a game has begun.
+
+    "full" — the default, and what an entry without the field gets — freezes
+    the whole lineup as soon as any one of its players kicks off. "unplayed"
+    freezes only the players who have actually played, leaving the rest
+    editable. Anything unrecognised reads as "full": a typo in stored data
+    should not quietly relax a rule.
+    """
+    mode = str(entry.get('lineup_lock') or 'full').strip().lower()
+    return mode if mode in LINEUP_LOCK_MODES else 'full'
+
+
+def validate_lineup_change(stored, incoming, week, mode='full'):
+    """
+    Whether this submission may replace what is already stored.
+
+    One function for both modes so they cannot drift apart — which is the
+    lesson of the kickoff check having sat dead for months while nothing
+    existed to contradict it.
+
+    Returns the same (is_valid, error_message, players_started) shape as the
+    check it wraps, so the route and the page need no new error handling.
+    """
+    # Nothing stored yet: there is no edit to police, only an entry. Same in
+    # both modes, and the same after an organiser has cleared a lineup.
+    if not stored:
+        return validate_lineup_players_not_started(incoming, week)
+
+    if mode != 'unplayed':
+        ok, why, started = validate_lineup_players_not_started(stored, week)
+        if not ok:
+            return False, f"Cannot overwrite lineup: {why}", started
+        return validate_lineup_players_not_started(incoming, week)
+
+    old = _lineup_slot_tokens(stored)
+    new = _lineup_slot_tokens(incoming)
+    if old is None or new is None:
+        # Two lineups that cannot both be read cannot be compared. Falling back
+        # to the strict rule rather than waving it through: a relaxation must
+        # never end up more permissive than the thing it relaxes.
+        return validate_lineup_change(stored, incoming, week, 'full')
+
+    old_set, new_set = set(old), set(new)
+    _ok, _why, started_old = validate_lineup_players_not_started(stored, week)
+
+    # A player who has played cannot be dropped — that is the whole point of
+    # freezing them.
+    dropped = [p for p in started_old if p['sleeper_id'] not in new_set]
+    if dropped:
+        return False, ("Cannot remove a player whose game has started: "
+                       f"{_player_names(dropped)}"), dropped
+
+    added = new_set - old_set
+    if added:
+        _ok, _why, started_new = validate_lineup_players_not_started(incoming, week)
+        started_added = [p for p in started_new if p['sleeper_id'] in added]
+        if started_added:
+            return False, ("Cannot add a player whose game has started: "
+                           f"{_player_names(started_added)}"), started_added
+
+    # Allowed, but still say who is frozen so the caller can report it.
+    return True, None, started_old
+
+
+def _player_names(players):
+    return ', '.join(
+        f"{p.get('name') or p.get('sleeper_id')}"
+        + (f" ({p['team']})" if p.get('team') else '')
+        for p in players
+    )
+
+
+def validate_lineup_players_not_started(lineup_data, week=None):
     """
     Validate that no players in the lineup have started their games yet.
     Uses EST/EDT timezone for game times (NFL games are typically in ET).
-    
+
+    `week` overrides the one in the payload, and callers handling a submission
+    must pass it. The week is what every salary lookup is keyed on, so taking it
+    from the submitted string let anyone defeat this check by relabelling a
+    lineup: "99|<payload>" missed every row, skipped every player as unknown,
+    and passed. Scoring never consulted that number — it uses the entry's own
+    week — so the relabelled lineup still counted for the real one.
+
+    Deliberately not a mismatch check. Between Sleeper's Tuesday rollover and
+    the Wednesday scoring pass an entry still holds the previous week, which is
+    the gap week_awaiting_scoring exists for, so refusing a disagreement would
+    turn honest submissions away.
+
     Args:
         lineup_data: String in format "week|base64_encoded_string"
-        
+        week: the week to judge against; None trusts the payload
+
     Returns:
         tuple: (is_valid: bool, error_message: str or None, players_started: list)
     """
@@ -3459,6 +3619,9 @@ def validate_lineup_players_not_started(lineup_data):
             return False, "Invalid lineup data format. Expected 'week|base64_data'", []
         
         week_str = parts[0]
+        # The caller's week wins. See the note above about why.
+        if week is not None:
+            week_str = str(week)
         base64_data = parts[1]
         
         # Decode the payload into the player list.
@@ -3516,9 +3679,16 @@ def validate_lineup_players_not_started(lineup_data):
                 else:
                     continue
                 
-                # Only add numeric sleeper IDs (skip usernames and team abbreviations like "HOU")
+                # Numeric ids are players; a team code is the defence slot.
+                # Scoring has always counted both (see NFL_TEAM_CODES in
+                # calculate_dfs_points_from_lineup), while this check took only
+                # the numeric ones — so a defence that had already played was
+                # never frozen and could be swapped for one that had not, with
+                # the new one scoring.
                 if sleeper_id and sleeper_id.isdigit():
                     sleeper_ids.append(sleeper_id)
+                elif sleeper_id and sleeper_id.upper() in NFL_TEAM_CODES:
+                    sleeper_ids.append(sleeper_id.upper())
         except Exception as e:
             # If base64 decoding fails, we can't validate player game times
             # This might be compressed data or a different format
@@ -4041,9 +4211,13 @@ def get_tinyurl_data(name):
     if 'updated_by' in entry:
         response['updated_by'] = entry['updated_by']
     
-    # Include user_submissions if present (tracks per-user submission history)
+    # Projected, not copied. This route has no authentication at all and
+    # ?action=results skips even the PIN prompt, so it was handing every
+    # entrant's PIN — and would have handed out their whole edit history — to
+    # anybody who knew the tournament's name. `data` stays: serving it is what
+    # the results view is for.
     if 'user_submissions' in entry:
-        response['user_submissions'] = entry['user_submissions']
+        response['user_submissions'] = public_user_submissions(entry)
     
     return jsonify(response), 200
 
@@ -4097,6 +4271,8 @@ def get_tinyurl_details(name):
         response['type'] = entry['type']
 
     response['access_mode'] = entry.get('access_mode', 'allowlist')
+    # So the manage page can show and change it.
+    response['lineup_lock'] = lineup_lock_mode(entry)
     progress = multiweek_progress(entry)
     if progress:
         response['tournament_week'] = progress['week']
@@ -4241,18 +4417,31 @@ def get_tinyurls_by_username(username):
                 # Only set when players were actually identified as started: the
                 # same call returns False for a lineup it could not read, and that
                 # is not a lock.
+                # In "unplayed" mode a started player freezes only himself, so
+                # `locked` — which means "a submission will be refused outright"
+                # — stays false while any slot can still change. It goes true
+                # again once every slot has played, because then the only
+                # lineups left either change nothing or drop somebody.
                 entry_info['locked'] = False
+                entry_info['lineup_lock'] = lineup_lock_mode(entry_data)
                 if user_has_data:
                     stored_lineup = (user_submissions.get(lookup_username) or {}).get('data') \
                         or entry_data.get('data')
                     if stored_lineup:
-                        _ok, _why, started = validate_lineup_players_not_started(stored_lineup)
+                        _ok, _why, started = validate_lineup_players_not_started(
+                            stored_lineup, entry_data.get('week'))
                         if started:
-                            entry_info['locked'] = True
+                            # Reported in both modes: the page says who is
+                            # frozen whether or not the whole lineup is.
                             entry_info['locked_by'] = [
                                 {'name': p.get('name'), 'team': p.get('team')}
                                 for p in started
                             ]
+                            if entry_info['lineup_lock'] == 'unplayed':
+                                slots = _lineup_slot_tokens(stored_lineup) or []
+                                entry_info['locked'] = bool(slots) and len(started) >= len(set(slots))
+                            else:
+                                entry_info['locked'] = True
                 # Include week if present
                 if 'week' in entry_data:
                     entry_info['week'] = entry_data['week']
@@ -4959,7 +5148,6 @@ def add_to_tinyurl(tinyurl_name):
         "name": "username",
         "data": "8|MIQwTgdi...",
         "pin": "1234",  # Optional: 2-8 digit PIN code (numbers only)
-        "skip_validation": false  # Optional: If true, bypasses lineup validation (e.g., for adding lineups after games have started)
     }
     
     Args:
@@ -4978,7 +5166,11 @@ def add_to_tinyurl(tinyurl_name):
         username = data.get('name')
         url_data = data.get('data')
         pin = data.get('pin')
-        skip_validation = data.get('skip_validation', False)
+        # `skip_validation` used to be read here and bypassed the kickoff rule.
+        # It carried no authentication, so posting it defeated the lock outright.
+        # An organiser who needs to place a lineup after kickoff clears the
+        # entrant's lineup instead, which is organiser-gated and leaves a trace.
+        # Any such key in the body is now ignored.
         
         # `name` is only required for allowlist entries; a Sleeper-gated entry takes
         # the submitter's identity from the verified token instead, so the check
@@ -5045,9 +5237,7 @@ def add_to_tinyurl(tinyurl_name):
             if normalized_username not in normalized_allowed_names:
                 return jsonify({"error": "Not allowed username"}), 401
         
-        # A short lineup is invalid whenever it arrives, so this sits outside
-        # skip_validation — which is caller-supplied and would otherwise wave it
-        # through for anyone who asked.
+        # A short lineup is invalid whenever it arrives, by whoever sends it.
         is_complete, incomplete_msg = validate_lineup_is_complete(url_data)
         if not is_complete:
             return jsonify({"error": incomplete_msg}), 400
@@ -5056,28 +5246,19 @@ def add_to_tinyurl(tinyurl_name):
         if 'user_submissions' not in entry:
             entry['user_submissions'] = {}
         
-        # Check if this is an overwrite (user already has submitted data)
-        if normalized_username in entry['user_submissions']:
-            existing_data = entry['user_submissions'][normalized_username].get('data')
-            if existing_data and not skip_validation:
-                # Validate that no players in the EXISTING lineup have started their games yet
-                # This prevents overwriting a lineup that has players whose games have started
-                is_valid_existing, error_msg_existing, players_started_existing = validate_lineup_players_not_started(existing_data)
-                if not is_valid_existing:
-                    return jsonify({
-                        "error": f"Cannot overwrite lineup: {error_msg_existing}",
-                        "players_started": players_started_existing,
-                        "message": "The existing lineup contains players whose games have already started. You cannot overwrite it."
-                    }), 400
-        
-        # Validate that no players in the NEW lineup have started their games yet (unless skip_validation is true)
-        if not skip_validation:
-            is_valid, error_msg, players_started = validate_lineup_players_not_started(url_data)
-            if not is_valid:
-                return jsonify({
-                    "error": error_msg,
-                    "players_started": players_started
-                }), 400
+        # The kickoff rule, in whichever mode this tournament is set to.
+        #
+        # The week comes from the entry, never from the submission: it is what
+        # every salary lookup keys on, so reading it off the payload let a
+        # relabelled lineup miss every row and pass.
+        existing_data = (entry['user_submissions'].get(normalized_username) or {}).get('data')
+        is_valid, error_msg, players_started = validate_lineup_change(
+            existing_data, url_data, entry.get('week'), lineup_lock_mode(entry))
+        if not is_valid:
+            return jsonify({
+                "error": error_msg,
+                "players_started": players_started,
+            }), 400
         
         current_time = datetime.datetime.now().isoformat()
         
@@ -5095,6 +5276,7 @@ def add_to_tinyurl(tinyurl_name):
             # Store PIN if provided
             if pin:
                 user_submission_data['pin'] = pin
+            record_lineup_submission(user_submission_data, url_data, current_time)
             entry['user_submissions'][normalized_username] = user_submission_data
         else:
             # Subsequent submission - increment update_count
@@ -5107,6 +5289,7 @@ def add_to_tinyurl(tinyurl_name):
             # Update PIN if provided (can be set or changed)
             if pin:
                 user_submission['pin'] = pin
+            record_lineup_submission(user_submission, url_data, current_time)
         
         # Update main entry data (keep latest submission or aggregate as needed)
         entry['data'] = url_data
@@ -5128,6 +5311,75 @@ def add_to_tinyurl(tinyurl_name):
     except Exception as e:
         print(f"Error adding data to TinyURL: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/tinyurl/<name>/settings', methods=['POST'])
+def set_tinyurl_settings(name):
+    """
+    Change a tournament's settings after it has been created.
+
+    The first endpoint to do so — everything else about an entry is fixed at
+    creation and afterwards touched only by the weekly cleanup. Under /admin/
+    deliberately: the before_request hook gates every route under that prefix,
+    and tests/test_admin_gating.py walks the URL map, so this arrives gated and
+    covered rather than relying on an inline check being remembered.
+
+    Request body: {"lineup_lock": "full" | "unplayed"}
+    """
+    global tinyurl_data
+
+    normalized = normalize_tinyurl_name(name)
+    entry = tinyurl_data.get(normalized)
+    if entry is None:
+        return jsonify({"error": f"Data with name '{name}' not found"}), 404
+
+    data = request.json or {}
+    if 'lineup_lock' not in data:
+        # A body with nothing recognised in it is a mistake, not a no-op: a
+        # typo should not look like a saved setting.
+        return jsonify({"error": "Nothing to change. Send lineup_lock."}), 400
+
+    mode = str(data.get('lineup_lock') or '').strip().lower()
+    if mode not in LINEUP_LOCK_MODES:
+        return jsonify({
+            "error": f"lineup_lock must be one of {', '.join(LINEUP_LOCK_MODES)}"
+        }), 400
+
+    # Written out even when it is the default, so reading the stored JSON during
+    # a dispute shows a decision rather than an absence.
+    entry['lineup_lock'] = mode
+    save_tinyurl_data()
+    print(f"{datetime.datetime.now()} - Set lineup_lock={mode} on '{name}'")
+
+    return jsonify({"name": entry.get('name', name), "lineup_lock": mode}), 200
+
+
+@app.route('/admin/tinyurl/<name>/history', methods=['GET'])
+def get_tinyurl_history(name):
+    """
+    Each entrant's recent submissions for the week in progress.
+
+    Separate from /admin/tinyurl/<name>/data, which returns the raw submission
+    dict including PINs — the manage page has no business holding those to draw
+    a timeline. Newest first, since that is the order it is read in.
+    """
+    entry = tinyurl_data.get(normalize_tinyurl_name(name))
+    if entry is None:
+        return jsonify({"error": f"Data with name '{name}' not found"}), 404
+
+    entrants = {}
+    for sub in (entry.get('user_submissions') or {}).values():
+        entrants[sub.get('username') or '?'] = {
+            "update_count": sub.get('update_count', 0),
+            "history": list(reversed(sub.get('history') or [])),
+        }
+
+    return jsonify({
+        "name": entry.get('name', name),
+        "week": entry.get('week'),
+        "limit": LINEUP_HISTORY_LIMIT,
+        "entrants": entrants,
+    }), 200
 
 
 @app.route('/admin/tinyurl/<name>/data', methods=['GET'])
