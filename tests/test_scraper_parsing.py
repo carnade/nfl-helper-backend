@@ -159,3 +159,61 @@ class TestUpdateFantasyPointsData:
             nfl_helper.update_fantasy_points_data()
 
         assert nfl_helper.fantasy_points_data == {}
+
+
+class TestBeingTurnedAwayIsNotAnEmptySlate:
+    """
+    DailyFantasyFuel redirects an outdated browser to its homepage. The scraper
+    carried a Chrome 91 string from 2021, so the projections pages started
+    answering 302 to "/", requests followed it, and the scrape parsed 300 KB of
+    homepage: no rows, HTTP 200, raise_for_status happy. It logged "no players
+    found (this may be normal if data isn't available yet)" for every date.
+
+    The slates JSON is not gated, so slate discovery kept working and the logs
+    read exactly like a site that had not posted its salaries yet.
+    """
+
+    PAGE = "https://www.dailyfantasyfuel.com/nfl/projections/draftkings/2026-11-01"
+
+    def _response(self, final_url, body=""):
+        resp = MagicMock()
+        resp.url = final_url
+        resp.text = body
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    def test_a_redirect_elsewhere_returns_nothing_and_says_why(self, caplog):
+        scraper = DFFSalariesScraper()
+        with patch.object(scraper.session, "get",
+                          return_value=self._response("https://www.dailyfantasyfuel.com:443/")):
+            with caplog.at_level("ERROR"):
+                players = scraper.scrape_dff_projections(date="2026-11-01", slate_url="25FC8")
+
+        assert players == []
+        assert "Redirected away from the projections page" in caplog.text
+        # Names the actual cause, since that is the whole point of the message.
+        assert "User-Agent" in caplog.text
+
+    def test_the_same_page_is_parsed_normally(self):
+        # A trailing slash or the explicit :443 port is not a redirect.
+        scraper = DFFSalariesScraper()
+        # The real page carries class=" projections-listing " on each row, which
+        # is what the selector matches on; make_player_row omits it because the
+        # parsing tests above feed rows in directly.
+        row = str(make_player_row(name="Josh Allen", pos="QB", team="BUF", salary="7700"))
+        row = row.replace("<tr ", '<tr class=" projections-listing " ', 1)
+        body = f"<table>{row}</table>"
+        for served in (self.PAGE, self.PAGE + "/", self.PAGE.replace(".com", ".com:443")):
+            with patch.object(scraper.session, "get",
+                              return_value=self._response(served, body)):
+                players = scraper.scrape_dff_projections(date="2026-11-01", slate_url="25FC8")
+            assert len(players) == 1, f"served {served} should have parsed"
+            assert players[0]["name"] == "Josh Allen"
+
+    def test_the_user_agent_is_not_the_one_that_gets_turned_away(self):
+        # Pinning the failure rather than the exact string: any Chrome older than
+        # about 100 is refused, and the point is not to drift back there.
+        ua = DFFSalariesScraper().session.headers["User-Agent"]
+        assert "Chrome/" in ua
+        major = int(ua.split("Chrome/")[1].split(".")[0])
+        assert major >= 120, f"Chrome/{major} is old enough to be redirected away"
