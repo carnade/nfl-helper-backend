@@ -79,7 +79,11 @@ class TestFailedScrape:
             nfl_helper.update_dfs_salaries_data()
 
         job = _retry_jobs()[0]
-        assert job.kwargs["func"] is nfl_helper.update_dfs_salaries_data
+        # The same scrape, registered the way the scheduled ones are: wrapped so
+        # the heap it borrowed goes back when it finishes. Check what it wraps,
+        # not the wrapper, or this passes for any function at all.
+        assert job.kwargs["func"] is nfl_helper._update_dfs_salaries_data
+        assert job.kwargs["func"].__wrapped__ is nfl_helper.update_dfs_salaries_data
 
 
 class TestSuccessfulScrape:

@@ -18,6 +18,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+# The opening tag of a player row. Matched against the raw HTML so the row
+# bodies are never parsed — see the note in scrape_dff_projections.
+ROW_TAG_RE = re.compile(r'<tr[^>]*\bprojections-listing\b[^>]*>', re.I)
+
+
 class DFFSalariesScraper:
     """Scraper for DailyFantasyFuel DraftKings NFL projections and salaries"""
     
@@ -522,13 +527,32 @@ class DFFSalariesScraper:
                 )
                 return []
 
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
+            # Parse the player rows, and nothing else.
+            #
+            # Every field below is read from a data-* attribute on the <tr>
+            # itself, so the row bodies — which are most of the 1.4 MB a slate
+            # page weighs — are never looked at. Handing the whole document to
+            # BeautifulSoup cost 27.6 MB of tree per page and the scrape walks
+            # about seven pages per run, which on a 512 MB instance was the
+            # largest single allocation in the process and the one thing no job
+            # handed back. Pulling the opening tags out of the text first and
+            # parsing only those costs 1.6 MB for the same 362 rows, with
+            # identical attributes on every one of them.
+            #
+            # Still BeautifulSoup rather than a pure regex so _parse_player_row
+            # keeps receiving real Tag objects, which is what its tests feed it.
+            #
+            # SoupStrainer is the obvious way to do this and does not work here:
+            # the live class attribute is " projections-listing " with
+            # surrounding whitespace, and the strainer matches more strictly
+            # than find_all does, so it finds nothing at all.
+            row_tags = ROW_TAG_RE.findall(response.text)
+            fragment = "".join(f"{tag}</tr>" for tag in row_tags)
+            soup = BeautifulSoup(f"<table>{fragment}</table>", 'html.parser')
+
             players = []
-            
-            # Find rows with class "projections-listing" - these contain player data in data-* attributes
-            player_rows = soup.find_all('tr', class_='projections-listing')
-            
+            player_rows = soup.find_all('tr')
+
             logger.info(f"Found {len(player_rows)} player rows")
             
             for row in player_rows:

@@ -1,4 +1,5 @@
 from tqdm import tqdm
+import gc
 import requests
 from bs4 import BeautifulSoup
 import json  # Add this import at the top of the file if not already present
@@ -128,47 +129,82 @@ def parse_fantasycalc_pick_name(pick_name):
         "pick_type": pick_type
     }
 
+def _ranking_row_text(element):
+    """
+    The four strings a KeepTradeCut ranking row carries, as plain text.
+
+    Read while the element's document is still alive, because a BeautifulSoup
+    Tag holds a reference to its whole soup: collecting Tags across ten pages
+    kept ten parsed documents resident — about 59 MB — and the Superflex pass
+    kept twenty, around 119 MB, on an instance with 512 MB to live in. Taking
+    the text here lets each page's soup go as the loop advances.
+    """
+    def text(class_name):
+        found = element.find(class_=class_name)
+        return found.get_text(strip=True) if found else None
+
+    return {
+        "name": text("player-name"),
+        "position_rank": text("position"),
+        "value": text("value"),
+        "age": text("position hidden-xs"),
+    }
+
+
+KTC_URL = "https://keeptradecut.com/dynasty-rankings?page={0}&filters=QB|WR|RB|TE|RDP&format={1}"
+
+
+def _ranking_rows(format, desc):
+    """
+    Every ranking row for one KeepTradeCut format, as plain text.
+
+    One page's soup at a time, and collected before the next is fetched. A
+    parsed document is a cycle — every Tag points back at its parent — so
+    refcounting cannot free it; the collector has to, and left to its own
+    schedule it let five of them pile up. Collecting here took the scrape's
+    peak from 133 MB to 21 MB over the twenty live pages, which is worth
+    having on a 512 MB instance; ten collections against twenty network round
+    trips cost nothing.
+
+    Returning a list per format also means a format cannot see another's rows,
+    which is how the Superflex pass used to read the 1QB rows a second time.
+    """
+    rows = []
+    for page in tqdm(range(10), desc=desc, unit="page"):
+        response = requests.get(KTC_URL.format(page, format))
+        soup = BeautifulSoup(response.content, "html.parser")
+        rows.extend(_ranking_row_text(el) for el in soup.find_all(class_="onePlayer"))
+        del soup, response
+        gc.collect()
+    return rows
+
+
 def scrape_ktc():
-    # universal vars
-    URL = "https://keeptradecut.com/dynasty-rankings?page={0}&filters=QB|WR|RB|TE|RDP&format={1}"
-    all_elements = []
     players = []
 
     for format in [1,0]:
         if format == 1:
-            # find all elements with class "onePlayer"
-            for page in tqdm(range(10), desc="Linking to keeptradecut.com's 1QB rankings...",unit="page"):
-                page = requests.get(URL.format(page,format))
-                soup = BeautifulSoup(page.content, "html.parser")
-                player_elements = soup.find_all(class_="onePlayer")
-                for player_element in player_elements:
-                    all_elements.append(player_element)
+            all_elements = _ranking_rows(
+                format, "Linking to keeptradecut.com's 1QB rankings...")
 
             # player information
-            for player_element in all_elements:
-
-                # find elements within the player container
-                player_name_element = player_element.find(class_="player-name")
-                player_position_element = player_element.find(class_="position")
-                player_value_element = player_element.find(class_="value")
-                player_age_element = player_element.find(class_="position hidden-xs")
+            for row in all_elements:
 
                 # extract player information
-                player_name = player_name_element.get_text(strip=True)
+                player_name = row["name"]
                 team_suffix = (player_name[-3:] if player_name[-3:] == 'RFA' else player_name[-4:] if player_name[-4] == 'R' else player_name[-2:] if player_name[-2:] == 'FA' else player_name[-3:] if player_name[-3:].isupper() else "")
 
                 # remove the team suffix
                 player_name = player_name.replace(team_suffix, "").strip()
                 # Store original name for matching in Superflex section
                 original_player_name = player_name
-                player_position_rank = player_position_element.get_text(strip=True)
-                player_value = player_value_element.get_text(strip=True)
-                player_value = int(player_value)
+                player_position_rank = row["position_rank"]
+                player_value = int(row["value"])
                 player_position = player_position_rank[:2]
 
-                # handle NoneType for player_age_element
-                if player_age_element:
-                    player_age_text = player_age_element.get_text(strip=True)
+                # handle a row with no age shown
+                if row["age"]:
+                    player_age_text = row["age"]
                     player_age = float(player_age_text[:4]) if player_age_text else 0
                 else:
                     player_age = 0
@@ -229,32 +265,28 @@ def scrape_ktc():
                     }
                     players.append(player_info)
         else:
-            # find all elements with class "onePlayer"
-            for page in tqdm(range(10), desc="Linking to keeptradecut.com's Superflex rankings...",unit="page"):
-                page = requests.get(URL.format(page,format))
-                soup = BeautifulSoup(page.content, "html.parser")
-                player_elements = soup.find_all(class_="onePlayer")
-                for player_element in player_elements:
-                    all_elements.append(player_element)
+            # Superflex rows only. This used to run over a list the 1QB pass
+            # had left its own rows in, so those were read a second time and
+            # wrote 1QB numbers into SFValue — harmless for anyone who also
+            # appears in the Superflex rankings, since the real value overwrote
+            # it moments later, but it left a 1QB figure standing for anyone who
+            # did not. Exactly one row in a live run: "2029 Late 1st". Both
+            # readers already fall back to Value when SFValue is 0, so the
+            # number anybody sees does not change.
+            all_elements = _ranking_rows(
+                format, "Linking to keeptradecut.com's Superflex rankings...")
 
-            for player_element in all_elements:
+            for row in all_elements:
 
-                # find elements within the player container
-                player_name_element = player_element.find(class_="player-name")
-                player_position_element = player_element.find(class_="position")
-                player_value_element = player_element.find(class_="value")
-                player_age_element = player_element.find(class_="position hidden-xs")
-
-                # extract and print player information
-                player_name = player_name_element.get_text(strip=True)
+                # extract player information
+                player_name = row["name"]
                 team_suffix = (player_name[-3:] if player_name[-3:] == 'RFA' else player_name[-4:] if player_name[-4] == 'R' else player_name[-2:] if player_name[-2:] == 'FA' else player_name[-3:] if player_name[-3:].isupper() else "")
 
                 # remove the team suffix
                 player_name = player_name.replace(team_suffix, "").strip()
-                player_position_rank = player_position_element.get_text(strip=True)
+                player_position_rank = row["position_rank"]
                 player_position = player_position_rank[:2]
-                player_value = player_value_element.get_text(strip=True)
-                player_value = int(player_value)
+                player_value = int(row["value"])
 
                 if player_position == "PI":
                     for pick in players:

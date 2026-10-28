@@ -3,10 +3,12 @@ import requests
 from dotenv import load_dotenv
 load_dotenv()
 from flask import Flask, request, jsonify
+from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 import atexit
+import functools
 import gc
 import json
 import os
@@ -1107,7 +1109,7 @@ def _schedule_dfs_retry(reason):
     run_at = datetime.datetime.now() + datetime.timedelta(minutes=DFS_RETRY_DELAY_MINUTES)
     try:
         scheduler.add_job(
-            func=update_dfs_salaries_data,
+            func=_update_dfs_salaries_data,
             trigger=DateTrigger(run_date=run_at),
             id=f"dfs_salaries_retry_{dfs_retry_count}",
             replace_existing=True,
@@ -1345,6 +1347,75 @@ def fetch_data():
             return json.load(response.raw)
 
 
+# What the host will kill this process for exceeding. Koyeb's free tier gives
+# 512 MB; override it if that ever changes, so /statistics keeps reporting the
+# headroom against the real ceiling rather than a remembered one.
+MEMORY_LIMIT_MB = int(os.environ.get("MEMORY_LIMIT_MB", "512"))
+
+
+# glibc's M_ARENA_MAX. Negative, as all the mallopt parameters are.
+M_ARENA_MAX = -8
+
+
+def limit_malloc_arenas(arenas=2):
+    """
+    Stop glibc opening a fresh heap for every thread that contends for one.
+
+    The default ceiling is eight arenas per core, and each is a separate pool
+    that malloc_trim can only return the free tail of — so the same freed bytes
+    that release_free_memory() exists to hand back get stranded across however
+    many arenas the request threads happened to spread over. On a 512 MB
+    instance that headroom is the whole budget.
+
+    Called at import, while this is still a single-threaded process: arenas are
+    created lazily on contention, so the limit applies to every one that
+    matters. MALLOC_ARENA_MAX in the environment does the same thing earlier and
+    wins if it is set; this is here so the instance does not depend on somebody
+    remembering to set it.
+
+    glibc-only, and a no-op anywhere else — including the macOS dev machines,
+    where malloc has no arenas to cap.
+    """
+    if os.environ.get("MALLOC_ARENA_MAX"):
+        return None
+    try:
+        import ctypes, ctypes.util
+        libc_name = ctypes.util.find_library("c")
+        if not libc_name:
+            return None
+        libc = ctypes.CDLL(libc_name)
+        if not hasattr(libc, "mallopt"):
+            return None
+        return libc.mallopt(M_ARENA_MAX, arenas) == 1
+    except Exception as e:
+        print(f"{datetime.datetime.now()} - could not cap malloc arenas ({e}); "
+              "freed memory may stay spread across them")
+        return None
+
+
+limit_malloc_arenas()
+
+
+def process_rss_mb():
+    """
+    This process's resident size in MB, or None where it cannot be read.
+
+    From /proc/self/statm rather than psutil, which is not installed: the second
+    field is the resident set in pages. Linux-only, so None on the macOS dev
+    machines — which is the right answer there, since RSS on glibc is the number
+    that matters and that is not what a Mac reports.
+
+    Nothing measured this before, which is why a climb to 490 MB was only ever
+    visible as a death.
+    """
+    try:
+        with open("/proc/self/statm") as statm:
+            pages = int(statm.read().split()[1])
+        return round(pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024), 1)
+    except Exception:
+        return None
+
+
 def release_free_memory():
     """
     Hand freed heap back to the operating system.
@@ -1358,6 +1429,7 @@ def release_free_memory():
     glibc-only, which is Linux, which is where this runs. Anywhere else (macOS
     dev machines) the lookup fails and this is a no-op beyond the collect.
     """
+    before = process_rss_mb()
     gc.collect()
     try:
         import ctypes, ctypes.util
@@ -1370,6 +1442,35 @@ def release_free_memory():
     except Exception as e:
         print(f"{datetime.datetime.now()} - malloc_trim unavailable ({e}); "
               "freed memory stays with the process")
+    finally:
+        after = process_rss_mb()
+        if before is not None and after is not None:
+            print(f"{datetime.datetime.now()} - RSS {before} MB -> {after} MB "
+                  f"after trim")
+
+
+def _release_after(func):
+    """
+    The same job, with the heap handed back when it finishes.
+
+    Every scheduled job registered through this one peaks far above what it
+    keeps — a DFS scrape borrows tens of MB to store a few, a players refresh
+    hundreds — and what Python frees, glibc holds. Without this each run
+    ratchets RSS up for the life of the process, which is how a 512 MB instance
+    reached 490 and was killed.
+
+    In a finally, because a job that failed half way through has still allocated
+    everything it got to. The name is kept so the schedule reads as the job it
+    registers, in the logs and in the staggering test.
+    """
+    @functools.wraps(func)
+    def with_release(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        finally:
+            release_free_memory()
+
+    return with_release
 
 
 def fetch_and_filter_data():
@@ -1615,15 +1716,37 @@ def update_filtered_players_with_scraped_data():
     print(f"{datetime.datetime.now()} - Finished updating filtered_players.")
 
 
-# Schedule the data fetch task
-scheduler = BackgroundScheduler()
+# Schedule the data fetch task.
+#
+# One worker, deliberately. The default is ten, so ten of the jobs below could
+# be resident at once and nothing but the choice of cron hours stood between
+# this process and the OOM killer — a staggering that the DFS retry's
+# now-plus-20-minutes trigger and the winter clock change can both walk past.
+# With a single worker a late job waits for the running one instead of
+# allocating beside it, which is what the hours below were trying to express.
+#
+# Queueing is only safe with the grace time raised: it defaults to one second,
+# so a job held behind a long players refresh would be dropped as a misfire and
+# never run. An hour covers the longest job here several times over, and
+# coalescing means a job whose slot passed twice still runs once.
+scheduler = BackgroundScheduler(
+    executors={"default": ThreadPoolExecutor(1)},
+    job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 3600},
+)
+
+# The jobs that peak far above what they keep, each registered through
+# _release_after so the heap goes back to the OS when the run finishes.
+_fetch_and_filter_data = _release_after(fetch_and_filter_data)
+_update_filtered_players_with_scraped_data = _release_after(update_filtered_players_with_scraped_data)
+_update_fantasy_points_data = _release_after(update_fantasy_points_data)
+_update_dfs_salaries_data = _release_after(update_dfs_salaries_data)
 
 # Refresh the Sleeper player list every four hours on fixed hours, rather than on an
 # interval counted from startup. It is the second-largest allocation in the process,
 # and an interval can land in the same hour as the nflverse refresh or the fantasy
 # points scrape; these hours sit clear of every heavy slot below.
 scheduler.add_job(
-    func=fetch_and_filter_data,
+    func=_fetch_and_filter_data,
     trigger=CronTrigger(hour="1,5,9,13,17,21", minute=0)
 )
 
@@ -1632,13 +1755,13 @@ scheduler.add_job(
 # two jobs for the same function would otherwise load the player list twice at once —
 # as well as the 15:00 DFS salaries scrape and Sunday's 23:00 fantasy points run.
 scheduler.add_job(
-    func=fetch_and_filter_data,
+    func=_fetch_and_filter_data,
     trigger=CronTrigger(day_of_week="thu,sun,mon", hour="12,14,16,18,19,20,22", minute=0)
 )
 
 # Schedule the new job to run every Wednesday at 08:00
 scheduler.add_job(
-    func=update_filtered_players_with_scraped_data,
+    func=_update_filtered_players_with_scraped_data,
     trigger=CronTrigger(day_of_week="wed", hour=8, minute=0)
 )
 
@@ -1647,29 +1770,30 @@ scheduler.add_job(
 # shares an hour with an nflverse refresh, and all finish before the Wednesday
 # multiweek scoring reads them as its fallback.
 scheduler.add_job(
-    func=update_fantasy_points_data,
+    func=_update_fantasy_points_data,
     trigger=CronTrigger(day_of_week="mon,tue,fri", hour=8, minute=0)
 )
 scheduler.add_job(
-    func=update_fantasy_points_data,
+    func=_update_fantasy_points_data,
     trigger=CronTrigger(day_of_week="sun", hour=23, minute=0)
 )
 
 # Schedule DFS salaries update daily at 14:00 CET
 scheduler.add_job(
-    func=update_dfs_salaries_data,
+    func=_update_dfs_salaries_data,
     trigger=CronTrigger(hour=15, minute=0)
 )
 
 # Schedule DFS salaries update on Wednesdays at 19:00 CET
 scheduler.add_job(
-    func=update_dfs_salaries_data,
+    func=_update_dfs_salaries_data,
     trigger=CronTrigger(day_of_week="wed", hour=19, minute=0)
 )
 
 # Schedule odds refresh: Thursday (props open) + Sunday (morning of the slate).
 # The spec lives in odds_api so /odds/status can report next/overdue from the
 # same source the scheduler fires on.
+@_release_after
 def _refresh_odds():
     if ODDS_FETCH_DISABLED:
         print(f"{datetime.datetime.now()} - Skipping scheduled odds refresh: ODDS_FETCH_DISABLED is set")
@@ -1696,6 +1820,7 @@ scheduler.add_job(
 # Monday carry no refresh of their own and snapshot what Saturday fetched.
 #
 # Costs nothing — it reads the data already in memory.
+@_release_after
 def _snapshot_odds():
     from routes_odds import _ou_eval
     added = odds_api.snapshot_current_games(_ou_eval)
@@ -2276,10 +2401,30 @@ scheduler.add_job(
     trigger=CronTrigger(day_of_week="mon", hour=6, minute=0)   # Sunday + SNF results
 )
 
-scheduler.start()
+def start_scheduler():
+    """
+    Begin firing the cron jobs above. Called once initialisation has finished.
 
-# Ensure the scheduler is shut down when the app exits
-atexit.register(lambda: scheduler.shutdown())
+    Deliberately not at import, which is where it used to be. The jobs and the
+    startup initialisation call the same handful of heavy functions, and
+    initialisation runs on a plain thread that APScheduler's single worker
+    cannot see: a boot at 14:58 therefore had the 15:00 DFS scrape allocating
+    beside initialisation's own, two of the largest transients in the process at
+    once. Waiting is what makes the hour-staggering above mean anything.
+
+    Idempotent, so it is safe wherever initialisation ends up calling it from.
+    """
+    if scheduler.running:
+        return
+    scheduler.start()
+    print(f"{datetime.datetime.now()} - Scheduler started with "
+          f"{len(scheduler.get_jobs())} jobs")
+
+
+# Ensure the scheduler is shut down when the app exits. It may never have been
+# started — initialisation can die first — and shutting down a stopped scheduler
+# raises.
+atexit.register(lambda: scheduler.running and scheduler.shutdown())
 
 
 @app.route('/getplayers', methods=['POST'])
@@ -2472,6 +2617,10 @@ def get_statistics():
         # Prepare the response
         response = {
             "uptime": str(uptime),  # Format uptime as a string
+            # The number that decides whether this process survives the day.
+            # None off Linux; the instance it runs on has 512 MB.
+            "rss_mb": process_rss_mb(),
+            "memory_limit_mb": MEMORY_LIMIT_MB,
             "total_requests": total_requests,
             "average_requests_per_day": average_requests_per_day,
             "requests_per_endpoint": request_statistics["endpoints"],
@@ -6072,64 +6221,76 @@ def initialize_data_in_background():
     import threading
     
     def _initialize():
-        print(f"{datetime.datetime.now()} - Starting background data initialization...")
+        try:
+            print(f"{datetime.datetime.now()} - Starting background data initialization...")
         
-        # 0. Load persisted TinyURL and Tournament data (from Gist if configured, else local files)
-        gist_mask = f"{GIST_ID[:6]}..." if GIST_ID else "None"
-        print(f"{datetime.datetime.now()} - Persistence: USE_GIST={USE_GIST}, GIST_ID={gist_mask}")
-        load_tinyurl_data()
-        load_tournament_data()
-        # Must be loaded before any scheduled scoring can fire.
-        load_points_overrides()
+            # 0. Load persisted TinyURL and Tournament data (from Gist if configured, else local files)
+            gist_mask = f"{GIST_ID[:6]}..." if GIST_ID else "None"
+            print(f"{datetime.datetime.now()} - Persistence: USE_GIST={USE_GIST}, GIST_ID={gist_mask}")
+            load_tinyurl_data()
+            load_tournament_data()
+            # Must be loaded before any scheduled scoring can fire.
+            load_points_overrides()
         
-        # 1. Fetch and filter player data
-        print(f"{datetime.datetime.now()} - Fetching and filtering player data...")
-        fetch_and_filter_data()
+            # 1. Fetch and filter player data
+            print(f"{datetime.datetime.now()} - Fetching and filtering player data...")
+            fetch_and_filter_data()
         
-        # 2. Update with scraped dynasty rankings
-        print(f"{datetime.datetime.now()} - Updating with scraped dynasty rankings...")
-        update_filtered_players_with_scraped_data()
+            # 2. Update with scraped dynasty rankings
+            print(f"{datetime.datetime.now()} - Updating with scraped dynasty rankings...")
+            update_filtered_players_with_scraped_data()
         
-        # 3. Update fantasy points and DFS salaries (requires filtered_players)
-        print(f"{datetime.datetime.now()} - filtered_players populated with {len(filtered_players)} players, proceeding with fantasy points and DFS salaries updates")
-        update_fantasy_points_data()
-        # Serve the last known salaries straight away; the scrape below then
-        # refreshes them in the usual way, pruning any week that has rolled off.
-        load_dfs_salaries_data()
-        update_dfs_salaries_data()
+            # 3. Update fantasy points and DFS salaries (requires filtered_players)
+            print(f"{datetime.datetime.now()} - filtered_players populated with {len(filtered_players)} players, proceeding with fantasy points and DFS salaries updates")
+            update_fantasy_points_data()
+            # Serve the last known salaries straight away; the scrape below then
+            # refreshes them in the usual way, pruning any week that has rolled off.
+            load_dfs_salaries_data()
+            update_dfs_salaries_data()
 
-        # 4. Load nflverse player/team/schedule stats
-        # Return the heap used by the KTC and DFS scraping before the most
-        # memory-intensive step, rather than making it grow RSS further.
-        release_free_memory()
-        print(f"{datetime.datetime.now()} - Loading nflverse stats data...")
-        refresh_nflverse_data()
-        # The refresh peaks around 114 MB of DataFrames to retain under 17 MB of
-        # dicts. Give the rest back rather than carrying it for the process's life.
-        release_free_memory()
+            # 4. Load nflverse player/team/schedule stats
+            # Return the heap used by the KTC and DFS scraping before the most
+            # memory-intensive step, rather than making it grow RSS further.
+            release_free_memory()
+            print(f"{datetime.datetime.now()} - Loading nflverse stats data...")
+            refresh_nflverse_data()
+            # The refresh peaks around 114 MB of DataFrames to retain under 17 MB of
+            # dicts. Give the rest back rather than carrying it for the process's life.
+            release_free_memory()
 
-        # 5. Load betting odds + history. Restore the last served set first so
-        #    the page has data even if the API is unreachable, then only spend
-        #    credits on a fetch if that data is actually stale.
-        print(f"{datetime.datetime.now()} - Loading odds data...")
-        load_odds_cache()
-        if ODDS_FETCH_DISABLED:
-            age = odds_api.cache_age_hours()
-            print(f"{datetime.datetime.now()} - ODDS_FETCH_DISABLED is set — serving the stored odds "
-                  f"({'none' if age is None else f'{age:.1f}h old'}) without fetching.")
-        elif odds_api.should_refresh_on_startup():
-            age = odds_api.cache_age_hours()
-            print(f"{datetime.datetime.now()} - Cached odds "
-                  f"{'missing' if age is None else f'{age:.1f}h old'}, refreshing...")
-            refresh_odds_and_cache()
-        else:
-            print(f"{datetime.datetime.now()} - Cached odds are "
-                  f"{odds_api.cache_age_hours():.1f}h old, skipping startup refresh "
-                  f"(threshold {odds_api.STARTUP_REFRESH_MAX_AGE_HOURS}h)")
-        load_odds_history()
-        load_props_history()
+            # 5. Load betting odds + history. Restore the last served set first so
+            #    the page has data even if the API is unreachable, then only spend
+            #    credits on a fetch if that data is actually stale.
+            print(f"{datetime.datetime.now()} - Loading odds data...")
+            load_odds_cache()
+            if ODDS_FETCH_DISABLED:
+                age = odds_api.cache_age_hours()
+                print(f"{datetime.datetime.now()} - ODDS_FETCH_DISABLED is set — serving the stored odds "
+                      f"({'none' if age is None else f'{age:.1f}h old'}) without fetching.")
+            elif odds_api.should_refresh_on_startup():
+                age = odds_api.cache_age_hours()
+                print(f"{datetime.datetime.now()} - Cached odds "
+                      f"{'missing' if age is None else f'{age:.1f}h old'}, refreshing...")
+                refresh_odds_and_cache()
+            else:
+                print(f"{datetime.datetime.now()} - Cached odds are "
+                      f"{odds_api.cache_age_hours():.1f}h old, skipping startup refresh "
+                      f"(threshold {odds_api.STARTUP_REFRESH_MAX_AGE_HOURS}h)")
+            load_odds_history()
+            load_props_history()
+            # The last two parse several MB of JSON each to keep a fraction of
+            # it, at the point in the boot where RSS is already at its highest —
+            # which is exactly where the instance was killed.
+            release_free_memory()
 
-        print(f"{datetime.datetime.now()} - Background data initialization completed!")
+            print(f"{datetime.datetime.now()} - Background data initialization completed! "
+                  f"RSS {process_rss_mb()} MB of {MEMORY_LIMIT_MB} MB")
+        finally:
+            # The cron jobs have been waiting for this. In a finally because an
+            # initialisation that died half way through still needs its refreshes
+            # scheduled — a process with no scheduler quietly serves whatever it
+            # managed to load until somebody restarts it.
+            start_scheduler()
     
     # Start initialization in a background thread
     init_thread = threading.Thread(target=_initialize, daemon=True)

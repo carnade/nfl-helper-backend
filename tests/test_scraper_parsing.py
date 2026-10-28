@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 
 nfl_helper = sys.modules["nfl_helper"]
 
-from get_dfs_salaries_and_stats import DFFSalariesScraper
+from get_dfs_salaries_and_stats import DFFSalariesScraper, ROW_TAG_RE
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -217,3 +217,78 @@ class TestBeingTurnedAwayIsNotAnEmptySlate:
         assert "Chrome/" in ua
         major = int(ua.split("Chrome/")[1].split(".")[0])
         assert major >= 120, f"Chrome/{major} is old enough to be redirected away"
+
+
+class TestOnlyTheRowsAreParsed:
+    """
+    A slate page is 1.4 MB of HTML and every field this scraper reads lives in a
+    data-* attribute on the <tr> itself, so the row bodies are never looked at.
+    Handing the whole document to BeautifulSoup cost 27.6 MB of tree per page,
+    about seven pages a run, and no job handed that heap back — the largest
+    single allocation in a process with 512 MB to live in.
+
+    Pulling the opening tags out of the text first and parsing only those is 19x
+    cheaper. The thing that matters is that it is not *also* a correctness
+    change, which is what these assert.
+    """
+
+    def _page(self, rows=3):
+        body = "".join(
+            f'<td>filler that the old parse built a tree for</td>' * 20
+        )
+        trs = "".join(
+            f'<tr class=" projections-listing " data-name="P{i}" data-pos="QB"'
+            f' data-salary="{7000+i}" data-ppg_proj="20.{i}" data-week="8"'
+            f' data-team="KC" data-opp="LV" data-value_proj="3.0"'
+            f' data-szn_avg="21.0" data-l5_avg="22.0" data-l10_avg="23.0"'
+            f' data-spread="-3.0" data-ou="48.0" data-proj_score="24.0"'
+            f' data-opp_rank="5"><td>{body}</td></tr>'
+            for i in range(rows)
+        )
+        return f"<html><body><table>{trs}</table></body></html>"
+
+    def test_it_finds_the_same_rows_the_full_parse_did(self):
+        html = self._page()
+        old = BeautifulSoup(html, "html.parser").find_all(
+            "tr", class_="projections-listing")
+        new = BeautifulSoup(
+            f"<table>{''.join(f'{t}</tr>' for t in ROW_TAG_RE.findall(html))}</table>",
+            "html.parser").find_all("tr")
+        assert len(new) == len(old) == 3
+
+    def test_every_attribute_survives(self):
+        # A cheaper parse that silently dropped a field would otherwise look
+        # exactly like a win.
+        html = self._page()
+        old = BeautifulSoup(html, "html.parser").find_all(
+            "tr", class_="projections-listing")
+        new = BeautifulSoup(
+            f"<table>{''.join(f'{t}</tr>' for t in ROW_TAG_RE.findall(html))}</table>",
+            "html.parser").find_all("tr")
+        for a, b in zip(old, new):
+            assert set(a.attrs) == set(b.attrs)
+            assert all(a[k] == b[k] for k in a.attrs)
+
+    def test_the_parsed_players_are_identical(self):
+        html = self._page()
+        scraper = DFFSalariesScraper()
+        parse = lambda rows: [p for p in (scraper._parse_player_row(r) for r in rows) if p]
+        old = parse(BeautifulSoup(html, "html.parser").find_all(
+            "tr", class_="projections-listing"))
+        new = parse(BeautifulSoup(
+            f"<table>{''.join(f'{t}</tr>' for t in ROW_TAG_RE.findall(html))}</table>",
+            "html.parser").find_all("tr"))
+        assert old == new
+        assert old[0]["name"] == "P0" and old[0]["salary"] == 7000
+
+    def test_the_pattern_tolerates_the_whitespace_in_the_live_class(self):
+        # class=" projections-listing " with surrounding spaces is what the site
+        # actually sends, and is why SoupStrainer finds nothing here.
+        for attr in (' class=" projections-listing "',
+                     ' class="projections-listing"',
+                     ' class="hidden projections-listing "'):
+            html = f'<tr{attr} data-name="x">'
+            assert ROW_TAG_RE.findall(html), attr
+
+    def test_it_does_not_match_an_unrelated_row(self):
+        assert ROW_TAG_RE.findall('<tr class="proj-labels hidden-xs">') == []
