@@ -53,4 +53,16 @@ The same goes for anything else bought rather than merely requested. Sleeper and
 
 Run the tests with `/usr/local/bin/python3 -m pytest tests/` — plain `python` resolves to a 2.7 without pytest installed.
 
-The backend runs on Koyeb's free tier with 512 MB and has been OOM-killed before, so weigh any change that holds more data in memory. Heavy scheduled jobs are deliberately staggered so two never start in the same hour.
+## Memory
+
+The backend runs on Koyeb's free tier with **512 MB** and has been OOM-killed twice, most recently at 490 MB during startup. It is a **peak** problem, not a leak: loading players and nflverse costs ~240 MB between them and retains under 30, and what Python frees glibc keeps, so RSS only climbs. Weigh any change that holds more data in memory, and `/statistics` now reports `rss_mb` against `memory_limit_mb` so a climb is visible before it is fatal.
+
+What is in place, and should not be undone without a measurement to replace it:
+
+- **One scheduler worker** (`ThreadPoolExecutor(1)`) with `misfire_grace_time` at 3600. The staggering by cron hour is the intent; the single worker is what enforces it, because the DFS retry's now-plus-20-minutes trigger and the winter clock change both walk past the hours. The grace time has to stay large or a queued job is dropped as a misfire.
+- **The scheduler starts after initialisation**, not at import (`start_scheduler()`, called from `_initialize`'s `finally`). Initialisation runs the same heavy functions on a plain thread the scheduler cannot see, so a boot at 14:58 had the 15:00 DFS scrape allocating beside initialisation's own.
+- **`release_free_memory()`** (`gc.collect()` + `malloc_trim`) after every heavy job, via `_release_after`, and `limit_malloc_arenas()` at import so the freed bytes are not stranded across up to 8×ncores arenas.
+- **Scrapers parse as little as possible.** The DFS scraper matches the row tags out of the raw HTML and builds a table of just those (`ROW_TAG_RE`): 27.6 MB → 1.6 MB per page, ~190 MB → ~11 MB per run. `scrape_ktc` reads each row's text while its page's soup is alive and collects per page rather than collecting bs4 `Tag`s — a `Tag` pins its whole document, and twenty of them were resident: 133 MB → 15 MB measured over the live twenty pages.
+- **nflreadpy uses its filesystem cache**, set in `nflverse_stats.py`. Its default memory cache pinned ~22 MB of season parquet for 24 h behind the dicts that module distils it into, which no `gc` or `malloc_trim` in this process can reach.
+
+Known and not done: **nflverse in a subprocess** is the biggest remaining win (~100 MB off the ~165 MB baseline) and its own change. `fantasy_points_data` and `odds_props_history` are never pruned and grow for the season (~8 MB now, ~16 by January). Production runs the Flask dev server, so request concurrency is unbounded, and `GET /dfs-salaries/data` and `/fantasy-points/data` each materialise a whole global per concurrent request.

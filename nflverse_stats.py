@@ -14,6 +14,22 @@ import nflreadpy as nfl
 
 logger = logging.getLogger(__name__)
 
+# nflreadpy keeps every frame it downloads in memory for 24 hours by default,
+# so a refresh left ~22 MB of season parquet pinned behind the dicts this module
+# distils it into — memory the gc and malloc_trim in here cannot touch, because
+# the library is still holding it. The filesystem cache keeps the part worth
+# having (schedules and player stats are each asked for by more than one builder
+# in a single refresh, and are downloaded once) without retaining the frames.
+#
+# The cache directory is ephemeral like the rest of the instance, which is what
+# a cache wants. Non-fatal if the library's config ever moves: a warning and the
+# default behaviour is still correct, only heavier.
+try:
+    nfl.config.update_config(cache_mode="filesystem")
+except Exception as e:  # pragma: no cover - depends on nflreadpy internals
+    logger.warning("nflverse: could not switch nflreadpy to its filesystem cache "
+                   "(%s); season frames will stay in memory for 24h", e)
+
 SKILL_POSITIONS = {"QB", "RB", "WR", "TE", "K"}
 
 # How many weeks a new season needs before it is preferred over the last completed

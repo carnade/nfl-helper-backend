@@ -1709,6 +1709,16 @@ paths:
                     type: array
                     items:
                       type: integer
+                  rss_mb:
+                    type: number
+                    nullable: true
+                    description: >-
+                      Resident memory in MB, read from /proc/self/statm. Null off
+                      Linux. The instance has been OOM-killed at 490 MB, so this is
+                      the number to watch across a day and beside the 15:00 DFS job.
+                  memory_limit_mb:
+                    type: integer
+                    description: What the host kills this process for exceeding.
 
   /admin/debug:
     get:
