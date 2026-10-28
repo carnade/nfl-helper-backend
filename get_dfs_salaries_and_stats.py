@@ -6,6 +6,7 @@ for DraftKings NFL contests.
 """
 
 import requests
+from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 import logging
 import re
@@ -24,8 +25,20 @@ class DFFSalariesScraper:
         self.base_url = "https://www.dailyfantasyfuel.com/nfl/projections/draftkings"
         self.slates_api_url = "https://www.dailyfantasyfuel.com/data/slates/recent/NFL/draftkings"
         self.session = requests.Session()
+        # DailyFantasyFuel bounces an outdated browser to its homepage. The
+        # Chrome 91 string that used to be here — a 2021 build — started getting
+        # a 302 to "/" on the projections pages, which requests followed, so the
+        # scrape parsed 307 KB of homepage, found no rows and reported "no
+        # players found (this may be normal if data isn't available yet)". The
+        # slates JSON is not gated, so slate discovery kept working and the logs
+        # looked like the site simply had no data posted yet.
+        #
+        # Worth knowing if this returns: the page loads fine with no User-Agent
+        # at all. It is specifically an old one that gets turned away.
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                          'AppleWebKit/537.36 (KHTML, like Gecko) '
+                          'Chrome/131.0.0.0 Safari/537.36'
         })
     
     def get_active_main_slate(self, date: str = None) -> Optional[str]:
@@ -495,7 +508,20 @@ class DFFSalariesScraper:
         try:
             response = self.session.get(url, timeout=30)
             response.raise_for_status()
-            
+
+            # Being redirected off the projections page is not the same as the
+            # page having nothing on it, and it used to read that way: the
+            # redirect lands on the homepage, which answers 200, parses fine and
+            # contains no rows. Said plainly so the next person does not spend
+            # the afternoon believing the site has not posted its salaries.
+            if urlparse(response.url).path.rstrip('/') != urlparse(url).path.rstrip('/'):
+                logger.error(
+                    f"Redirected away from the projections page: asked for {url}, "
+                    f"served {response.url}. The site turns away outdated "
+                    f"User-Agents — check the one this scraper sends."
+                )
+                return []
+
             soup = BeautifulSoup(response.text, 'html.parser')
             
             players = []
