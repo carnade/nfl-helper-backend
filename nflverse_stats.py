@@ -12,6 +12,8 @@ import pandas as pd
 import requests
 import nflreadpy as nfl
 
+import strength_of_schedule as sos
+
 logger = logging.getLogger(__name__)
 
 # nflreadpy keeps every frame it downloads in memory for 24 hours by default,
@@ -55,6 +57,15 @@ STAT_COLS = sorted(SUM_COLS | AVG_COLS)
 DEF_STAT_KEYS = ("passing_yards", "rushing_yards", "receiving_yards", "rush_rec_tds", "receptions", "carries")
 DEF_POS_KEYS  = ("qb", "rb", "wr", "te")
 
+# The schedule columns this module reads. At module scope because both the
+# current-season refresh and the last-season records load select against it.
+_SCHED_COLS = [
+    "game_type", "season", "week", "home_team", "away_team",
+    "spread_line", "total_line", "gameday", "gametime", "roof", "surface",
+    "temp", "wind", "home_score", "away_score",
+    "home_moneyline", "away_moneyline", "home_qb_name", "away_qb_name",
+]
+
 # ── In-memory storage ─────────────────────────────────────────────────────────
 
 nflverse_player_stats: dict = {}    # sleeper_id → core player stats
@@ -65,6 +76,16 @@ nflverse_games: dict = {}           # week (int) → list of game dicts
 nflverse_current_season: int | None = None
 nflverse_schedule_season: int | None = None
 nflverse_last_updated: str | None = None
+
+# Schedule strength, precomputed per team for both windows and all three bases.
+# See strength_of_schedule.py for what those are and why there are three.
+nflverse_team_sos: dict = {}         # team -> {ros|post: {2025|2026|vspos: cell}}
+
+# Last season's final records, for the early-season basis. Final means final, so
+# this is fetched once per process and then left alone — the season number it was
+# built for is kept beside it so the guard is an integer comparison.
+nflverse_last_season_records: dict = {}
+nflverse_last_season_records_season: int | None = None
 
 
 # ── Season detection ──────────────────────────────────────────────────────────
@@ -647,6 +668,36 @@ def build_schedule_dicts(df: pd.DataFrame) -> tuple:
     return team_schedule, games_by_week
 
 
+def load_last_season_records(season: int) -> dict:
+    """
+    Last season's final records, for the early-season strength-of-schedule basis.
+
+    Only the schedule is loaded — not last season's player or team stats. That
+    is the whole reason this basis is affordable: a schedule is a few hundred
+    rows, where another season of player stats would be the sort of transient
+    that got this service OOM-killed at 490 MB. build_schedule_dicts already
+    filters to REG and the newest season in whatever frame it is handed, so it
+    parses last season exactly as it parses this one.
+
+    Returns {} on failure rather than raising. A missing early-season basis
+    leaves one column blank; a failed refresh leaves every column blank.
+    """
+    try:
+        frame = nfl.load_schedules([season])
+        df = frame.select([c for c in _SCHED_COLS if c in frame.columns]).to_pandas()
+        del frame
+        _schedule, games = build_schedule_dicts(df)
+        del df; gc.collect()
+
+        records = sos.team_records(games)
+        logger.info("nflverse: %d final records loaded (%d teams)", season, len(records))
+        return records
+    except Exception:
+        logger.exception("nflverse: could not load %d records; "
+                         "the early-season SoS basis will be blank", season)
+        return {}
+
+
 # ── Refresh orchestrator ──────────────────────────────────────────────────────
 
 def refresh_nflverse_data():
@@ -654,6 +705,7 @@ def refresh_nflverse_data():
     global nflverse_player_stats, nflverse_player_advanced, nflverse_team_stats
     global nflverse_schedule, nflverse_games, nflverse_schedule_season
     global nflverse_current_season, nflverse_last_updated
+    global nflverse_last_season_records_season
 
     # Two different questions, two different answers. Player stats accumulate, so
     # they stay on the last completed season until the new one has a week behind
@@ -719,12 +771,6 @@ def refresh_nflverse_data():
         logger.info("nflverse: team_stats loaded (%d rows)", len(team_df))
 
         # 6. Schedules — load, build dicts, free
-        _SCHED_COLS = [
-            "game_type", "season", "week", "home_team", "away_team",
-            "spread_line", "total_line", "gameday", "gametime", "roof", "surface",
-            "temp", "wind", "home_score", "away_score",
-            "home_moneyline", "away_moneyline", "home_qb_name", "away_qb_name",
-        ]
         pl_sched = nfl.load_schedules([season])
         schedule_df = pl_sched.select([c for c in _SCHED_COLS if c in pl_sched.columns]).to_pandas()
         del pl_sched; gc.collect()
@@ -760,6 +806,22 @@ def refresh_nflverse_data():
         nflverse_current_season = current_season
         nflverse_schedule_season = schedule_season
         nflverse_last_updated   = datetime.datetime.utcnow().isoformat() + "Z"
+
+        # Last season's records, once per process. Final records do not move, so
+        # the integer guard makes this a no-op on every refresh but the first.
+        previous = schedule_season - 1
+        if nflverse_last_season_records_season != previous:
+            nflverse_last_season_records.clear()
+            nflverse_last_season_records.update(load_last_season_records(previous))
+            nflverse_last_season_records_season = previous
+
+        nflverse_team_sos.clear()
+        nflverse_team_sos.update(sos.build_team_sos(
+            games,
+            sos.team_records(games),
+            nflverse_last_season_records,
+            team_stats,
+        ))
 
         print(
             f"{datetime.datetime.now()} - nflverse: done — "
@@ -808,6 +870,82 @@ def _matchup_block(team: str, position: str) -> dict:
         "def_fpts_allowed_rolling5": def_fpts_rolling5,
         "opponent_rank_season":    opponent_rank_season,
         "opponent_rank_rolling5":  opponent_rank_rolling5,
+    }
+
+
+# What the Player Finder covers. Kickers are excluded: their values are not
+# tracked by the dynasty sources this joins against, and there is no
+# points-allowed-to-kickers figure, so every column that matters would be blank.
+# Defences never appear in nflverse_player_stats at all.
+FINDER_POSITIONS = ("QB", "RB", "WR", "TE")
+
+
+def build_finder_rows(filtered_players: dict) -> list:
+    """
+    One row per player for the Player Finder, joining the three dicts.
+
+    `filtered_players` is passed in rather than imported because it belongs to
+    nfl-helper.py, which imports this module — the same direction odds_api.py
+    takes its arguments for the same reason.
+
+    Keys are deliberately spelled as filtered_players spells them — "KTC Value",
+    "pts_ppr", "gp" — so the frontend's existing playerValueOf() and
+    pointsPerGame() read these rows with no mapping layer in between.
+
+    A player nflverse knows about but the dynasty scrape does not gets None for
+    those fields rather than being dropped: unknown is not zero, and a player
+    worth nothing and a player nobody has priced are different claims. The
+    row's own `sos` is this team's block with `vspos` already narrowed to the
+    player's position, so the browser never receives the schedule, the records,
+    or four positions of defensive figures.
+    """
+    rows = []
+    for sleeper_id, stats in nflverse_player_stats.items():
+        position = stats.get("position")
+        if position not in FINDER_POSITIONS:
+            continue
+
+        player = filtered_players.get(sleeper_id) or {}
+        name = stats.get("name") or ""
+        first, _, last = name.partition(" ")
+
+        rows.append({
+            "sleeper_id": sleeper_id,
+            "first_name": player.get("first_name") or first or None,
+            "last_name": player.get("last_name") or last or None,
+            "position": position,
+            "team": stats.get("team"),
+            "age": player.get("age"),
+            "injury_status": player.get("injury_status"),
+            "KTC Value": player.get("KTC Value"),
+            "KTC Position Rank": player.get("KTC Position Rank"),
+            "FC Value": player.get("FC Value"),
+            "pts_ppr": player.get("pts_ppr"),
+            "gp": player.get("gp"),
+            # nflverse's own games count, which is the one the last-5 average is
+            # drawn from. Kept beside Sleeper's `gp` rather than instead of it:
+            # the points filter and this one should each count what they filter.
+            "games_played": (stats.get("season_totals") or {}).get("games_played"),
+            "last5_ppg": (stats.get("rolling_5") or {}).get("fantasy_points_ppr"),
+            "sos": _finder_sos(stats.get("team"), position),
+        })
+    return rows
+
+
+def _finder_sos(team: str, position: str) -> dict | None:
+    """This team's schedule strength, with `vspos` narrowed to one position."""
+    block = nflverse_team_sos.get(team) if team else None
+    if not block:
+        return None
+
+    pos_key = _POS_DEF_KEY.get(position)
+    return {
+        window: {
+            "2025": bases.get("2025"),
+            "2026": bases.get("2026"),
+            "vspos": (bases.get("vspos") or {}).get(pos_key) if pos_key else None,
+        }
+        for window, bases in block.items()
     }
 
 

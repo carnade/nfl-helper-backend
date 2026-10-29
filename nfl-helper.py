@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from routes_stats import stats_bp
 from routes_odds import odds_bp
+import nflverse_stats
 from nflverse_stats import refresh_nflverse_data
 import odds_api
 
@@ -2509,6 +2510,30 @@ def get_all_players():
         players_info.update(picks_data)
 
     return jsonify(players_info), 200
+
+@app.route('/player-finder/data', methods=['GET'])
+def get_player_finder_data():
+    """
+    Every player the Player Finder can show, in one response.
+
+    One row per QB/RB/WR/TE that nflverse has stats for — about 520 — carrying
+    the dynasty values, the scoring, and that team's strength of schedule. The
+    whole set, uncapped, because the Finder filters and sorts client-side like
+    the rest of this app's tables; it is around 300 KB, and well under 50 once
+    gzipped.
+
+    Lives here rather than in routes_stats.py because it needs
+    `filtered_players`, which that blueprint has no access to.
+
+    Returns:
+        JSON array of player rows. See nflverse_stats.build_finder_rows.
+    """
+    try:
+        return jsonify(nflverse_stats.build_finder_rows(filtered_players)), 200
+    except Exception as e:
+        print(f"Error in /player-finder/data endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/picks/data', methods=['GET'])
 def get_all_picks():
