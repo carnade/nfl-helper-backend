@@ -109,9 +109,26 @@ class TestTheUniverse:
 
         assert row["KTC Value"] is None
         assert row["FC Value"] is None
-        assert row["pts_ppr"] is None
         assert row["last5_ppg"] == 12.5, "nflverse's own figures still come through"
         assert row["games_played"] == 5
+
+    def test_the_season_figures_fall_back_to_nflverse(self):
+        """
+        Sleeper only carries these for players its own stats feed covers. Without
+        the fallback the points and points-per-game columns — and the
+        cost-per-point ratio built on them — would be blank for part of the table
+        while the last-5 column beside them was filled in for everyone.
+        """
+        row = rows_by_id()["2"]
+
+        assert row["pts_ppr"] == 90.0, "from nflverse's season_totals"
+        assert row["gp"] == 5
+
+    def test_sleepers_own_figures_win_where_it_has_them(self):
+        row = rows_by_id()["1"]
+
+        assert row["pts_ppr"] == 118.4, "Sleeper's, not nflverse's 120.0"
+        assert row["gp"] == 6
 
     def test_the_name_falls_back_to_nflverses_own(self):
         row = rows_by_id()["2"]

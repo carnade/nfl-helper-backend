@@ -906,8 +906,23 @@ def build_finder_rows(filtered_players: dict) -> list:
             continue
 
         player = filtered_players.get(sleeper_id) or {}
+        totals = stats.get("season_totals") or {}
         name = stats.get("name") or ""
         first, _, last = name.partition(" ")
+
+        # Sleeper's season figures where it has them, nflverse's where it does
+        # not. Both are PPR fantasy points and the two differ only marginally,
+        # which is a better trade than the alternative: Sleeper only carries
+        # these for players its own stats feed covers, so without the fallback
+        # the points, points-per-game and cost-per-point columns would be blank
+        # for part of the table while the last-5 column beside them was filled
+        # from nflverse for everyone.
+        points = player.get("pts_ppr")
+        if points is None:
+            points = totals.get("fantasy_points_ppr")
+        games = player.get("gp")
+        if games is None:
+            games = totals.get("games_played")
 
         rows.append({
             "sleeper_id": sleeper_id,
@@ -920,12 +935,11 @@ def build_finder_rows(filtered_players: dict) -> list:
             "KTC Value": player.get("KTC Value"),
             "KTC Position Rank": player.get("KTC Position Rank"),
             "FC Value": player.get("FC Value"),
-            "pts_ppr": player.get("pts_ppr"),
-            "gp": player.get("gp"),
-            # nflverse's own games count, which is the one the last-5 average is
-            # drawn from. Kept beside Sleeper's `gp` rather than instead of it:
-            # the points filter and this one should each count what they filter.
-            "games_played": (stats.get("season_totals") or {}).get("games_played"),
+            "pts_ppr": points,
+            "gp": games,
+            # nflverse's own count, always present, which is what the last-5
+            # average is drawn from and what the games filter counts.
+            "games_played": totals.get("games_played"),
             "last5_ppg": (stats.get("rolling_5") or {}).get("fantasy_points_ppr"),
             "sos": _finder_sos(stats.get("team"), position),
         })
