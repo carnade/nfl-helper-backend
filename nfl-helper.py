@@ -2133,8 +2133,7 @@ def clear_tinyurl_data(delete_finished=True):
                 # For multiweek_dfs entries, calculate points and clear lineup data, but KEEP the entry
                 if entry_type == 'multiweek_dfs':
                     start_week = entry.get('start_week', entry_week)
-                    num_weeks = entry.get('num_weeks')
-                    end_week = (start_week + num_weeks - 1) if num_weeks is not None else None
+                    end_week = multiweek_end_week(entry)
 
                     if end_week is not None and entry_week > end_week:
                         if delete_finished:
@@ -3399,6 +3398,50 @@ def multiweek_progress(entry):
     return {'week': max(1, min(index, num_weeks)), 'num_weeks': num_weeks}
 
 
+def multiweek_end_week(entry):
+    """
+    The last NFL week a multiweek tournament actually plays, or None.
+
+    Lifted out of clear_tinyurl_data, which was the only thing that knew it.
+    That is how a finished tournament went on being offered: the cleanup could
+    tell it was over, and nothing else could — not the listing that puts it on
+    the DFS page, and not the route that takes a lineup for it.
+    """
+    if entry.get('type') != 'multiweek_dfs':
+        return None
+    num_weeks = entry.get('num_weeks')
+    start_week = entry.get('start_week', entry.get('week'))
+    if num_weeks is None or start_week is None:
+        return None
+    try:
+        return int(start_week) + int(num_weeks) - 1
+    except (TypeError, ValueError):
+        return None
+
+
+def multiweek_has_finished(entry):
+    """
+    Whether this tournament has played every week it was created for.
+
+    True through the grace week — the one week it sits past its end so the final
+    standings can still be read — until the Thursday pass removes it. During
+    that week it is finished rather than running, and the distinction matters:
+    the week it is sitting on is not one of its own and will never be scored,
+    so a lineup filed against it would be thrown away with the entry.
+
+    multiweek_progress clamps its index to num_weeks, so a tournament one week
+    past the end still reads "7 of 7" there. This is the question that one
+    cannot answer.
+    """
+    end_week = multiweek_end_week(entry)
+    if end_week is None:
+        return False
+    try:
+        return int(entry.get('week')) > end_week
+    except (TypeError, ValueError):
+        return False
+
+
 def parse_deadline(value):
     """
     Normalize a submission deadline to an aware UTC datetime.
@@ -4489,6 +4532,9 @@ def get_tinyurl_details(name):
     if progress:
         response['tournament_week'] = progress['week']
         response['num_weeks'] = progress['num_weeks']
+        # progress clamps to num_weeks, so its week alone cannot say whether the
+        # tournament is on its last week or past it.
+        response['finished'] = multiweek_has_finished(entry)
     if 'deadline' in entry:
         response['deadline'] = entry['deadline']
         response['deadline_passed'] = deadline_has_passed(entry)
@@ -4578,6 +4624,17 @@ def get_tinyurls_by_username(username):
             # Case-insensitive comparison: normalize all allowed names and compare
             normalized_allowed_names = [normalize_tinyurl_name(n) for n in allowed_names]
             is_sleeper_open = entry_is_sleeper_open(entry_data) and sleeper_identity is not None
+
+            # This list is what the DFS page offers to submit to, and a
+            # tournament that has played all its weeks is not one of those. It
+            # stays in the data for a grace week so its standings can still be
+            # read, and used to stay on this list too — where it took lineups
+            # for a week it does not own, which were then thrown away with it.
+            # The results page reaches it by name, and the organiser's manage
+            # page lists from /tinyurl/list, so neither loses sight of it.
+            if multiweek_has_finished(entry_data):
+                continue
+
             if is_sleeper_open or normalized_username in normalized_allowed_names:
                 # Use original name from entry if stored, otherwise use entry_name
                 display_name = entry_data.get('name', entry_name)
@@ -4664,6 +4721,7 @@ def get_tinyurls_by_username(username):
                 if progress:
                     entry_info['tournament_week'] = progress['week']
                     entry_info['num_weeks'] = progress['num_weeks']
+                    entry_info['finished'] = multiweek_has_finished(entry_data)
                 if 'deadline' in entry_data:
                     entry_info['deadline'] = entry_data['deadline']
                     entry_info['deadline_passed'] = deadline_has_passed(entry_data)
@@ -4730,6 +4788,7 @@ def list_tinyurls():
         if progress:
             entry_info['tournament_week'] = progress['week']
             entry_info['num_weeks'] = progress['num_weeks']
+            entry_info['finished'] = multiweek_has_finished(data)
         if 'deadline' in data:
             entry_info['deadline'] = data['deadline']
             entry_info['deadline_passed'] = deadline_has_passed(data)
@@ -5421,6 +5480,18 @@ def add_to_tinyurl(tinyurl_name):
             return jsonify({
                 "error": "The submission deadline for this tournament has passed",
                 "deadline": entry.get('deadline'),
+            }), 403
+
+        # A tournament that has played all its weeks takes nothing further. It
+        # lingers for a grace week so the final standings can be read, and
+        # during that week it was still accepting lineups for a week it does
+        # not own and will never score — they were discarded along with the
+        # entry when the Thursday pass removed it.
+        if multiweek_has_finished(entry):
+            return jsonify({
+                "error": "This tournament has finished — all "
+                         f"{entry.get('num_weeks')} weeks have been played.",
+                "finished": True,
             }), 403
 
         if entry_is_sleeper_open(entry):
