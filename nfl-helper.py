@@ -4625,15 +4625,13 @@ def get_tinyurls_by_username(username):
             normalized_allowed_names = [normalize_tinyurl_name(n) for n in allowed_names]
             is_sleeper_open = entry_is_sleeper_open(entry_data) and sleeper_identity is not None
 
-            # This list is what the DFS page offers to submit to, and a
-            # tournament that has played all its weeks is not one of those. It
-            # stays in the data for a grace week so its standings can still be
-            # read, and used to stay on this list too — where it took lineups
-            # for a week it does not own, which were then thrown away with it.
-            # The results page reaches it by name, and the organiser's manage
-            # page lists from /tinyurl/list, so neither loses sight of it.
-            if multiweek_has_finished(entry_data):
-                continue
+            # A finished tournament stays on this list, carrying `finished` so
+            # each caller can do the right thing with it. Both read this one
+            # endpoint: the DFS page turns it into "add team to league" buttons
+            # and must leave a finished tournament out, while the results page
+            # turns it into "load from your leagues" and must keep it, which is
+            # what the grace week is for. Dropping it here served the first and
+            # broke the second.
 
             if is_sleeper_open or normalized_username in normalized_allowed_names:
                 # Use original name from entry if stored, otherwise use entry_name

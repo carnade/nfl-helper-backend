@@ -157,26 +157,26 @@ class TestItIsReportedAsFinished:
         assert body['finished'] is False
         assert body['tournament_week'] == 7, "the real final week reads the same"
 
-    def test_a_finished_tournament_is_not_offered_to_submit_to(self, client):
+    def test_a_finished_tournament_stays_on_the_available_list(self, client):
         """
-        /available is the list the DFS page turns into "add team to league"
-        buttons, so a finished tournament must not appear on it. It stays in the
-        data for its grace week — the results page reaches it by name and the
-        manage page lists from /tinyurl/list — it just cannot be entered.
+        Flagged, not dropped. Two pages read this one endpoint: the DFS page
+        makes "add team to league" buttons of it and has to leave a finished
+        tournament out, and the results page makes "load from your leagues" of
+        it and has to keep it — which is the whole point of the grace week.
+        Dropping it here served the first and silently broke the second.
         """
         nfl_helper.tinyurl_data['giljotin_1'] = tournament(week=9)
 
         body = client.get('/tinyurl/carnade/available').get_json()
-        names = [e.get('name') if isinstance(e, dict) else e
-                 for e in body.get('entries', [])]
+        entries = {e['name']: e for e in body.get('entries', []) if isinstance(e, dict)}
 
-        assert 'Giljotin_1' not in names
+        assert 'Giljotin_1' in entries, "the standings must stay reachable"
+        assert entries['Giljotin_1']['finished'] is True
 
-    def test_a_running_tournament_is_still_offered(self, client):
+    def test_a_running_tournament_is_not_flagged(self, client):
         nfl_helper.tinyurl_data['giljotin_1'] = tournament(week=8)
 
         body = client.get('/tinyurl/carnade/available').get_json()
-        names = [e.get('name') if isinstance(e, dict) else e
-                 for e in body.get('entries', [])]
+        entries = {e['name']: e for e in body.get('entries', []) if isinstance(e, dict)}
 
-        assert 'Giljotin_1' in names
+        assert entries['Giljotin_1']['finished'] is False
