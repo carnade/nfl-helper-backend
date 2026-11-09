@@ -39,6 +39,8 @@ Measured Thursday-versus-Sunday, because there has never been a Saturday fetch t
 
 `STARTUP_REFRESH_MAX_AGE_HOURS` must move whenever the days do. It is the widest legitimate gap between runs — Saturday to Thursday, 120 hours. Left narrower, a restart on the Tuesday or Wednesday reads as a missed run and buys a refresh it did not need, and a free-tier host restarts often.
 
+It also does double duty as the staleness escape in `should_run_scheduled_refresh()`. That function skips a run when no game kicks off inside the window, but the window is counted over the games **already held**, so a cache whose games have all been played counts zero, skips, never updates, and counts the same dead games next time. Production sat in that state for 22 days with `refresh_paused: true`, a note promising it would resume by itself, and not one credit spent in the billing period. Past the max age the run now goes ahead whatever the window says. The proper fix — sizing the window against the real schedule in `nflverse_games` rather than against the odds cache — is still open.
+
 The other lever is `len(PROP_MARKETS)`; `RETIRED_PROP_MARKETS` records what was dropped and why. Three paths spend them and nothing else does:
 
 - `POST /admin/trigger-odds-fetch`

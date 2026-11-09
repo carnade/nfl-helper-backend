@@ -921,11 +921,31 @@ def should_run_scheduled_refresh() -> tuple[bool, str]:
     week 1 — the single most expensive refresh there is, spent on games over a
     week out whose lines are barely posted and will have moved by kickoff.
 
-    Deliberately self-correcting rather than a manual pause: it resumes on its
-    own as soon as the first game comes into range.
+    It resumes on its own as soon as the first game comes into range — but only
+    while the games it is counting are still ahead of us, which is why the
+    staleness check below exists.
     """
     if not odds_games:
         return True, "no games held yet"
+
+    # The window is measured against the games we are holding, so once what we
+    # hold is old enough that every game in it has already been played, the
+    # count is zero and stays zero: the run skips, the cache is never updated,
+    # and the next run counts the same dead games again. The promise of
+    # resuming automatically cannot be kept from there.
+    #
+    # Seen in production: the Thursday and Saturday runs both skipped, nothing
+    # had spent a credit in the whole billing period, and the served odds were
+    # 22 days old while the status note still said it would resume by itself.
+    #
+    # Measured against the same threshold the boot-time fetch uses, so "too old
+    # to be worth keeping" means one thing in both places.
+    age = cache_age_hours()
+    if age is not None and age >= STARTUP_REFRESH_MAX_AGE_HOURS:
+        return True, (f"held odds are {age:.0f}h old, past the "
+                      f"{STARTUP_REFRESH_MAX_AGE_HOURS}h mark — refreshing "
+                      f"whatever the window says")
+
     days = props_lookahead_days()
     n = games_within_window(days)
     if n:
