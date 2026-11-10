@@ -88,7 +88,11 @@ def odds_status():
         "next_refresh":       _next.isoformat() + "Z" if _next else None,
         "overdue_hours":      _overdue or None,
         # Scheduled refreshes stand down while no games are near, to avoid
-        # spending credits on an opener-week fetch. Manual refresh overrides.
+        # spending credits on an opener-week fetch — but not once what is held
+        # is past STARTUP_REFRESH_MAX_AGE_HOURS, because the window is measured
+        # against the held games and a cache of played ones would pause the run
+        # for good. Manual refresh overrides either way, and `refresh_note` says
+        # which of the two is talking.
         "refresh_paused":     not _run,
         "refresh_note":       _why,
         # Non-null means the most recent refresh failed and what is being served
