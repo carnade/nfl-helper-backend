@@ -699,6 +699,9 @@ def load_dfs_salaries_data():
 
     dfs_salaries_data.clear()
     dfs_salaries_data.update(rows)
+    # The store was written before these were filled in, and a restart must not
+    # reintroduce the gap the kickoff check used to guess at.
+    fill_missing_kickoffs(list(dfs_salaries_data.values()))
 
     scraped_at = stored.get('scraped_at')
     if scraped_at:
@@ -1252,7 +1255,14 @@ def update_dfs_salaries_data():
                 added_count += 1
             
             dfs_salaries_data[key] = player_with_date
-        
+
+        # Across the whole store, not only what was just scraped: rows restored
+        # from disk carry the same gaps, and a team-mate scraped this time can
+        # fill a row scraped last time.
+        filled = fill_missing_kickoffs(list(dfs_salaries_data.values()))
+        if filled:
+            print(f"Filled {filled} missing kickoff times from team-mates in the same game")
+
         # Log salary differences
         if salary_differences:
             print(f"{datetime.datetime.now()} - Salary differences found (scheduled update - salaries NOT updated):")
@@ -3607,6 +3617,61 @@ def _decode_lineup_payload(base64_data):
     return None
 
 
+def fill_missing_kickoffs(rows):
+    """
+    Give every row a kickoff time, taken from another row for the same game.
+
+    The salary scrape leaves `game_start_time` empty on a sizeable minority of
+    rows — 144 of 478 in week 10, 30% — and it is not the obscure players
+    either: the Cardinals' defence, Tre Tucker, Brock Bowers' team-mates. The
+    time is not missing from the *slate*, only from those rows, so a team-mate
+    in the same game almost always carries it. Measured over week 10, all 144
+    were recoverable this way and not one of them ambiguously.
+
+    This matters because of what the gap was costing. The kickoff check used to
+    guess at an empty time from the day of the week — Sunday meant 1:00 PM ET,
+    the earliest slate — so from 1 PM onwards every one of those players read as
+    already playing. A lineup of 4:05 and 8:20 games was refused on a Sunday
+    afternoon with "games have already started", and the page had let it be
+    built because the browser's own fallback guesses late rather than early.
+    Filling the time here settles it for both of them at once, with the real
+    figure rather than either guess.
+
+    The opponent's rows are a second source: in a week where neither side of a
+    game carries a time there is nothing to recover, but one side usually does.
+
+    Returns how many rows were filled. Mutates in place, because the caller
+    holds these dicts in the global the API serves from.
+    """
+    def has_time(row):
+        return bool(str(row.get('game_start_time') or '').strip())
+
+    # A team plays once on a given date, so team-and-date names a game.
+    known = {}
+    for row in rows:
+        if not has_time(row):
+            continue
+        team = row.get('team')
+        date = row.get('game_date') or row.get('start_date')
+        if team and date:
+            known.setdefault((str(team), str(date)), str(row['game_start_time']).strip())
+
+    filled = 0
+    for row in rows:
+        if has_time(row):
+            continue
+        date = row.get('game_date') or row.get('start_date')
+        if not date:
+            continue
+        for team in (row.get('team'), row.get('opponent')):
+            time = known.get((str(team), str(date))) if team else None
+            if time:
+                row['game_start_time'] = time
+                filled += 1
+                break
+    return filled
+
+
 def dfs_salary_rows(sleeper_id, week):
     """
     Every salary row held for this player in this week, across slates.
@@ -4002,6 +4067,17 @@ def validate_lineup_players_not_started(lineup_data, week=None):
                 continue
             
             # Parse game start time (format: "1:00PM", "4:05PM", etc.)
+            #
+            # An unreadable time means the kickoff is unknown, and unknown is
+            # skipped — the same answer this function already gives a player it
+            # holds no row for at all, a few lines above. It used to guess from
+            # the day of the week instead, and "Sunday" meant the 1:00 PM slate:
+            # from one o'clock onwards, every player whose row the scrape left
+            # without a time read as already playing, whatever time they really
+            # kicked off. That refused whole lineups of 4:05 and 8:20 games on a
+            # Sunday afternoon. fill_missing_kickoffs now recovers the real time
+            # from a team-mate in the same game, so this path is reached only
+            # when nothing in the slate knows when the game is.
             game_datetime_et = None
             if game_start_time_str and game_start_time_str != 'Unknown':
                 try:
@@ -4019,12 +4095,18 @@ def validate_lineup_players_not_started(lineup_data, week=None):
                     game_datetime_naive = datetime.combine(game_date, game_time)
                     # Assume game time is in ET - use helper to handle pytz vs zoneinfo
                     game_datetime_et = _localize_datetime(game_datetime_naive, et_tz)
-                except:
-                    # If time parsing fails, use default based on game day
-                    game_datetime_et = _get_default_game_time(game_date, game_day, et_tz)
+                except Exception:
+                    logger.warning(
+                        f"Player {sleeper_id} has an unreadable kickoff "
+                        f"({game_start_time_str!r}) — not checked for them"
+                    )
+                    continue
             else:
-                # No time available, use smart default based on game day
-                game_datetime_et = _get_default_game_time(game_date, game_day, et_tz)
+                logger.warning(
+                    f"Player {sleeper_id} (week {week}) has no kickoff time in the "
+                    f"slate — not checked for them"
+                )
+                continue
             
             # Check if game has started (compare in ET timezone)
             import logging
@@ -4051,43 +4133,6 @@ def validate_lineup_players_not_started(lineup_data, week=None):
         
     except Exception as e:
         return False, f"Error validating lineup: {str(e)}", []
-
-
-def _get_default_game_time(game_date, game_day, et_tz):
-    """
-    Get default game start time based on game day.
-    NFL games typically:
-    - Thursday: 8:00 PM ET
-    - Sunday: 1:00 PM ET (early games)
-    - Monday: 8:00 PM ET
-    - Saturday: 1:00 PM ET (late season)
-    - Other: 6:00 PM ET (conservative default)
-    
-    Args:
-        game_date: date object
-        game_day: string like "Monday", "Sunday", etc.
-        et_tz: Eastern timezone
-        
-    Returns:
-        datetime object in ET timezone
-    """
-    from datetime import time as dt_time, datetime
-    
-    game_day_lower = game_day.lower() if game_day else ''
-    
-    # Default times based on day of week
-    if 'monday' in game_day_lower or 'thursday' in game_day_lower:
-        # Primetime games: 8:00 PM ET
-        default_time = dt_time(20, 0)
-    elif 'sunday' in game_day_lower or 'saturday' in game_day_lower:
-        # Early games: 1:00 PM ET
-        default_time = dt_time(13, 0)
-    else:
-        # Conservative default: 6:00 PM ET
-        default_time = dt_time(18, 0)
-    
-    game_datetime_naive = datetime.combine(game_date, default_time)
-    return _localize_datetime(game_datetime_naive, et_tz)
 
 
 @app.route('/tinyurl/create', methods=['POST'])
