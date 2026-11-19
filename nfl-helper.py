@@ -1324,9 +1324,17 @@ def update_dfs_salaries_data():
         # Across the whole store, not only what was just scraped: rows restored
         # from disk carry the same gaps, and a team-mate scraped this time can
         # fill a row scraped last time.
-        filled = fill_missing_kickoffs(list(dfs_salaries_data.values()))
+        #
+        # The schedule first, because it knows every game rather than only the
+        # ones DFF has published; then the team-mate copy for anything it could
+        # not place — a week we hold no schedule for, most likely, which at
+        # boot is every week, since nflverse loads a step after this runs.
+        held = list(dfs_salaries_data.values())
+        scheduled = fill_kickoffs_from_schedule(held)
+        filled = scheduled + fill_missing_kickoffs(held)
         if filled:
-            print(f"Filled {filled} missing kickoff times from team-mates in the same game")
+            print(f"Filled {filled} missing kickoff times "
+                  f"({scheduled} from the schedule, {filled - scheduled} from team-mates)")
 
         # Log salary differences
         if salary_differences:
@@ -3791,6 +3799,30 @@ def fill_times_from_schedule(rows, week):
         if not row.get('week'):
             row['week'] = int(week)
     return filled
+
+
+def fill_kickoffs_from_schedule(rows):
+    """
+    Give every row a kickoff from our own schedule, each against its own week.
+
+    The store holds more than one week at a time, so the week cannot be passed
+    in; it is read off each row and the rows grouped by it. A row whose week is
+    unknown is left for fill_missing_kickoffs, which needs no schedule.
+
+    This is the better of the two fills and runs first. The schedule is
+    published in full before a week starts, where DFF fills its kickoff column
+    as it gets round to it — on week 11 it had 58 rows blank and two entire
+    games — and copying between team-mates can only help when somebody in the
+    game already knows. Run against the live week-11 feed, this gave all 360
+    players a fixture and left none without.
+    """
+    by_week = {}
+    for row in rows:
+        week = row.get('week')
+        if week:
+            by_week.setdefault(int(week), []).append(row)
+    return sum(fill_times_from_schedule(group, week)
+               for week, group in by_week.items())
 
 
 def fill_missing_kickoffs(rows):
@@ -6570,6 +6602,15 @@ def initialize_data_in_background():
             release_free_memory()
             print(f"{datetime.datetime.now()} - Loading nflverse stats data...")
             refresh_nflverse_data()
+
+            # The DFS scrape ran a step ago, before any of this was loaded, so
+            # whatever it could not time is timed now. Cheap, and it is the
+            # difference between the boot run being timed and not.
+            late = fill_kickoffs_from_schedule(list(dfs_salaries_data.values()))
+            if late:
+                print(f"{datetime.datetime.now()} - Gave {late} salary rows a "
+                      f"kickoff from the schedule now that it is loaded.")
+                save_dfs_salaries_data()
             # The refresh peaks around 114 MB of DataFrames to retain under 17 MB of
             # dicts. Give the rest back rather than carrying it for the process's life.
             release_free_memory()

@@ -146,6 +146,62 @@ class TestFixturesFromOurOwnSchedule:
         assert nh.fill_times_from_schedule(rows, 99) == 0
 
 
+class TestTheStoreIsTimedWeekByWeek:
+    """The store holds more than one week, so the week comes off each row."""
+
+    SCHEDULE = {
+        10: [{"home_team": "CIN", "away_team": "PIT",
+              "gameday": "2026-11-15", "gametime": "20:20"}],
+        11: [{"home_team": "DET", "away_team": "TB",
+              "gameday": "2026-11-22", "gametime": "13:00"}],
+    }
+
+    @pytest.fixture(autouse=True)
+    def schedule(self, monkeypatch):
+        monkeypatch.setattr(nh.nflverse_stats, "nflverse_games", self.SCHEDULE)
+
+    def test_each_row_is_timed_against_its_own_week(self):
+        rows = [
+            {"team": "CIN", "week": 10},
+            {"team": "DET", "week": 11},
+        ]
+        assert nh.fill_kickoffs_from_schedule(rows) == 2
+        assert rows[0]["game_start_time"] == "20:20"
+        assert rows[0]["game_date"] == "2026-11-15"
+        assert rows[1]["game_start_time"] == "13:00"
+        assert rows[1]["game_date"] == "2026-11-22"
+
+    def test_a_team_playing_in_both_weeks_is_not_given_the_wrong_one(self):
+        # The failure this grouping exists to prevent: one week's kickoff
+        # written onto another week's row.
+        rows = [{"team": "CIN", "week": 10}, {"team": "CIN", "week": 11}]
+        nh.fill_kickoffs_from_schedule(rows)
+        assert rows[0]["game_date"] == "2026-11-15"
+        assert "game_date" not in rows[1], "CIN does not play in week 11 here"
+
+    def test_a_row_with_no_week_is_left_for_the_other_fill(self):
+        rows = [{"team": "DET"}]
+        assert nh.fill_kickoffs_from_schedule(rows) == 0
+
+    def test_it_does_not_overwrite_a_time_the_scrape_supplied(self):
+        rows = [{"team": "DET", "week": 11, "game_start_time": "16:25"}]
+        assert nh.fill_kickoffs_from_schedule(rows) == 0
+        assert rows[0]["game_start_time"] == "16:25"
+
+    def test_the_team_mate_copy_still_covers_a_week_we_cannot_place(self):
+        # Belt and braces: a week with no schedule falls through to the fill
+        # that needs none, which is what happens on every boot.
+        rows = [
+            {"team": "NYJ", "week": 18, "game_date": "2027-01-03",
+             "game_start_time": "13:00"},
+            {"team": "NYJ", "week": 18, "game_date": "2027-01-03",
+             "game_start_time": None},
+        ]
+        assert nh.fill_kickoffs_from_schedule(rows) == 0
+        assert nh.fill_missing_kickoffs(rows) == 1
+        assert rows[1]["game_start_time"] == "13:00"
+
+
 class TestWhatTheRunReports:
     @pytest.fixture
     def falling_back(self, monkeypatch):
