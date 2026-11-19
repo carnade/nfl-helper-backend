@@ -74,9 +74,22 @@ class DFFSalariesScraper:
         # Taken verbatim rather than one named cookie, because which of them
         # carries the session is DFF's business and may change.
         cookie = os.environ.get('DFF_COOKIE', '').strip()
+        self.has_cookie = bool(cookie)
         if cookie:
             self.session.headers['Cookie'] = cookie
             logger.info("DFF_COOKIE is set; scraping as a logged-in session")
+
+            # The session lives in an AWS load-balancer cookie, and the balancer
+            # splits it across AWSELBAuthSessionCookie-0, -1 and so on when it
+            # outgrows the 4 KB a cookie may hold. Copying only the first chunk
+            # produces a value that looks complete and authenticates as nobody,
+            # which is the likeliest way this gets set wrong.
+            if 'AWSELBAuthSessionCookie' not in cookie:
+                logger.warning(
+                    "DFF_COOKIE carries no AWSELBAuthSessionCookie — that is the "
+                    "one holding the session, and it comes in numbered parts. "
+                    "Copy the whole value, every part of it."
+                )
     
     def get_active_main_slate(self, date: str = None) -> Optional[str]:
         """
@@ -565,7 +578,16 @@ class DFFSalariesScraper:
             # there parses perfectly. Three days of scrapes stored a quarter of
             # each slate and reported success.
             if GATE_TEXT_RE.search(response.text):
+                # Two different problems wear the same page, and in a month's
+                # time the difference is the whole diagnosis: never logged in,
+                # or logged in with a cookie that has since lapsed.
                 raise DFFAccountGate(
+                    f"{url} served the logged-out preview. The DFF_COOKIE that "
+                    f"was sent did not authenticate — it has most likely expired, "
+                    f"or was copied in part: the session lives in "
+                    f"AWSELBAuthSessionCookie, which comes in numbered parts and "
+                    f"needs all of them. Paste a fresh one."
+                    if self.has_cookie else
                     f"{url} served the logged-out preview. DailyFantasyFuel now "
                     f"shows only the top players without an account — set "
                     f"DFF_COOKIE to a logged-in session cookie."

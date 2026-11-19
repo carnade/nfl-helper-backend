@@ -125,6 +125,49 @@ class TestTheCookie:
         assert "Cookie" not in DFFSalariesScraper().session.headers
 
 
+class TestTellingTheTwoFailuresApart:
+    """Never logged in, or logged in with a cookie that has lapsed.
+
+    The same page comes back either way, and in a month's time the difference
+    is the whole diagnosis.
+    """
+
+    def test_without_a_cookie_it_says_to_set_one(self, scraper, monkeypatch):
+        _serves(monkeypatch, scraper, GATED_PAGE)
+        with pytest.raises(DFFAccountGate) as raised:
+            scraper.scrape_dff_projections("26468", "2026-11-22")
+        assert "set DFF_COOKIE" in str(raised.value)
+        assert "expired" not in str(raised.value)
+
+    def test_with_one_it_says_the_cookie_did_not_work(self, monkeypatch):
+        monkeypatch.setenv("DFF_COOKIE", "AWSELBAuthSessionCookie-0=stale")
+        gated = DFFSalariesScraper()
+        _serves(monkeypatch, gated, GATED_PAGE)
+        with pytest.raises(DFFAccountGate) as raised:
+            gated.scrape_dff_projections("26468", "2026-11-22")
+        assert "expired" in str(raised.value)
+        assert "AWSELBAuthSessionCookie" in str(raised.value)
+
+    def test_a_cookie_without_the_session_part_is_called_out(self, monkeypatch, caplog):
+        # The likeliest way to set this wrong: copying as far as the first
+        # chunk and stopping. The value looks complete and authenticates as
+        # nobody.
+        monkeypatch.setenv("DFF_COOKIE", "_ga=GA1.2.9066; _gid=GA1.2.3579")
+        with caplog.at_level("WARNING"):
+            DFFSalariesScraper()
+        assert "AWSELBAuthSessionCookie" in caplog.text
+
+    def test_a_whole_cookie_draws_no_complaint(self, monkeypatch, caplog):
+        monkeypatch.setenv(
+            "DFF_COOKIE",
+            "_ga=GA1.2.9066; AWSALBAuthNonce=kisD; "
+            "AWSELBAuthSessionCookie-0=aaa; AWSELBAuthSessionCookie-1=bbb",
+        )
+        with caplog.at_level("WARNING"):
+            DFFSalariesScraper()
+        assert "AWSELBAuthSessionCookie" not in caplog.text
+
+
 class TestWhatTheUpdateDoesAboutIt:
     @pytest.fixture
     def held(self, monkeypatch):
