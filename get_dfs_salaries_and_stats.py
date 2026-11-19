@@ -74,6 +74,17 @@ class DFFSalariesScraper:
         # Taken verbatim rather than one named cookie, because which of them
         # carries the session is DFF's business and may change.
         cookie = os.environ.get('DFF_COOKIE', '').strip()
+
+        # Quotes round the whole value are a .env convention — python-dotenv
+        # eats them, a hosting panel's environment field does not — and this
+        # value gets pasted into both. Left on, they land on whichever cookie
+        # happens to sit at each end of the string: harmless when that is a
+        # Google Analytics one, fatal when the browser ordered a session chunk
+        # there instead, and the symptom is a silent return to the 25-row
+        # preview. Not worth leaving to the order the cookies came out in.
+        if len(cookie) >= 2 and cookie[0] == cookie[-1] and cookie[0] in ('"', "'"):
+            cookie = cookie[1:-1].strip()
+
         self.has_cookie = bool(cookie)
         if cookie:
             self.session.headers['Cookie'] = cookie

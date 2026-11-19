@@ -124,6 +124,33 @@ class TestTheCookie:
         monkeypatch.setenv("DFF_COOKIE", "   ")
         assert "Cookie" not in DFFSalariesScraper().session.headers
 
+    @pytest.mark.parametrize("quote", ["'", '"'])
+    def test_quotes_round_the_whole_value_are_dropped(self, monkeypatch, quote):
+        # A .env convention that a hosting panel's environment field does not
+        # share, and this value gets pasted into both. Left on, the quotes land
+        # on whichever cookie sits at each end of the string — survivable when
+        # that is a Google Analytics one, fatal when the browser happened to
+        # order a session chunk there, and the symptom is a silent return to
+        # the 25-row preview.
+        inner = "_ga=GA1.2.9066; AWSELBAuthSessionCookie-0=aaa"
+        monkeypatch.setenv("DFF_COOKIE", f"{quote}{inner}{quote}")
+        assert DFFSalariesScraper().session.headers["Cookie"] == inner
+
+    def test_a_quote_inside_the_value_is_left_alone(self, monkeypatch):
+        # Only a matched pair wrapping the whole thing is a quoting convention.
+        value = "a=1; b=it's"
+        monkeypatch.setenv("DFF_COOKIE", value)
+        assert DFFSalariesScraper().session.headers["Cookie"] == value
+
+    def test_mismatched_ends_are_not_treated_as_quotes(self, monkeypatch):
+        value = "'a=1; b=2"
+        monkeypatch.setenv("DFF_COOKIE", value)
+        assert DFFSalariesScraper().session.headers["Cookie"] == value
+
+    def test_a_value_of_only_quotes_is_the_same_as_none(self, monkeypatch):
+        monkeypatch.setenv("DFF_COOKIE", "''")
+        assert "Cookie" not in DFFSalariesScraper().session.headers
+
 
 class TestTellingTheTwoFailuresApart:
     """Never logged in, or logged in with a cookie that has lapsed.
