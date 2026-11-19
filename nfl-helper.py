@@ -1282,16 +1282,28 @@ def update_dfs_salaries_data():
         # Add new data with week in the key (supports multi-week storage)
         # Note: Scheduled updates do NOT update salaries - they only log differences
         salary_differences = []
-        added_count = 0
-        updated_count = 0
-        
+
+        # Counted by player rather than by write.
+        #
+        # A run walks several slates and most players are on more than one of
+        # them — a Sunday player is in Thu-Mon, Sun-Mon and Early Only alike —
+        # so the rows coming back outnumber the players they describe about
+        # two to one. Incrementing per row reported "1914 scraped, 1914
+        # updated" for a slate of 925, which reads as either a duplicate
+        # problem or a miracle and is neither.
+        keys_before = set(dfs_salaries_data)
+        touched = set()
+
         for player in parsed_salaries:
             # Use sleeper_id + week + game_date as composite key if sleeper_id is numeric, otherwise use name+team+week+game_date
             # Include game_date to differentiate players who play on different days within the same week (e.g., Sat vs Sun)
             sleeper_id = player.get("sleeper_id")
             game_date = player.get('game_date', player.get('date', ''))
-            week = player.get('week', 0)
-            
+            # `or 0`, for the same reason as the detection loop above: a
+            # slate feed row carries week=None, and a default does not cover a
+            # key that is present and null.
+            week = player.get('week') or 0
+
             if sleeper_id and str(sleeper_id).isdigit():
                 if game_date:
                     key = f"{sleeper_id}_W{week}_D{game_date}"
@@ -1345,11 +1357,12 @@ def update_dfs_salaries_data():
                                 and existing_player.get(field) is not None):
                             player_with_date[field] = existing_player[field]
 
-                updated_count += 1
-            else:
-                added_count += 1
-            
+
+            touched.add(key)
             dfs_salaries_data[key] = player_with_date
+
+        added_count = len(touched - keys_before)
+        updated_count = len(touched & keys_before)
 
         # Across the whole store, not only what was just scraped: rows restored
         # from disk carry the same gaps, and a team-mate scraped this time can
@@ -1400,6 +1413,9 @@ def update_dfs_salaries_data():
             # on, and calling it "gated" would hide that the slate is current.
             'fallback' if from_feed else 'ok',
             week=current_week,
+            # Both, because they answer different questions: how many
+            # players the slate has, and how much was read to find them.
+            players=len(touched),
             scraped=len(parsed_salaries),
             matched=matched_count,
             added=added_count,
