@@ -16,7 +16,8 @@ from flask_cors import CORS
 import datetime
 from get_dynasty_ranks import scrape_ktc, scrape_fantasy_calc, tep_adjust
 from fantasydatascraper import FantasyDataScraper
-from get_dfs_salaries_and_stats import DFFAccountGate, DFFSalariesScraper
+from get_dfs_salaries_and_stats import (
+    DFFAccountGate, DFFSalariesScraper, FEED_BLIND_FIELDS)
 import random  # Import random for generating random deltas
 import threading
 import time
@@ -1246,6 +1247,17 @@ def update_dfs_salaries_data():
         # never gets a say. A test caught this by failing on a success that
         # claimed to have been a fallback.
         from_feed = getattr(scraper, 'used_feed_fallback', False) is True
+        if from_feed:
+            # The feed gives no week, so the week came from Sleeper, whose
+            # answer swings a day either side of the rollover. Prefer the
+            # schedule, which simply says which week the games are in.
+            from_schedule = upcoming_nfl_week()
+            if from_schedule:
+                if from_schedule != current_week:
+                    print(f"Slate feed run: filing under week {from_schedule} "
+                          f"from the schedule rather than week {current_week}.")
+                current_week = from_schedule
+                current_nfl_week = current_week
         if from_feed and current_week:
             timed = fill_times_from_schedule(parsed_salaries, current_week)
             print(f"Read {len(parsed_salaries)} players from the slate feed; "
@@ -1315,6 +1327,24 @@ def update_dfs_salaries_data():
             # Keep existing salary if player already exists (scheduled updates don't update salaries)
             if existing_player:
                 player_with_date["salary"] = existing_player.get('salary', new_salary)
+
+                # A fallback run knows nothing about the rolling averages or
+                # the game total, and the row below is written whole — so
+                # without this, one gated scrape after a good one on the same
+                # slate would replace a player's last-5, last-10 and season
+                # figures with nulls and there would be no getting them back
+                # until the cookie was fixed.
+                #
+                # Only the columns the feed does not have. Every other null it
+                # carries is an answer: a cleared injury_status means the
+                # player is no longer questionable, and keeping the old "Q"
+                # over it would be worse than losing an average.
+                if from_feed:
+                    for field in FEED_BLIND_FIELDS:
+                        if (player_with_date.get(field) is None
+                                and existing_player.get(field) is not None):
+                            player_with_date[field] = existing_player[field]
+
                 updated_count += 1
             else:
                 added_count += 1
@@ -3799,6 +3829,28 @@ def fill_times_from_schedule(rows, week):
         if not row.get('week'):
             row['week'] = int(week)
     return filled
+
+
+def upcoming_nfl_week(today=None):
+    """
+    The earliest week in our schedule that has not finished.
+
+    For a fallback run only, and it exists because the feed carries no week at
+    all. Without a week on any row the code falls through to asking Sleeper,
+    whose answer has a rule of its own — before 7pm on a Thursday it reports
+    the week just gone — so a week 11 slate was filed under week 10, where the
+    kickoff lock and the tournaments would never look for it.
+
+    The schedule has no such opinion: the week a slate belongs to is the week
+    its games are in.
+    """
+    today = today or datetime.datetime.now().strftime('%Y-%m-%d')
+    candidates = []
+    for week, games in (nflverse_stats.nflverse_games or {}).items():
+        days = [g.get('gameday') for g in games if g.get('gameday')]
+        if days and max(days) >= today:
+            candidates.append(int(week))
+    return min(candidates) if candidates else None
 
 
 def fill_kickoffs_from_schedule(rows):

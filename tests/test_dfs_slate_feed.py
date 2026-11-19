@@ -202,6 +202,111 @@ class TestTheStoreIsTimedWeekByWeek:
         assert rows[1]["game_start_time"] == "13:00"
 
 
+class TestAFallbackDoesNotUndoAGoodScrape:
+    """A good run then a gated one, on the same slate.
+
+    The row is written whole, so without care the second run replaces a
+    player's last-5, last-10 and season figures with the nulls the feed
+    carries — and there is no getting them back until the cookie is fixed.
+    """
+
+    GOOD_ROW = {
+        "sleeper_id": "9224", "name": "Chase Brown", "team": "CIN",
+        "position": "RB", "week": 11, "salary": 6400,
+        "game_date": "2026-11-23", "game_start_time": "20:15",
+        "projected_points": 15.8, "l5_avg": 14.2, "l10_avg": 13.1,
+        "season_avg": 12.7, "over_under": 44.5, "injury_status": "Q",
+    }
+
+    @pytest.fixture
+    def store(self, monkeypatch):
+        rows = {"9224_W11_D2026-11-23": dict(self.GOOD_ROW)}
+        monkeypatch.setattr(nh, "dfs_salaries_data", rows)
+        monkeypatch.setattr(nh, "dfs_scrape_runs", [])
+        monkeypatch.setattr(nh, "save_dfs_scrape_runs", lambda: None)
+        monkeypatch.setattr(nh, "save_dfs_salaries_data", lambda: None)
+        monkeypatch.setattr(nh, "USE_MOCK_DATA", False)
+        monkeypatch.setattr(nh, "current_nfl_week", 11)
+        monkeypatch.setattr(nh.nflverse_stats, "nflverse_games", {11: [
+            {"home_team": "CIN", "away_team": "WAS",
+             "gameday": "2026-11-23", "gametime": "20:15"},
+        ]})
+        return rows
+
+    def _scrape_returning(self, monkeypatch, row, from_feed):
+        class Scraper:
+            used_feed_fallback = from_feed
+
+            def get_salaries_with_sleeper_ids(self, *a, **k):
+                return [dict(row)]
+
+        monkeypatch.setattr(nh, "DFFSalariesScraper", lambda: Scraper())
+
+    FEED_ROW = {
+        "sleeper_id": "9224", "name": "Chase Brown", "team": "CIN",
+        "position": "RB", "week": None, "salary": 6400,
+        "projected_points": 15.895, "l5_avg": None, "l10_avg": None,
+        "season_avg": None, "over_under": None, "injury_status": None,
+        "start_date": None,
+    }
+
+    def test_the_averages_survive_a_gated_run(self, store, monkeypatch):
+        self._scrape_returning(monkeypatch, self.FEED_ROW, from_feed=True)
+        nh.update_dfs_salaries_data()
+
+        kept = store["9224_W11_D2026-11-23"]
+        assert kept["l5_avg"] == 14.2
+        assert kept["l10_avg"] == 13.1
+        assert kept["season_avg"] == 12.7
+        assert kept["over_under"] == 44.5
+
+    def test_what_the_feed_does_know_is_still_taken(self, store, monkeypatch):
+        # It is not a no-op: the fresher projection wins.
+        self._scrape_returning(monkeypatch, self.FEED_ROW, from_feed=True)
+        nh.update_dfs_salaries_data()
+        assert store["9224_W11_D2026-11-23"]["projected_points"] == 15.895
+
+    def test_a_cleared_injury_is_not_held_onto(self, store, monkeypatch):
+        # The line this draws: a null injury_status is an answer — he is no
+        # longer questionable — where a null average is an absence of one.
+        self._scrape_returning(monkeypatch, self.FEED_ROW, from_feed=True)
+        nh.update_dfs_salaries_data()
+        assert store["9224_W11_D2026-11-23"]["injury_status"] is None
+
+    def test_a_real_scrape_still_replaces_the_averages(self, store, monkeypatch):
+        # Fresh figures must win; this is only about not replacing them with
+        # nothing.
+        fresher = dict(self.GOOD_ROW, l5_avg=16.0, l10_avg=15.0, season_avg=13.5)
+        self._scrape_returning(monkeypatch, fresher, from_feed=False)
+        nh.update_dfs_salaries_data()
+
+        kept = store["9224_W11_D2026-11-23"]
+        assert kept["l5_avg"] == 16.0
+        assert kept["season_avg"] == 13.5
+
+    def test_the_week_comes_from_the_schedule_not_from_sleeper(self, store, monkeypatch):
+        # The feed carries no week, so without this the code falls through to
+        # asking Sleeper — whose answer has a rule of its own: before 7pm on a
+        # Thursday it reports the week just gone. A week 11 slate was filed
+        # under week 10, where nothing would ever look for it.
+        self._scrape_returning(monkeypatch, self.FEED_ROW, from_feed=True)
+        monkeypatch.setattr(nh, "upcoming_nfl_week", lambda today=None: 11)
+        nh.update_dfs_salaries_data()
+
+        assert all(r.get("week") == 11 for r in store.values())
+        assert "9224_W11_D2026-11-23" in store
+
+    def test_a_player_the_store_has_never_seen_is_still_added(self, store, monkeypatch):
+        # The other half of what was asked for: add what is missing, do not
+        # overwrite what is there.
+        newcomer = dict(self.FEED_ROW, sleeper_id="1234", name="Somebody Else")
+        self._scrape_returning(monkeypatch, newcomer, from_feed=True)
+        nh.update_dfs_salaries_data()
+
+        assert any(r.get("sleeper_id") == "1234" for r in store.values())
+        assert store["9224_W11_D2026-11-23"]["l5_avg"] == 14.2
+
+
 class TestWhatTheRunReports:
     @pytest.fixture
     def falling_back(self, monkeypatch):

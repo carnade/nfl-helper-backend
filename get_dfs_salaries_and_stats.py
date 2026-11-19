@@ -46,6 +46,22 @@ def _as_float(value):
         return None
 
 
+# What the slate feed has no answer for, so a caller can keep an earlier
+# scrape's figures instead of replacing them with these nulls.
+#
+# Deliberately these four and not "every null a feed row carries". A null
+# injury_status is a real answer — the player is no longer questionable — and
+# keeping the old "Q" over it would be worse than useless. These four are
+# columns the feed does not have at all, which is a different thing from a
+# column whose current value is nothing.
+#
+# Module level rather than an attribute of the scraper, because it describes
+# the feed rather than the object that reads it — and because a name on the
+# class is one a test can replace wholesale, which is how this was first
+# written and how it silently stopped preserving anything.
+FEED_BLIND_FIELDS = ('season_avg', 'l5_avg', 'l10_avg', 'over_under')
+
+
 class DFFAccountGate(RuntimeError):
     """The projections page served its logged-out preview instead of the slate."""
 
@@ -679,6 +695,7 @@ class DFFSalariesScraper:
     # season — and the game total. Those columns are empty on a fallback run,
     # which is why this is the fallback and not the source.
     FEED_URL = "https://www.dailyfantasyfuel.com/data/playerdetails/nfl/dk/{slate}?x=1"
+
 
     def scrape_slate_feed(self, slate_url: str) -> List[Dict]:
         """Every player on a slate, from the JSON the optimiser uses."""
