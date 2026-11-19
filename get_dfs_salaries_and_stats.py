@@ -5,6 +5,7 @@ This scraper fetches DFS salaries and projections from DailyFantasyFuel.com
 for DraftKings NFL contests.
 """
 
+import os
 import requests
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
@@ -21,6 +22,23 @@ logger = logging.getLogger(__name__)
 # The opening tag of a player row. Matched against the raw HTML so the row
 # bodies are never parsed — see the note in scrape_dff_projections.
 ROW_TAG_RE = re.compile(r'<tr[^>]*\bprojections-listing\b[^>]*>', re.I)
+
+# DailyFantasyFuel now renders the top 25 players of a slate to anyone not
+# logged in and puts the rest behind a free account, ending the table with
+# "Log In or create a free account to see all players". Nothing about the
+# response says so otherwise: it is a 200, it is 380 KB, the markup is
+# unchanged and the rows that are there parse perfectly. The scrape ran for
+# three days looking like a success while storing a quarter of each slate.
+#
+# Matched on the page's own words rather than on the row count, because a
+# genuinely small slate — a single-game showdown — is not the same thing and
+# must not be thrown away.
+GATE_TEXT_RE = re.compile(r'create a free account to see all players', re.I)
+
+
+class DFFAccountGate(RuntimeError):
+    """The projections page served its logged-out preview instead of the slate."""
+
 
 
 class DFFSalariesScraper:
@@ -45,6 +63,20 @@ class DFFSalariesScraper:
                           'AppleWebKit/537.36 (KHTML, like Gecko) '
                           'Chrome/131.0.0.0 Safari/537.36'
         })
+
+        # A logged-in session, pasted whole from a browser into DFF_COOKIE.
+        #
+        # The site's own login is AWS Cognito — OAuth2 redirect, CSRF token and
+        # device fingerprinting — which is automatable but brittle, and a login
+        # from a datacentre IP is exactly what its risk scoring is looking for.
+        # Sending the cookie keeps the credentials out of this app entirely.
+        #
+        # Taken verbatim rather than one named cookie, because which of them
+        # carries the session is DFF's business and may change.
+        cookie = os.environ.get('DFF_COOKIE', '').strip()
+        if cookie:
+            self.session.headers['Cookie'] = cookie
+            logger.info("DFF_COOKIE is set; scraping as a logged-in session")
     
     def get_active_main_slate(self, date: str = None) -> Optional[str]:
         """
@@ -527,6 +559,18 @@ class DFFSalariesScraper:
                 )
                 return []
 
+            # Being shown the first 25 of a slate is likewise not the same as
+            # the page having nothing on it, and it reads even more innocently:
+            # a 200, the usual 380 KB, unchanged markup, and every row that is
+            # there parses perfectly. Three days of scrapes stored a quarter of
+            # each slate and reported success.
+            if GATE_TEXT_RE.search(response.text):
+                raise DFFAccountGate(
+                    f"{url} served the logged-out preview. DailyFantasyFuel now "
+                    f"shows only the top players without an account — set "
+                    f"DFF_COOKIE to a logged-in session cookie."
+                )
+
             # Parse the player rows, and nothing else.
             #
             # Every field below is read from a data-* attribute on the <tr>
@@ -546,6 +590,7 @@ class DFFSalariesScraper:
             # the live class attribute is " projections-listing " with
             # surrounding whitespace, and the strainer matches more strictly
             # than find_all does, so it finds nothing at all.
+
             row_tags = ROW_TAG_RE.findall(response.text)
             fragment = "".join(f"{tag}</tr>" for tag in row_tags)
             soup = BeautifulSoup(f"<table>{fragment}</table>", 'html.parser')
