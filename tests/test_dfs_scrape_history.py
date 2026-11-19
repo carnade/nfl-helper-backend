@@ -103,6 +103,71 @@ class TestWhatTheScrapeRecords:
         assert "no slate data" in run["error"]
 
 
+class TestCountingPlayersRatherThanWrites:
+    """A run walks several slates and most players are on more than one.
+
+    A Sunday player appears in Thu-Mon, Sun-Mon and Early Only alike, so the
+    rows coming back outnumber the players they describe about two to one.
+    Counted per write it read "1914 scraped, 1914 updated" for a slate of 925,
+    which looks like either a duplicate problem or a miracle.
+    """
+
+    @pytest.fixture
+    def run(self, monkeypatch):
+        def go(rows, held=None):
+            monkeypatch.setattr(nh, "dfs_salaries_data", dict(held or {}))
+            monkeypatch.setattr(nh, "USE_MOCK_DATA", False)
+            monkeypatch.setattr(nh, "save_dfs_salaries_data", lambda: None)
+            monkeypatch.setattr(nh, "_schedule_dfs_retry", lambda reason: None)
+            monkeypatch.setattr(nh.nflverse_stats, "nflverse_games", {})
+
+            class Scraper:
+                used_feed_fallback = False
+
+                def get_salaries_with_sleeper_ids(self, *a, **k):
+                    return [dict(r) for r in rows]
+
+            monkeypatch.setattr(nh, "DFFSalariesScraper", lambda: Scraper())
+            nh.update_dfs_salaries_data()
+            return nh.dfs_scrape_runs[0]
+        return go
+
+    def player(self, sleeper_id, **over):
+        base = {"sleeper_id": sleeper_id, "name": f"Player {sleeper_id}",
+                "team": "CIN", "position": "RB", "week": 11, "salary": 5000,
+                "game_date": "2026-11-22"}
+        base.update(over)
+        return base
+
+    def test_the_same_player_on_three_slates_is_one_player(self, run):
+        rows = [self.player("1"), self.player("1"), self.player("1")]
+        got = run(rows)
+        assert got["scraped"] == 3, "three rows really were read"
+        assert got["players"] == 1, "describing one player"
+        assert got["added"] == 1
+        assert got["updated"] == 0
+
+    def test_a_second_run_updates_rather_than_adds(self, run):
+        held = {"1_W11_D2026-11-22": self.player("1")}
+        got = run([self.player("1"), self.player("1")], held=held)
+        assert got["added"] == 0
+        assert got["updated"] == 1
+
+    def test_the_same_player_on_two_dates_is_two_rows(self, run):
+        # Not duplication: a Saturday game and a Sunday game are different
+        # fixtures and are keyed apart on purpose.
+        rows = [self.player("1"), self.player("1", game_date="2026-11-23")]
+        got = run(rows)
+        assert got["players"] == 2
+
+    def test_held_counts_the_store_not_the_run(self, run):
+        held = {"9_W10_D2026-11-15": self.player("9", week=10,
+                                                game_date="2026-11-15")}
+        got = run([self.player("1")], held=held)
+        assert got["players"] == 1
+        assert got["held"] >= 1
+
+
 class TestTheEndpoint:
     def test_it_is_for_organisers_only(self, client):
         # Gated with every other /admin route by the hook, which is the point
