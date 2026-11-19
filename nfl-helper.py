@@ -1213,7 +1213,11 @@ def update_dfs_salaries_data():
         # Get current week - find the first player with a valid week (> 0), or fetch from Sleeper API
         current_week = 0
         for player in parsed_salaries:
-            week = player.get('week', 0)
+            # `or 0` rather than a default: the slate feed carries week=None,
+            # and a default only covers a key that is absent, not one that is
+            # present and null. Comparing None to 0 is a TypeError that lands
+            # in the general handler and reads as an unexplained failed scrape.
+            week = player.get('week') or 0
             if week > 0:
                 current_week = week
                 break
@@ -1233,13 +1237,26 @@ def update_dfs_salaries_data():
         if current_week > 0:
             current_nfl_week = current_week
             print(f"Updated current_nfl_week to {current_nfl_week} (from DailyFantasyFuel)")
-        
+
+        # A fallback run's rows carry no fixture at all — the feed has no date,
+        # no kickoff and no week — so they get one from our own schedule before
+        # anything keys or locks on them.
+        # `is True` rather than truthiness: a mocked scraper answers every
+        # attribute with a Mock, and a Mock is truthy, so getattr's default
+        # never gets a say. A test caught this by failing on a success that
+        # claimed to have been a fallback.
+        from_feed = getattr(scraper, 'used_feed_fallback', False) is True
+        if from_feed and current_week:
+            timed = fill_times_from_schedule(parsed_salaries, current_week)
+            print(f"Read {len(parsed_salaries)} players from the slate feed; "
+                  f"gave {timed} of them a kickoff from the schedule.")
+
         # Clean up old data (keep current week and all future weeks, delete only older weeks)
         keys_to_delete = []
         
         for key in list(dfs_salaries_data.keys()):
             # Extract week from existing entries
-            existing_week = dfs_salaries_data[key].get('week', 0)
+            existing_week = dfs_salaries_data[key].get('week') or 0
             # Delete only if week is older than current week
             if existing_week < current_week:
                 keys_to_delete.append(key)
@@ -1321,7 +1338,12 @@ def update_dfs_salaries_data():
             print(f"Total salary differences: {len(salary_differences)} (salaries NOT updated in scheduled run)")
         
         last_dfs_salaries_update = datetime.datetime.now()
-        dfs_last_error = None
+        dfs_last_error = (
+            "DFF served the logged-out preview; the slate came from its data "
+            "feed instead, without the last-5, last-10 and season averages. "
+            "Replace DFF_COOKIE to get the full columns back."
+            if from_feed else None
+        )
         dfs_retry_count = 0
 
         # Count matched players (those with numeric sleeper_id, not player name)
@@ -1334,7 +1356,11 @@ def update_dfs_salaries_data():
         print(f"Date: {today}")
 
         _record_dfs_run(
-            'ok',
+            # A run off the feed worked, but it worked around something: the
+            # page was gated and the rolling averages are missing from what it
+            # stored. Calling that "ok" would hide the one thing worth acting
+            # on, and calling it "gated" would hide that the slate is current.
+            'fallback' if from_feed else 'ok',
             week=current_week,
             scraped=len(parsed_salaries),
             matched=matched_count,
@@ -3711,6 +3737,60 @@ def _decode_lineup_payload(base64_data):
         if looks_like_a_lineup(decoded):
             return decoded
     return None
+
+
+# DFF spells the Rams, Commanders and Jaguars the way Sleeper does; nflverse
+# does not. Three teams, and the whole of a fallback run's kickoff times.
+TEAM_TO_NFLVERSE = {'LAR': 'LA', 'WSH': 'WAS', 'JAC': 'JAX'}
+
+
+def fill_times_from_schedule(rows, week):
+    """
+    Give rows a game date and kickoff from our own schedule, by team.
+
+    The slate feed carries no fixture at all — no date, no time, no week — so a
+    fallback run has to get them elsewhere, and elsewhere is better anyway. The
+    schedule is published in full before the week starts, where DFF fills its
+    kickoff column as it gets round to it: on the week 11 slate it had 58 rows
+    without one, and the whole of two games.
+
+    nflverse writes a 24-hour clock in US Eastern, which is the same zone the
+    scrape quotes, so the only conversion needed is of the spelling.
+
+    Fills only what is missing, so a real scrape's own figures win. Returns how
+    many rows were given a fixture.
+    """
+    games = nflverse_stats.nflverse_games.get(int(week)) or []
+    by_team = {}
+    for game in games:
+        day, clock = game.get('gameday'), game.get('gametime')
+        if not day or not clock:
+            continue
+        for side in ('home_team', 'away_team'):
+            team = game.get(side)
+            if team:
+                by_team[str(team)] = (day, clock)
+
+    if not by_team:
+        return 0
+
+    filled = 0
+    for row in rows:
+        team = row.get('team')
+        fixture = by_team.get(TEAM_TO_NFLVERSE.get(team, team)) if team else None
+        if not fixture:
+            continue
+        day, clock = fixture
+        if not row.get('game_date'):
+            row['game_date'] = day
+        if not str(row.get('game_start_time') or '').strip():
+            # "20:15" reads as the 24-hour time it is; parse_game_start handles
+            # both spellings, and so does the frontend's.
+            row['game_start_time'] = clock
+            filled += 1
+        if not row.get('week'):
+            row['week'] = int(week)
+    return filled
 
 
 def fill_missing_kickoffs(rows):

@@ -36,6 +36,16 @@ ROW_TAG_RE = re.compile(r'<tr[^>]*\bprojections-listing\b[^>]*>', re.I)
 GATE_TEXT_RE = re.compile(r'create a free account to see all players', re.I)
 
 
+def _as_float(value):
+    """A number from the feed, or None. The feed uses null for "no figure"."""
+    if value in (None, ''):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class DFFAccountGate(RuntimeError):
     """The projections page served its logged-out preview instead of the slate."""
 
@@ -86,6 +96,8 @@ class DFFSalariesScraper:
             cookie = cookie[1:-1].strip()
 
         self.has_cookie = bool(cookie)
+        # Set when a slate had to be read from the feed instead of the page.
+        self.used_feed_fallback = False
         if cookie:
             self.session.headers['Cookie'] = cookie
             logger.info("DFF_COOKIE is set; scraping as a logged-in session")
@@ -649,6 +661,85 @@ class DFFSalariesScraper:
             logger.error(f"Error fetching DFF projections: {e}")
             return []
     
+    # The slate's own data feed, which the site's lineup optimiser runs on.
+    #
+    # Found while looking for a way round the account gate on the projections
+    # page: the hub at /nfl renders a handful of players server-side and then
+    # fetches the rest from here, so the whole slate arrives as JSON and — at
+    # the time of writing — without needing an account at all.
+    #
+    # It is a better source than the page in two ways. The projection comes
+    # through at full precision rather than rounded to the tenth the HTML
+    # prints, and there are no missing kickoff times to reconstruct because
+    # there are no kickoff times in it at all; the caller fills those from the
+    # schedule we already hold, which covers every game rather than only the
+    # ones DFF has got round to publishing.
+    #
+    # What it does not carry is the rolling averages — last five, last ten,
+    # season — and the game total. Those columns are empty on a fallback run,
+    # which is why this is the fallback and not the source.
+    FEED_URL = "https://www.dailyfantasyfuel.com/data/playerdetails/nfl/dk/{slate}?x=1"
+
+    def scrape_slate_feed(self, slate_url: str) -> List[Dict]:
+        """Every player on a slate, from the JSON the optimiser uses."""
+        url = self.FEED_URL.format(slate=slate_url)
+        logger.info(f"Reading the slate feed for {slate_url}")
+
+        response = self.session.get(url, timeout=30)
+        response.raise_for_status()
+        rows = response.json()
+        if not isinstance(rows, list):
+            logger.error(f"Slate feed for {slate_url} was not a list of players")
+            return []
+
+        players = [self._parse_feed_row(row) for row in rows]
+        players = [p for p in players if p]
+        logger.info(f"Slate feed gave {len(players)} players for {slate_url}")
+        return players
+
+    def _parse_feed_row(self, row: Dict) -> Optional[Dict]:
+        """One feed entry, in the shape the page parser produces.
+
+        Same keys so that everything downstream — the Sleeper matching, the
+        storage keys, the kickoff check — cannot tell the two apart. The fields
+        the feed has no answer for are None rather than absent, for the same
+        reason: a missing key reads as a bug, a null reads as unknown.
+        """
+        try:
+            name = f"{row.get('first_name') or ''} {row.get('last_name') or ''}".strip()
+            if not name:
+                return None
+
+            position = (row.get('position_code') or '').strip().upper()
+            if position == 'DEF':
+                position = 'DST'
+
+            salary = row.get('salary')
+            return {
+                'name': name,
+                'position': position,
+                'team': (row.get('team') or '').strip(),
+                'salary': int(salary) if salary not in (None, '') else 0,
+                'projected_points': _as_float(row.get('ppg')),
+                'value_proj': _as_float(row.get('value')),
+                'opponent': (row.get('opp') or '').strip(),
+                # Not in the feed. The page's own columns, and the only reason
+                # this is a fallback rather than a replacement.
+                'season_avg': None,
+                'l5_avg': None,
+                'l10_avg': None,
+                'week': None,
+                'spread': _as_float(row.get('team_spread')),
+                'over_under': None,
+                'proj_team_score': _as_float(row.get('projected_team_score')),
+                'opp_rank': row.get('opp_rank'),
+                'injury_status': (row.get('injury_status') or '').strip() or None,
+                'start_date': None,
+            }
+        except Exception as e:
+            logger.debug(f"Error reading a slate feed row: {e}")
+            return None
+
     def _parse_player_row(self, row) -> Optional[Dict]:
         """
         Parse a player row from the DFF table using data-* attributes.
@@ -843,7 +934,17 @@ class DFFSalariesScraper:
             date_players = []
             for slate_url in relevant_slate_urls:
                 logger.info(f"Scraping slate {slate_url} for date {game_date}")
-                slate_players = self.scrape_dff_projections(slate_url, game_date)
+                try:
+                    slate_players = self.scrape_dff_projections(slate_url, game_date)
+                except DFFAccountGate as gate:
+                    # The page is gated; the slate's own feed is not. Falling
+                    # back loses the rolling averages and the game total and
+                    # keeps everything a lineup is actually built from, which
+                    # beats keeping a slate that is three days old.
+                    logger.warning(f"{gate}")
+                    logger.warning(f"Falling back to the slate feed for {slate_url}")
+                    self.used_feed_fallback = True
+                    slate_players = self.scrape_slate_feed(slate_url)
                 if slate_players:
                     logger.info(f"✅ Found {len(slate_players)} players from slate {slate_url}")
                     # Tag each player with the date they were scraped from (for fallback if start_date is missing)
