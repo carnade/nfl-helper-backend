@@ -31,6 +31,25 @@ GLOBAL_DICTS = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def no_shared_writes(monkeypatch, tmp_path):
+    """Keep every test's writes off the shared stores.
+
+    nfl-helper.py calls load_dotenv() at import, so a developer's real
+    SUPABASE_URL and SUPABASE_KEY are in the environment while the suite runs.
+    Nothing used to reach a save, so this never mattered; adding one call to
+    _save_store on a path a test exercises was enough to have pytest writing
+    to the database, which showed up as a deprecation warning from the
+    Supabase client rather than as anything that looked like a mistake.
+
+    Read-only is the switch the application already has for exactly this, and
+    it sends writes to a file instead — pointed here at a per-test temporary
+    directory. Tests that set either of these themselves still override it.
+    """
+    monkeypatch.setattr(nfl_helper, "SUPABASE_READ_ONLY", True, raising=False)
+    monkeypatch.setattr(nfl_helper, "DATA_DIR", tmp_path, raising=False)
+
+
 @pytest.fixture(scope="session")
 def flask_app():
     nfl_helper.app.config["TESTING"] = True
@@ -68,6 +87,14 @@ def admin_post(client, path, **kwargs):
                       return_value={"user_id": "1", "display_name": "carnade"}):
         headers = {"Authorization": "tok", **kwargs.pop("headers", {})}
         return client.post(path, headers=headers, **kwargs)
+
+
+def admin_get(client, path, **kwargs):
+    """GET an /admin route as an organiser. The twin of admin_post."""
+    with patch.object(nfl_helper, "verify_sleeper_token",
+                      return_value={"user_id": "1", "display_name": "carnade"}):
+        headers = {"Authorization": "tok", **kwargs.pop("headers", {})}
+        return client.get(path, headers=headers, **kwargs)
 
 
 def make_lineup_string(week: int, player_entries: list) -> str:

@@ -795,6 +795,20 @@ dfs_last_attempt = None   # when we last tried, successful or not
 dfs_last_error = None     # why the most recent attempt failed, if it did
 dfs_retry_count = 0       # consecutive failures with a retry already queued
 
+# What each scrape did, newest first.
+#
+# The three fields above say what is true *now* and nothing about how it got
+# there, which is the wrong shape for the question actually being asked — "is
+# the scrape healthy?" A single error reads the same whether it is the first in
+# a month or the fourth today, and a success that added two players reads the
+# same as one that added six hundred. Both of those differences were visible
+# only by reading the logs, and the logs are on a host that rotates them.
+#
+# Capped, because this is kept beside the salaries in the same store and the
+# point is a glance at recent history rather than an audit trail.
+DFS_RUN_HISTORY = 25
+dfs_scrape_runs = []
+
 DFS_RETRY_DELAY_MINUTES = 20
 DFS_MAX_RETRIES = 3
 
@@ -1124,6 +1138,38 @@ def _schedule_dfs_retry(reason):
         print(f"{datetime.datetime.now()} - Could not queue a DFS salaries retry: {e}")
 
 
+def _record_dfs_run(outcome, **fields):
+    """
+    Note how a scrape went, and keep the last few.
+
+    `outcome` is one of "ok", "gated" or "failed". The three are kept apart
+    rather than collapsed into a success flag because they call for different
+    actions: nothing, a fresh cookie, and a look at the logs respectively.
+    """
+    run = {
+        'at': datetime.datetime.now().isoformat(timespec='seconds'),
+        'outcome': outcome,
+        **fields,
+    }
+    dfs_scrape_runs.insert(0, run)
+    del dfs_scrape_runs[DFS_RUN_HISTORY:]
+    save_dfs_scrape_runs()
+    return run
+
+
+def save_dfs_scrape_runs():
+    _save_store('dfs_scrape_runs', {'runs': dfs_scrape_runs})
+
+
+def load_dfs_scrape_runs():
+    stored = {}
+    _load_store('dfs_scrape_runs', stored)
+    runs = stored.get('runs')
+    if isinstance(runs, list):
+        dfs_scrape_runs.clear()
+        dfs_scrape_runs.extend(runs[:DFS_RUN_HISTORY])
+
+
 def update_dfs_salaries_data():
     """
     Update DFS salaries data by fetching from DailyFantasyFuel and matching to Sleeper IDs.
@@ -1159,6 +1205,8 @@ def update_dfs_salaries_data():
             # Usually the slate is not published yet rather than anything broken.
             dfs_last_error = f"no slate data available for {today}"
             print(f"No DFS salary data scraped for {today}. Aborting DFS salaries update.")
+            _record_dfs_run('failed', error=dfs_last_error, scraped=0,
+                            held=len(dfs_salaries_data))
             _schedule_dfs_retry(dfs_last_error)
             return
         
@@ -1285,6 +1333,17 @@ def update_dfs_salaries_data():
         print(f"Matched to Sleeper IDs: {matched_count}")
         print(f"Date: {today}")
 
+        _record_dfs_run(
+            'ok',
+            week=current_week,
+            scraped=len(parsed_salaries),
+            matched=matched_count,
+            added=added_count,
+            updated=updated_count,
+            kickoffs_filled=filled,
+            held=len(dfs_salaries_data),
+        )
+
         # Written through so a restart serves these immediately instead of
         # answering 404 for the ten minutes a fresh scrape takes.
         save_dfs_salaries_data()
@@ -1298,10 +1357,12 @@ def update_dfs_salaries_data():
         print(f"DFS salaries not updated — {e}")
         print(f"Keeping the {len(dfs_salaries_data)} rows already held; "
               f"they are stale but whole.")
+        _record_dfs_run('gated', error=dfs_last_error, held=len(dfs_salaries_data))
 
     except Exception as e:
         dfs_last_error = str(e)
         print(f"Error updating DFS salaries data: {e}")
+        _record_dfs_run('failed', error=dfs_last_error, held=len(dfs_salaries_data))
         _schedule_dfs_retry(dfs_last_error)
 
 
@@ -2919,6 +2980,31 @@ def debug_info():
         "filtered_players_count": len(filtered_players),
         "dfs_salaries_count": len(dfs_salaries_data),
         "fantasy_points_count": len(fantasy_points_data)
+    }), 200
+
+
+@app.route('/admin/dfs-salaries/runs', methods=['GET'])
+def admin_dfs_salaries_runs():
+    """
+    How the recent DFS scrapes went.
+
+    /statistics says what is true now; this says how it got there. A single
+    error reads the same whether it is the first in a month or the fourth
+    today, and a run that added two players reads the same as one that added
+    six hundred — which is exactly the difference between a quiet week and the
+    scrape having been served a logged-out preview.
+
+    Gated with every other /admin route by the hook at the top of this file.
+    """
+    gated = [r for r in dfs_scrape_runs if r.get('outcome') == 'gated']
+    return jsonify({
+        "runs": dfs_scrape_runs,
+        "held": len(dfs_salaries_data),
+        # The summary the page leads with, so it does not have to reduce the
+        # list itself and reach a different answer.
+        "last_ok": next((r for r in dfs_scrape_runs if r.get('outcome') == 'ok'), None),
+        "cookie_configured": bool(os.environ.get('DFF_COOKIE', '').strip()),
+        "cookie_looks_stale": bool(gated) and dfs_scrape_runs[0].get('outcome') == 'gated',
     }), 200
 
 
@@ -6395,6 +6481,7 @@ def initialize_data_in_background():
             # Serve the last known salaries straight away; the scrape below then
             # refreshes them in the usual way, pruning any week that has rolled off.
             load_dfs_salaries_data()
+            load_dfs_scrape_runs()
             update_dfs_salaries_data()
 
             # 4. Load nflverse player/team/schedule stats
