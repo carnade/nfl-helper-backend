@@ -16,7 +16,7 @@ from flask_cors import CORS
 import datetime
 from get_dynasty_ranks import scrape_ktc, scrape_fantasy_calc, tep_adjust
 from fantasydatascraper import FantasyDataScraper
-from get_dfs_salaries_and_stats import DFFSalariesScraper
+from get_dfs_salaries_and_stats import DFFAccountGate, DFFSalariesScraper
 import random  # Import random for generating random deltas
 import threading
 import time
@@ -1289,6 +1289,16 @@ def update_dfs_salaries_data():
         # answering 404 for the ten minutes a fresh scrape takes.
         save_dfs_salaries_data()
         
+    except DFFAccountGate as e:
+        # Keep what we hold and say plainly what is wrong. No retry: the page
+        # will answer exactly the same way in twenty minutes, because what is
+        # missing is a cookie rather than a moment of bad luck, and a retry
+        # loop would bury the one message that says so.
+        dfs_last_error = str(e)
+        print(f"DFS salaries not updated — {e}")
+        print(f"Keeping the {len(dfs_salaries_data)} rows already held; "
+              f"they are stale but whole.")
+
     except Exception as e:
         dfs_last_error = str(e)
         print(f"Error updating DFS salaries data: {e}")

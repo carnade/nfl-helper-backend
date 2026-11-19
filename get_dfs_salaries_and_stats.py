@@ -5,6 +5,7 @@ This scraper fetches DFS salaries and projections from DailyFantasyFuel.com
 for DraftKings NFL contests.
 """
 
+import os
 import requests
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
@@ -21,6 +22,23 @@ logger = logging.getLogger(__name__)
 # The opening tag of a player row. Matched against the raw HTML so the row
 # bodies are never parsed — see the note in scrape_dff_projections.
 ROW_TAG_RE = re.compile(r'<tr[^>]*\bprojections-listing\b[^>]*>', re.I)
+
+# DailyFantasyFuel now renders the top 25 players of a slate to anyone not
+# logged in and puts the rest behind a free account, ending the table with
+# "Log In or create a free account to see all players". Nothing about the
+# response says so otherwise: it is a 200, it is 380 KB, the markup is
+# unchanged and the rows that are there parse perfectly. The scrape ran for
+# three days looking like a success while storing a quarter of each slate.
+#
+# Matched on the page's own words rather than on the row count, because a
+# genuinely small slate — a single-game showdown — is not the same thing and
+# must not be thrown away.
+GATE_TEXT_RE = re.compile(r'create a free account to see all players', re.I)
+
+
+class DFFAccountGate(RuntimeError):
+    """The projections page served its logged-out preview instead of the slate."""
+
 
 
 class DFFSalariesScraper:
@@ -45,6 +63,44 @@ class DFFSalariesScraper:
                           'AppleWebKit/537.36 (KHTML, like Gecko) '
                           'Chrome/131.0.0.0 Safari/537.36'
         })
+
+        # A logged-in session, pasted whole from a browser into DFF_COOKIE.
+        #
+        # The site's own login is AWS Cognito — OAuth2 redirect, CSRF token and
+        # device fingerprinting — which is automatable but brittle, and a login
+        # from a datacentre IP is exactly what its risk scoring is looking for.
+        # Sending the cookie keeps the credentials out of this app entirely.
+        #
+        # Taken verbatim rather than one named cookie, because which of them
+        # carries the session is DFF's business and may change.
+        cookie = os.environ.get('DFF_COOKIE', '').strip()
+
+        # Quotes round the whole value are a .env convention — python-dotenv
+        # eats them, a hosting panel's environment field does not — and this
+        # value gets pasted into both. Left on, they land on whichever cookie
+        # happens to sit at each end of the string: harmless when that is a
+        # Google Analytics one, fatal when the browser ordered a session chunk
+        # there instead, and the symptom is a silent return to the 25-row
+        # preview. Not worth leaving to the order the cookies came out in.
+        if len(cookie) >= 2 and cookie[0] == cookie[-1] and cookie[0] in ('"', "'"):
+            cookie = cookie[1:-1].strip()
+
+        self.has_cookie = bool(cookie)
+        if cookie:
+            self.session.headers['Cookie'] = cookie
+            logger.info("DFF_COOKIE is set; scraping as a logged-in session")
+
+            # The session lives in an AWS load-balancer cookie, and the balancer
+            # splits it across AWSELBAuthSessionCookie-0, -1 and so on when it
+            # outgrows the 4 KB a cookie may hold. Copying only the first chunk
+            # produces a value that looks complete and authenticates as nobody,
+            # which is the likeliest way this gets set wrong.
+            if 'AWSELBAuthSessionCookie' not in cookie:
+                logger.warning(
+                    "DFF_COOKIE carries no AWSELBAuthSessionCookie — that is the "
+                    "one holding the session, and it comes in numbered parts. "
+                    "Copy the whole value, every part of it."
+                )
     
     def get_active_main_slate(self, date: str = None) -> Optional[str]:
         """
@@ -527,6 +583,27 @@ class DFFSalariesScraper:
                 )
                 return []
 
+            # Being shown the first 25 of a slate is likewise not the same as
+            # the page having nothing on it, and it reads even more innocently:
+            # a 200, the usual 380 KB, unchanged markup, and every row that is
+            # there parses perfectly. Three days of scrapes stored a quarter of
+            # each slate and reported success.
+            if GATE_TEXT_RE.search(response.text):
+                # Two different problems wear the same page, and in a month's
+                # time the difference is the whole diagnosis: never logged in,
+                # or logged in with a cookie that has since lapsed.
+                raise DFFAccountGate(
+                    f"{url} served the logged-out preview. The DFF_COOKIE that "
+                    f"was sent did not authenticate — it has most likely expired, "
+                    f"or was copied in part: the session lives in "
+                    f"AWSELBAuthSessionCookie, which comes in numbered parts and "
+                    f"needs all of them. Paste a fresh one."
+                    if self.has_cookie else
+                    f"{url} served the logged-out preview. DailyFantasyFuel now "
+                    f"shows only the top players without an account — set "
+                    f"DFF_COOKIE to a logged-in session cookie."
+                )
+
             # Parse the player rows, and nothing else.
             #
             # Every field below is read from a data-* attribute on the <tr>
@@ -546,6 +623,7 @@ class DFFSalariesScraper:
             # the live class attribute is " projections-listing " with
             # surrounding whitespace, and the strainer matches more strictly
             # than find_all does, so it finds nothing at all.
+
             row_tags = ROW_TAG_RE.findall(response.text)
             fragment = "".join(f"{tag}</tr>" for tag in row_tags)
             soup = BeautifulSoup(f"<table>{fragment}</table>", 'html.parser')
