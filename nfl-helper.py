@@ -16,7 +16,8 @@ from flask_cors import CORS
 import datetime
 from get_dynasty_ranks import scrape_ktc, scrape_fantasy_calc, tep_adjust
 from fantasydatascraper import FantasyDataScraper
-from get_dfs_salaries_and_stats import DFFAccountGate, DFFSalariesScraper
+from get_dfs_salaries_and_stats import (
+    DFFAccountGate, DFFSalariesScraper, FEED_BLIND_FIELDS)
 import random  # Import random for generating random deltas
 import threading
 import time
@@ -795,6 +796,20 @@ dfs_last_attempt = None   # when we last tried, successful or not
 dfs_last_error = None     # why the most recent attempt failed, if it did
 dfs_retry_count = 0       # consecutive failures with a retry already queued
 
+# What each scrape did, newest first.
+#
+# The three fields above say what is true *now* and nothing about how it got
+# there, which is the wrong shape for the question actually being asked — "is
+# the scrape healthy?" A single error reads the same whether it is the first in
+# a month or the fourth today, and a success that added two players reads the
+# same as one that added six hundred. Both of those differences were visible
+# only by reading the logs, and the logs are on a host that rotates them.
+#
+# Capped, because this is kept beside the salaries in the same store and the
+# point is a glance at recent history rather than an audit trail.
+DFS_RUN_HISTORY = 25
+dfs_scrape_runs = []
+
 DFS_RETRY_DELAY_MINUTES = 20
 DFS_MAX_RETRIES = 3
 
@@ -1124,6 +1139,38 @@ def _schedule_dfs_retry(reason):
         print(f"{datetime.datetime.now()} - Could not queue a DFS salaries retry: {e}")
 
 
+def _record_dfs_run(outcome, **fields):
+    """
+    Note how a scrape went, and keep the last few.
+
+    `outcome` is one of "ok", "gated" or "failed". The three are kept apart
+    rather than collapsed into a success flag because they call for different
+    actions: nothing, a fresh cookie, and a look at the logs respectively.
+    """
+    run = {
+        'at': datetime.datetime.now().isoformat(timespec='seconds'),
+        'outcome': outcome,
+        **fields,
+    }
+    dfs_scrape_runs.insert(0, run)
+    del dfs_scrape_runs[DFS_RUN_HISTORY:]
+    save_dfs_scrape_runs()
+    return run
+
+
+def save_dfs_scrape_runs():
+    _save_store('dfs_scrape_runs', {'runs': dfs_scrape_runs})
+
+
+def load_dfs_scrape_runs():
+    stored = {}
+    _load_store('dfs_scrape_runs', stored)
+    runs = stored.get('runs')
+    if isinstance(runs, list):
+        dfs_scrape_runs.clear()
+        dfs_scrape_runs.extend(runs[:DFS_RUN_HISTORY])
+
+
 def update_dfs_salaries_data():
     """
     Update DFS salaries data by fetching from DailyFantasyFuel and matching to Sleeper IDs.
@@ -1159,13 +1206,19 @@ def update_dfs_salaries_data():
             # Usually the slate is not published yet rather than anything broken.
             dfs_last_error = f"no slate data available for {today}"
             print(f"No DFS salary data scraped for {today}. Aborting DFS salaries update.")
+            _record_dfs_run('failed', error=dfs_last_error, scraped=0,
+                            held=len(dfs_salaries_data))
             _schedule_dfs_retry(dfs_last_error)
             return
         
         # Get current week - find the first player with a valid week (> 0), or fetch from Sleeper API
         current_week = 0
         for player in parsed_salaries:
-            week = player.get('week', 0)
+            # `or 0` rather than a default: the slate feed carries week=None,
+            # and a default only covers a key that is absent, not one that is
+            # present and null. Comparing None to 0 is a TypeError that lands
+            # in the general handler and reads as an unexplained failed scrape.
+            week = player.get('week') or 0
             if week > 0:
                 current_week = week
                 break
@@ -1185,13 +1238,37 @@ def update_dfs_salaries_data():
         if current_week > 0:
             current_nfl_week = current_week
             print(f"Updated current_nfl_week to {current_nfl_week} (from DailyFantasyFuel)")
-        
+
+        # A fallback run's rows carry no fixture at all — the feed has no date,
+        # no kickoff and no week — so they get one from our own schedule before
+        # anything keys or locks on them.
+        # `is True` rather than truthiness: a mocked scraper answers every
+        # attribute with a Mock, and a Mock is truthy, so getattr's default
+        # never gets a say. A test caught this by failing on a success that
+        # claimed to have been a fallback.
+        from_feed = getattr(scraper, 'used_feed_fallback', False) is True
+        if from_feed:
+            # The feed gives no week, so the week came from Sleeper, whose
+            # answer swings a day either side of the rollover. Prefer the
+            # schedule, which simply says which week the games are in.
+            from_schedule = upcoming_nfl_week()
+            if from_schedule:
+                if from_schedule != current_week:
+                    print(f"Slate feed run: filing under week {from_schedule} "
+                          f"from the schedule rather than week {current_week}.")
+                current_week = from_schedule
+                current_nfl_week = current_week
+        if from_feed and current_week:
+            timed = fill_times_from_schedule(parsed_salaries, current_week)
+            print(f"Read {len(parsed_salaries)} players from the slate feed; "
+                  f"gave {timed} of them a kickoff from the schedule.")
+
         # Clean up old data (keep current week and all future weeks, delete only older weeks)
         keys_to_delete = []
         
         for key in list(dfs_salaries_data.keys()):
             # Extract week from existing entries
-            existing_week = dfs_salaries_data[key].get('week', 0)
+            existing_week = dfs_salaries_data[key].get('week') or 0
             # Delete only if week is older than current week
             if existing_week < current_week:
                 keys_to_delete.append(key)
@@ -1250,6 +1327,24 @@ def update_dfs_salaries_data():
             # Keep existing salary if player already exists (scheduled updates don't update salaries)
             if existing_player:
                 player_with_date["salary"] = existing_player.get('salary', new_salary)
+
+                # A fallback run knows nothing about the rolling averages or
+                # the game total, and the row below is written whole — so
+                # without this, one gated scrape after a good one on the same
+                # slate would replace a player's last-5, last-10 and season
+                # figures with nulls and there would be no getting them back
+                # until the cookie was fixed.
+                #
+                # Only the columns the feed does not have. Every other null it
+                # carries is an answer: a cleared injury_status means the
+                # player is no longer questionable, and keeping the old "Q"
+                # over it would be worse than losing an average.
+                if from_feed:
+                    for field in FEED_BLIND_FIELDS:
+                        if (player_with_date.get(field) is None
+                                and existing_player.get(field) is not None):
+                            player_with_date[field] = existing_player[field]
+
                 updated_count += 1
             else:
                 added_count += 1
@@ -1259,9 +1354,17 @@ def update_dfs_salaries_data():
         # Across the whole store, not only what was just scraped: rows restored
         # from disk carry the same gaps, and a team-mate scraped this time can
         # fill a row scraped last time.
-        filled = fill_missing_kickoffs(list(dfs_salaries_data.values()))
+        #
+        # The schedule first, because it knows every game rather than only the
+        # ones DFF has published; then the team-mate copy for anything it could
+        # not place — a week we hold no schedule for, most likely, which at
+        # boot is every week, since nflverse loads a step after this runs.
+        held = list(dfs_salaries_data.values())
+        scheduled = fill_kickoffs_from_schedule(held)
+        filled = scheduled + fill_missing_kickoffs(held)
         if filled:
-            print(f"Filled {filled} missing kickoff times from team-mates in the same game")
+            print(f"Filled {filled} missing kickoff times "
+                  f"({scheduled} from the schedule, {filled - scheduled} from team-mates)")
 
         # Log salary differences
         if salary_differences:
@@ -1273,7 +1376,12 @@ def update_dfs_salaries_data():
             print(f"Total salary differences: {len(salary_differences)} (salaries NOT updated in scheduled run)")
         
         last_dfs_salaries_update = datetime.datetime.now()
-        dfs_last_error = None
+        dfs_last_error = (
+            "DFF served the logged-out preview; the slate came from its data "
+            "feed instead, without the last-5, last-10 and season averages. "
+            "Replace DFF_COOKIE to get the full columns back."
+            if from_feed else None
+        )
         dfs_retry_count = 0
 
         # Count matched players (those with numeric sleeper_id, not player name)
@@ -1284,6 +1392,21 @@ def update_dfs_salaries_data():
         print(f"Total DFS salary entries in memory: {len(dfs_salaries_data)}")
         print(f"Matched to Sleeper IDs: {matched_count}")
         print(f"Date: {today}")
+
+        _record_dfs_run(
+            # A run off the feed worked, but it worked around something: the
+            # page was gated and the rolling averages are missing from what it
+            # stored. Calling that "ok" would hide the one thing worth acting
+            # on, and calling it "gated" would hide that the slate is current.
+            'fallback' if from_feed else 'ok',
+            week=current_week,
+            scraped=len(parsed_salaries),
+            matched=matched_count,
+            added=added_count,
+            updated=updated_count,
+            kickoffs_filled=filled,
+            held=len(dfs_salaries_data),
+        )
 
         # Written through so a restart serves these immediately instead of
         # answering 404 for the ten minutes a fresh scrape takes.
@@ -1298,10 +1421,12 @@ def update_dfs_salaries_data():
         print(f"DFS salaries not updated — {e}")
         print(f"Keeping the {len(dfs_salaries_data)} rows already held; "
               f"they are stale but whole.")
+        _record_dfs_run('gated', error=dfs_last_error, held=len(dfs_salaries_data))
 
     except Exception as e:
         dfs_last_error = str(e)
         print(f"Error updating DFS salaries data: {e}")
+        _record_dfs_run('failed', error=dfs_last_error, held=len(dfs_salaries_data))
         _schedule_dfs_retry(dfs_last_error)
 
 
@@ -2922,6 +3047,31 @@ def debug_info():
     }), 200
 
 
+@app.route('/admin/dfs-salaries/runs', methods=['GET'])
+def admin_dfs_salaries_runs():
+    """
+    How the recent DFS scrapes went.
+
+    /statistics says what is true now; this says how it got there. A single
+    error reads the same whether it is the first in a month or the fourth
+    today, and a run that added two players reads the same as one that added
+    six hundred — which is exactly the difference between a quiet week and the
+    scrape having been served a logged-out preview.
+
+    Gated with every other /admin route by the hook at the top of this file.
+    """
+    gated = [r for r in dfs_scrape_runs if r.get('outcome') == 'gated']
+    return jsonify({
+        "runs": dfs_scrape_runs,
+        "held": len(dfs_salaries_data),
+        # The summary the page leads with, so it does not have to reduce the
+        # list itself and reach a different answer.
+        "last_ok": next((r for r in dfs_scrape_runs if r.get('outcome') == 'ok'), None),
+        "cookie_configured": bool(os.environ.get('DFF_COOKIE', '').strip()),
+        "cookie_looks_stale": bool(gated) and dfs_scrape_runs[0].get('outcome') == 'gated',
+    }), 200
+
+
 @app.route('/admin/dfs-salaries/update', methods=['POST'])
 def admin_update_dfs_salaries():
     """
@@ -3625,6 +3775,106 @@ def _decode_lineup_payload(base64_data):
         if looks_like_a_lineup(decoded):
             return decoded
     return None
+
+
+# DFF spells the Rams, Commanders and Jaguars the way Sleeper does; nflverse
+# does not. Three teams, and the whole of a fallback run's kickoff times.
+TEAM_TO_NFLVERSE = {'LAR': 'LA', 'WSH': 'WAS', 'JAC': 'JAX'}
+
+
+def fill_times_from_schedule(rows, week):
+    """
+    Give rows a game date and kickoff from our own schedule, by team.
+
+    The slate feed carries no fixture at all — no date, no time, no week — so a
+    fallback run has to get them elsewhere, and elsewhere is better anyway. The
+    schedule is published in full before the week starts, where DFF fills its
+    kickoff column as it gets round to it: on the week 11 slate it had 58 rows
+    without one, and the whole of two games.
+
+    nflverse writes a 24-hour clock in US Eastern, which is the same zone the
+    scrape quotes, so the only conversion needed is of the spelling.
+
+    Fills only what is missing, so a real scrape's own figures win. Returns how
+    many rows were given a fixture.
+    """
+    games = nflverse_stats.nflverse_games.get(int(week)) or []
+    by_team = {}
+    for game in games:
+        day, clock = game.get('gameday'), game.get('gametime')
+        if not day or not clock:
+            continue
+        for side in ('home_team', 'away_team'):
+            team = game.get(side)
+            if team:
+                by_team[str(team)] = (day, clock)
+
+    if not by_team:
+        return 0
+
+    filled = 0
+    for row in rows:
+        team = row.get('team')
+        fixture = by_team.get(TEAM_TO_NFLVERSE.get(team, team)) if team else None
+        if not fixture:
+            continue
+        day, clock = fixture
+        if not row.get('game_date'):
+            row['game_date'] = day
+        if not str(row.get('game_start_time') or '').strip():
+            # "20:15" reads as the 24-hour time it is; parse_game_start handles
+            # both spellings, and so does the frontend's.
+            row['game_start_time'] = clock
+            filled += 1
+        if not row.get('week'):
+            row['week'] = int(week)
+    return filled
+
+
+def upcoming_nfl_week(today=None):
+    """
+    The earliest week in our schedule that has not finished.
+
+    For a fallback run only, and it exists because the feed carries no week at
+    all. Without a week on any row the code falls through to asking Sleeper,
+    whose answer has a rule of its own — before 7pm on a Thursday it reports
+    the week just gone — so a week 11 slate was filed under week 10, where the
+    kickoff lock and the tournaments would never look for it.
+
+    The schedule has no such opinion: the week a slate belongs to is the week
+    its games are in.
+    """
+    today = today or datetime.datetime.now().strftime('%Y-%m-%d')
+    candidates = []
+    for week, games in (nflverse_stats.nflverse_games or {}).items():
+        days = [g.get('gameday') for g in games if g.get('gameday')]
+        if days and max(days) >= today:
+            candidates.append(int(week))
+    return min(candidates) if candidates else None
+
+
+def fill_kickoffs_from_schedule(rows):
+    """
+    Give every row a kickoff from our own schedule, each against its own week.
+
+    The store holds more than one week at a time, so the week cannot be passed
+    in; it is read off each row and the rows grouped by it. A row whose week is
+    unknown is left for fill_missing_kickoffs, which needs no schedule.
+
+    This is the better of the two fills and runs first. The schedule is
+    published in full before a week starts, where DFF fills its kickoff column
+    as it gets round to it — on week 11 it had 58 rows blank and two entire
+    games — and copying between team-mates can only help when somebody in the
+    game already knows. Run against the live week-11 feed, this gave all 360
+    players a fixture and left none without.
+    """
+    by_week = {}
+    for row in rows:
+        week = row.get('week')
+        if week:
+            by_week.setdefault(int(week), []).append(row)
+    return sum(fill_times_from_schedule(group, week)
+               for week, group in by_week.items())
 
 
 def fill_missing_kickoffs(rows):
@@ -6395,6 +6645,7 @@ def initialize_data_in_background():
             # Serve the last known salaries straight away; the scrape below then
             # refreshes them in the usual way, pruning any week that has rolled off.
             load_dfs_salaries_data()
+            load_dfs_scrape_runs()
             update_dfs_salaries_data()
 
             # 4. Load nflverse player/team/schedule stats
@@ -6403,6 +6654,15 @@ def initialize_data_in_background():
             release_free_memory()
             print(f"{datetime.datetime.now()} - Loading nflverse stats data...")
             refresh_nflverse_data()
+
+            # The DFS scrape ran a step ago, before any of this was loaded, so
+            # whatever it could not time is timed now. Cheap, and it is the
+            # difference between the boot run being timed and not.
+            late = fill_kickoffs_from_schedule(list(dfs_salaries_data.values()))
+            if late:
+                print(f"{datetime.datetime.now()} - Gave {late} salary rows a "
+                      f"kickoff from the schedule now that it is loaded.")
+                save_dfs_salaries_data()
             # The refresh peaks around 114 MB of DataFrames to retain under 17 MB of
             # dicts. Give the rest back rather than carrying it for the process's life.
             release_free_memory()
